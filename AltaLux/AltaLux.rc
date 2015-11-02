@@ -1,0 +1,174 @@
+// Microsoft Visual C++ generated resource script.
+//
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+#include "afxres.h"
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// Italian (Italy) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ITA)
+LANGUAGE LANG_ITALIAN, SUBLANG_ITALIAN
+#pragma code_page(1252)
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE 
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE 
+BEGIN
+    "#include ""afxres.h""\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE 
+BEGIN
+    "#define _AFX_NO_SPLITTER_RESOURCES\r\n"
+    "#define _AFX_NO_OLE_RESOURCES\r\n"
+    "#define _AFX_NO_TRACKER_RESOURCES\r\n"
+    "#define _AFX_NO_PROPERTY_RESOURCES\r\n"
+    "\r\n"
+    "#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ITA)\r\n"
+    "LANGUAGE 16, 1\r\n"
+    "#pragma code_page(1252)\r\n"
+    "#include ""res\\AltaLux.rc2""  // non-Microsoft Visual C++ edited resources\r\n"
+    "#include ""afxres.rc""     // Standard components\r\n"
+    "#endif\r\n"
+    "\0"
+END
+
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Version
+//
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,7,0,89
+ PRODUCTVERSION 1,7,0,89
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x4L
+ FILETYPE 0x2L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041004e4"
+        BEGIN
+            VALUE "CompanyName", "Stefano Tommesani"
+            VALUE "FileDescription", "AltaLux Image Enhancement Filter"
+            VALUE "FileVersion", "1.7.0.89"
+            VALUE "InternalName", "AltaLux.dll"
+            VALUE "LegalCopyright", "Copyright Stefano Tommesani 2005/2015  All rights reserved."
+            VALUE "OriginalFilename", "AltaLux.dll"
+            VALUE "ProductName", "AltaLux Image Enhancement Filter"
+            VALUE "ProductVersion", "1.7.0.89"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x410, 1252
+    END
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_DIALOG1 DIALOGEX 0, 0, 597, 338
+STYLE DS_SETFONT | DS_MODALFRAME | DS_3DLOOK | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "AltaLux image enhancement filter by Stefano Tommesani"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    DEFPUSHBUTTON   "OK",IDOK,541,6,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,541,30,50,14
+    CONTROL         "",IDC_SLIDER1,"msctls_trackbar32",TBS_AUTOTICKS | TBS_VERT | TBS_BOTH | TBS_TOOLTIPS | WS_TABSTOP,562,73,29,99,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_SLIDER2,"msctls_trackbar32",TBS_AUTOTICKS | TBS_VERT | TBS_BOTH | TBS_TOOLTIPS | WS_TABSTOP,562,199,29,103,WS_EX_CLIENTEDGE
+    RTEXT           "Intensity",IDC_STATIC,540,60,38,8
+    RTEXT           "Scale",IDC_STATIC,540,185,34,8
+    CONTROL         "",IDC_STATIC,"Static",SS_ETCHEDVERT | SS_SUNKEN,533,0,65,338
+    PUSHBUTTON      "Default",ID_DEFAULT,541,317,50,14
+    PUSHBUTTON      "Toggle visualization",IDC_TOGGLEVISUALIZATION,432,317,78,14
+    CONTROL         1005,IDC_STATIC,"Static",SS_BITMAP,540,199,17,15
+    CONTROL         1006,IDC_STATIC,"Static",SS_BITMAP,540,287,17,15
+    CONTROL         1008,IDC_STATIC,"Static",SS_BITMAP,540,73,14,25
+    CONTROL         1009,IDC_STATIC,"Static",SS_BITMAP,540,145,15,27
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Bitmap
+//
+
+IDB_BITMAP_GRID_LARGE   BITMAP                  "Bitmap\\bmp00001.bmp"
+IDB_BITMAP_GRID_SMALL   BITMAP                  "Bitmap\\bitmap1.bmp"
+IDB_BITMAP_BATTERY_LOW  BITMAP                  "Bitmap\\bmp00002.bmp"
+IDB_BITMAP_BATTERY_FULL BITMAP                  "Bitmap\\bmp00003.bmp"
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO
+BEGIN
+    IDD_DIALOG1, DIALOG
+    BEGIN
+        VERTGUIDE, 533
+        VERTGUIDE, 540
+        VERTGUIDE, 591
+    END
+END
+#endif    // APSTUDIO_INVOKED
+
+#endif    // Italian (Italy) resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+#define _AFX_NO_SPLITTER_RESOURCES
+#define _AFX_NO_OLE_RESOURCES
+#define _AFX_NO_TRACKER_RESOURCES
+#define _AFX_NO_PROPERTY_RESOURCES
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ITA)
+LANGUAGE 16, 1
+#pragma code_page(1252)
+#include "res\AltaLux.rc2"  // non-Microsoft Visual C++ edited resources
+#include "afxres.rc"     // Standard components
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED
+

@@ -1,0 +1,139 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Header Files\Filter">
+      <UniqueIdentifier>{fa93685e-f4ba-429f-bf7d-16364ec5b715}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Filter">
+      <UniqueIdentifier>{c7a9b14e-c782-48a8-b9f1-0c4a288ee68f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Logging">
+      <UniqueIdentifier>{0cc34e74-6c9e-40b4-864c-fc83f4a1f1d7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Logging">
+      <UniqueIdentifier>{17a514b9-10b0-47b3-b1bc-4ecc40f2cc65}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="ReadMe.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="stdafx.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="targetver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="AltaLux.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UIDraw\UIDraw.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CAltaLuxFilterFactory.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CSerialAltaLuxFilter.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CBaseAltaLuxFilter.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CParallelActiveWaitAltaLuxFilter.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CParallelErrorAltaLuxFilter.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CParallelEventAltaLuxFilter.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Filter\CParallelSplitLoopAltaLuxFilter.h">
+      <Filter>Header Files\Filter</Filter>
+    </ClInclude>
+    <ClInclude Include="Log\easylogging++.h">
+      <Filter>Logging</Filter>
+    </ClInclude>
+    <ClInclude Include="Log\SetupLog.h">
+      <Filter>Logging</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="stdafx.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="AltaLux.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UIDraw\UIDraw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CSerialAltaLuxFilter.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CAltaLuxFilterFactory.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CBaseAltaLuxFilter.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CParallelActiveWaitAltaLuxFilter.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CParallelErrorAltaLuxFilter.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CParallelEventAltaLuxFilter.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Filter\CParallelSplitLoopAltaLuxFilter.cpp">
+      <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="Log\SetupLog.cpp">
+      <Filter>Source Files\Logging</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="AltaLux.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="bmp00001.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="bitmap1.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="bmp00002.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="bmp00003.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Bitmap\bmp00001.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Bitmap\bitmap1.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Bitmap\bmp00002.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Bitmap\bmp00003.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+  </ItemGroup>
+</Project>
