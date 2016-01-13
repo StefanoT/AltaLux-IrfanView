@@ -388,33 +388,25 @@ int CBaseAltaLuxFilter::ProcessYVYU(void *Image)
 	return ProcessYUYV(Image);	//< no operations are performed on chroma
 }
 
+/// <summary>
+/// process a 8-bpp, luma-only input image
+/// </summary>
+/// <param name="Image">image to be processed</param>
+/// <returns></returns>
 int CBaseAltaLuxFilter::ProcessGray(void *Image)
 {
 	if (Image == NULL)
 		return AL_NULL_IMAGE;
 
-	if (ImageBuffer == NULL)
-	{
-		/// if ImageBuffer allocation failed in the constructor, try again
-		/// if it still fails, return AL_OUT_OF_MEMORY
-		try
-		{
-			ImageBuffer = new unsigned char[IMAGE_BUFFER_SIZE];
-		} catch (...) {
-			ImageBuffer = NULL;
-		}
-		if (ImageBuffer == NULL)
-			return AL_OUT_OF_MEMORY;
-	}   
-		
-	memcpy(ImageBuffer, Image, ImageWidth * ImageHeight * sizeof(PixelType));
+	// as the input buffer is already in the gray 8bpp pixel format, do not copy data to ImageBuffer and use the provided buffer directly
+	unsigned char *SavedImageBuffer = ImageBuffer;
+	ImageBuffer = (unsigned char *)Image;
 
 	int RunReturn = Run();
+	// restore ImageBuffer
+	ImageBuffer = SavedImageBuffer;
 	if (RunReturn != AL_OK)
 		return RunReturn;
-
-	memcpy(Image, ImageBuffer, ImageWidth * ImageHeight * sizeof(PixelType));
-
 	return AL_OK;
 }
 
@@ -427,6 +419,15 @@ const int Y_RED_SCALE = (int)(0.299 * SCALING_FACTOR);
 const int Y_GREEN_SCALE = (int)(0.587 * SCALING_FACTOR);
 const int Y_BLUE_SCALE = (int)(0.114 * SCALING_FACTOR);
 
+/// <summary>
+/// process an input image with a generic format
+/// </summary>
+/// <param name="Image">image to be processed</param>
+/// <param name="FirstFactor">scaling factor for first byte of each pixel</param>
+/// <param name="SecondFactor">scaling factor for second byte of each pixel</param>
+/// <param name="ThirdFactor">scaling factor for third byte of each pixel</param>
+/// <param name="PixelOffset">distance in bytes between pixels (3 for RGB24, 4 for RGB32)</param>
+/// <returns></returns>
 int CBaseAltaLuxFilter::ProcessGeneric(void *Image, int FirstFactor, int SecondFactor,
 					   int ThirdFactor, int PixelOffset)
 {
