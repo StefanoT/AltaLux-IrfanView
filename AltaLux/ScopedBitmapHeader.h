@@ -19,6 +19,10 @@ public:
 		return *pbBmHdr;
 	}
 
+	BYTE *GetImageBits() const {
+		return (BYTE *)pbBmHdr + (WORD)pbBmHdr->biSize;
+	}
+
 private:
 	LPBITMAPINFOHEADER pbBmHdr = nullptr;
 	HANDLE hDib;
