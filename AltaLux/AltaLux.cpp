@@ -68,14 +68,14 @@ bool SkipProcessing;
 int ScaledImageWidth;
 int ScaledImageHeight;
 int ScalingFactor = 1;
-std::weak_ptr<unsigned char[]> SrcImagePtr;				// source image
-std::weak_ptr<unsigned char[]> ProcImagePtr;			// processed image
-std::weak_ptr<unsigned char[]> ScaledSrcImagePtr;		// down-sampled source image
-std::weak_ptr<unsigned char[]> ScaledProcImagePtr;		// processed image
-std::weak_ptr<unsigned char[]> ScaledProcImageGridMPtr;	// processed image with lesser intensity
-std::weak_ptr<unsigned char[]> ScaledProcImageGridPPtr;	// processed image with higher intensity
-std::weak_ptr<unsigned char[]> ScaledProcImageIntensityMPtr;	// processed image with coarser grid
-std::weak_ptr<unsigned char[]> ScaledProcImageIntensityPPtr;	// processed image with finer grid
+std::weak_ptr<unsigned char> SrcImagePtr;				// source image
+std::weak_ptr<unsigned char> ProcImagePtr;			// processed image
+std::weak_ptr<unsigned char> ScaledSrcImagePtr;		// down-sampled source image
+std::weak_ptr<unsigned char> ScaledProcImagePtr;		// processed image
+std::weak_ptr<unsigned char> ScaledProcImageGridMPtr;	// processed image with lesser intensity
+std::weak_ptr<unsigned char> ScaledProcImageGridPPtr;	// processed image with higher intensity
+std::weak_ptr<unsigned char> ScaledProcImageIntensityMPtr;	// processed image with coarser grid
+std::weak_ptr<unsigned char> ScaledProcImageIntensityPPtr;	// processed image with finer grid
 /// GUI
 int FilterIntensity = AL_DEFAULT_STRENGTH;
 int FilterScale = DEFAULT_HOR_REGIONS;
@@ -107,7 +107,7 @@ void CopyScaledSrcImage(unsigned char* TargetImage)
 {
 	if (TargetImage == nullptr)
 		return;
-	std::shared_ptr<unsigned char[]> ScaledSrcImage = ScaledSrcImagePtr.lock();
+	auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 	if (ScaledSrcImage == nullptr)
 		return;
 	memcpy(TargetImage, ScaledSrcImage.get(), ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE);
@@ -591,7 +591,7 @@ unsigned char* AllocateRGBImage(int ImageWidth, int ImageHeight)
 	unsigned char* AllocatedImage = nullptr;
 	try
 	{
-		AllocatedImage = (unsigned char *)malloc((ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING);
+		AllocatedImage = new unsigned char[(ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING];
 	}
 	catch (std::exception& e)
 	{
@@ -753,7 +753,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
 
 	const int SECURITY_PADDING = 4096;
-	std::shared_ptr<unsigned char[]> SrcImage;
+	std::shared_ptr<unsigned char> SrcImage;
 	RECT ClipRect = rect;
 	{
 		ScopedBitmapHeader pbBmHdr(hDib);
@@ -802,7 +802,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		LOG(INFO) << "Allocating source image (553)";
 #endif
 
-		SrcImage = std::make_shared<unsigned char[]>((ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING);
+		SrcImage = std::make_shared<unsigned char>(AllocateRGBImage(ImageWidth, ImageHeight), std::default_delete<unsigned char[]>());
 		if (SrcImage == nullptr)
 		{
 #ifdef ENABLE_LOGGING
@@ -823,7 +823,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #ifdef ENABLE_LOGGING
 	LOG(INFO) << "Allocating processed image (594)";
 #endif
-	std::shared_ptr<unsigned char[]> ProcImage(AllocateRGBImage(ImageWidth, ImageHeight));
+	std::shared_ptr<unsigned char> ProcImage(AllocateRGBImage(ImageWidth, ImageHeight), std::default_delete<unsigned char[]>());
 	if (ProcImage == nullptr)
 	{
 #ifdef ENABLE_LOGGING
@@ -853,36 +853,36 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 
 		ComputeScalingFactor();
 
-		auto ScaledSrcImage = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
+		auto ScaledSrcImage = std::make_shared<unsigned char>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight), std::default_delete<unsigned char[]>());
 		if (ScaledSrcImage == nullptr)
 			return false;
 		ScaledSrcImagePtr = ScaledSrcImage;
 
-		auto ScaledProcImage = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
+		auto ScaledProcImage = std::make_shared<unsigned char>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight), std::default_delete<unsigned char[]>());
 		if (ScaledProcImage == nullptr)
 			return false;
 		ScaledProcImagePtr = ScaledProcImage;
 
 		// allocate buffer for processed image with coarser grid
-		auto ScaledProcImageGridM = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
+		auto ScaledProcImageGridM = std::make_shared<unsigned char>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight), std::default_delete<unsigned char[]>());
 		if (ScaledProcImageGridM == nullptr)
 			return false;
 		ScaledProcImageGridMPtr = ScaledProcImageGridM;
 
 		// allocate buffer for processed image with finer grid
-		auto ScaledProcImageGridP = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
+		auto ScaledProcImageGridP = std::make_shared<unsigned char>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight), std::default_delete<unsigned char[]>());
 		if (ScaledProcImageGridP == nullptr)
 			return false;
 		ScaledProcImageGridPPtr = ScaledProcImageGridP;
 
 		// allocate buffer for processed image with lesser intensity
-		auto ScaledProcImageIntensityM = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
+		auto ScaledProcImageIntensityM = std::make_shared<unsigned char>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight), std::default_delete<unsigned char[]>());
 		if (ScaledProcImageIntensityM == nullptr)
 			return false;
 		ScaledProcImageIntensityMPtr = ScaledProcImageIntensityM;
 
 		// allocate buffer for processed image with higher intensity
-		auto ScaledProcImageIntensityP = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
+		auto ScaledProcImageIntensityP = std::make_shared<unsigned char>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight), std::default_delete<unsigned char[]>());
 		if (ScaledProcImageIntensityP == nullptr)
 			return false;
 		ScaledProcImageIntensityPPtr = ScaledProcImageIntensityP;
