@@ -39,6 +39,9 @@ const int ALTALUX_FILTER_ACTIVE_WAIT = 5;
 class CAltaLuxFilterFactory
 {
 public:
-	static CBaseAltaLuxFilter* CreateAltaLuxFilter(int Width, int Height, int HorSlices = DEFAULT_HOR_REGIONS, int VerSlices = DEFAULT_VERT_REGIONS);
-	static CBaseAltaLuxFilter* CreateSpecificAltaLuxFilter(int FilterType, int Width, int Height, int HorSlices = DEFAULT_HOR_REGIONS, int VerSlices = DEFAULT_VERT_REGIONS);
+	static CBaseAltaLuxFilter* CreateAltaLuxFilter(int Width, int Height, int HorSlices = DEFAULT_HOR_REGIONS,
+	                                               int VerSlices = DEFAULT_VERT_REGIONS);
+	static CBaseAltaLuxFilter* CreateSpecificAltaLuxFilter(int FilterType, int Width, int Height,
+	                                                       int HorSlices = DEFAULT_HOR_REGIONS,
+	                                                       int VerSlices = DEFAULT_VERT_REGIONS);
 };

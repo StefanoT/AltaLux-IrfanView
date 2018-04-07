@@ -29,10 +29,15 @@ A "contributor" is any person that distributes its contribution under this licen
 
 #include "CBaseAltaLuxFilter.h"
 
-class CParallelSplitLoopAltaLuxFilter : public CBaseAltaLuxFilter {
+class CParallelSplitLoopAltaLuxFilter : public CBaseAltaLuxFilter
+{
 public:
-	CParallelSplitLoopAltaLuxFilter(int Width, int Height, int HorSlices = DEFAULT_HOR_REGIONS, int VerSlices = DEFAULT_VERT_REGIONS) :
-		CBaseAltaLuxFilter(Width, Height, HorSlices, VerSlices) {}
+	CParallelSplitLoopAltaLuxFilter(int Width, int Height, int HorSlices = DEFAULT_HOR_REGIONS,
+	                                int VerSlices = DEFAULT_VERT_REGIONS) :
+		CBaseAltaLuxFilter(Width, Height, HorSlices, VerSlices)
+	{
+	}
+
 protected:
-	virtual int Run();
+	int Run() override;
 };

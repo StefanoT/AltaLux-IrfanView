@@ -45,96 +45,104 @@ A "contributor" is any person that distributes its contribution under this licen
 /// </remarks>
 int CParallelErrorAltaLuxFilter::Run()
 {
-	if (ClipLimit == 1.0) 
-		return AL_OK;	  //< is OK, immediately returns original image
+	if (ClipLimit == 1.0)
+		return AL_OK; //< is OK, immediately returns original image
 
-	PixelType *pImage = (PixelType *)ImageBuffer;
+	PixelType* pImage = (PixelType *)ImageBuffer;
 
 	/// pulMapArray is pointer to mappings
-	unsigned int *pulMapArray = new unsigned int[NumHorRegions * NumVertRegions * NUM_GRAY_LEVELS];
-	if (pulMapArray == 0) 
-		return AL_OUT_OF_MEMORY;	  //< not enough memory
+	unsigned int* pulMapArray = new unsigned int[NumHorRegions * NumVertRegions * NUM_GRAY_LEVELS];
+	if (pulMapArray == nullptr)
+		return AL_OUT_OF_MEMORY; //< not enough memory
 
 	/// region pixel count
-	unsigned int NumPixels = (unsigned int)RegionWidth * (unsigned int)RegionHeight;	//< region pixel count
+	unsigned int NumPixels = (unsigned int)RegionWidth * (unsigned int)RegionHeight; //< region pixel count
 
-	unsigned int ulClipLimit;		//< clip limit
-	if (ClipLimit > 0.0) 
+	unsigned int ulClipLimit; //< clip limit
+	if (ClipLimit > 0.0)
 	{
 		/// calculate actual cliplimit
-		ulClipLimit = (unsigned int) (ClipLimit * (RegionWidth * RegionHeight) / NUM_GRAY_LEVELS);
+		ulClipLimit = (unsigned int)(ClipLimit * (RegionWidth * RegionHeight) / NUM_GRAY_LEVELS);
 		ulClipLimit = (ulClipLimit < 1UL) ? 1UL : ulClipLimit;
 	}
-	else 
-		ulClipLimit = 1UL<<14;		  //< large value, do not clip (AHE)
+	else
+		ulClipLimit = 1UL << 14; //< large value, do not clip (AHE)
 
 	/// Interpolate greylevel mappings to get CLAHE image
-	concurrency::parallel_for((int)0, (int)(NumVertRegions + 1), [&](int uiY) 
+	concurrency::parallel_for((int)0, (int)(NumVertRegions + 1), [&](int uiY)
 	{
 		// first half
 		PixelType* pImPointer = pImage;
 		if (uiY > 0)
 			pImPointer += ((RegionHeight >> 1) + ((uiY - 1) * RegionHeight)) * OriginalImageWidth;
-		
+
 		if (uiY < NumVertRegions)
 		{
 			/// calculate greylevel mappings for each contextual region
-			for (unsigned int uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth) 
+			for (unsigned int uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth)
 			{
-				unsigned int *pHistogram = &pulMapArray[NUM_GRAY_LEVELS * (uiY * NumHorRegions + uiX)];
+				unsigned int* pHistogram = &pulMapArray[NUM_GRAY_LEVELS * (uiY * NumHorRegions + uiX)];
 				MakeHistogram(pImPointer, pHistogram);
 				ClipHistogram(pHistogram, ulClipLimit);
 				MapHistogram(pHistogram, NumPixels);
 			}
 		}
 		// second half
-		unsigned int uiSubX, uiSubY;	//< size of subimages
-		unsigned int uiXL, uiXR, uiYU, uiYB;	//< auxiliary variables interpolation routine
+		unsigned int uiSubX, uiSubY; //< size of subimages
+		unsigned int uiXL, uiXR, uiYU, uiYB; //< auxiliary variables interpolation routine
 
 		pImPointer = pImage;
 		if (uiY > 0)
 			pImPointer += ((RegionHeight >> 1) + ((uiY - 1) * RegionHeight)) * OriginalImageWidth;
 
-		if (uiY == 0) 
-		{	
+		if (uiY == 0)
+		{
 			/// special case: top row
-			uiSubY = RegionHeight >> 1;  
-			uiYU = 0; 
+			uiSubY = RegionHeight >> 1;
+			uiYU = 0;
 			uiYB = 0;
-		} else {
-			if (uiY == NumVertRegions) 
-			{				  
+		}
+		else
+		{
+			if (uiY == NumVertRegions)
+			{
 				/// special case: bottom row
-				uiSubY = (RegionHeight >> 1) + (OriginalImageHeight - ImageHeight);	
-				uiYU = NumVertRegions - 1;	 
+				uiSubY = (RegionHeight >> 1) + (OriginalImageHeight - ImageHeight);
+				uiYU = NumVertRegions - 1;
 				uiYB = uiYU;
-			} else {
+			}
+			else
+			{
 				/// default values
-				uiSubY = RegionHeight; 
-				uiYU = uiY - 1; 
+				uiSubY = RegionHeight;
+				uiYU = uiY - 1;
 				uiYB = uiY;
 			}
 		}
 
-		for (unsigned int uiX = 0; uiX <= NumHorRegions; uiX++) 
+		for (unsigned int uiX = 0; uiX <= NumHorRegions; uiX++)
 		{
-			if (uiX == 0) 
+			if (uiX == 0)
 			{
 				/// special case: left column
-				uiSubX = RegionWidth >> 1; 
-				uiXL = 0; 
+				uiSubX = RegionWidth >> 1;
+				uiXL = 0;
 				uiXR = 0;
-			} else {
-				if (uiX == NumHorRegions) 
+			}
+			else
+			{
+				if (uiX == NumHorRegions)
 				{
 					/// special case: right column
-					uiSubX = (RegionWidth >> 1) + (OriginalImageWidth - ImageWidth);  
-					uiXL = NumHorRegions - 1; 
+					uiSubX = (RegionWidth >> 1) + (OriginalImageWidth - ImageWidth);
+					uiXL = NumHorRegions - 1;
 					uiXR = uiXL;
-				} else {
+				}
+				else
+				{
 					/// default values
-					uiSubX = RegionWidth; 
-					uiXL = uiX - 1; 
+					uiSubX = RegionWidth;
+					uiXL = uiX - 1;
 					uiXR = uiX;
 				}
 			}
@@ -145,10 +153,10 @@ int CParallelErrorAltaLuxFilter::Run()
 
 			Interpolate(pImPointer, pulLU, pulRU, pulLB, pulRB, uiSubX, uiSubY);
 
-			pImPointer += uiSubX;	//< set pointer on next matrix
+			pImPointer += uiSubX; //< set pointer on next matrix
 		}
 	});
 
 	delete[] pulMapArray;
-	return AL_OK;			//< return status OK
+	return AL_OK; //< return status OK
 }

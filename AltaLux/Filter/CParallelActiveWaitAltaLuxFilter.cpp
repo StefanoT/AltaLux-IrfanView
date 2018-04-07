@@ -28,9 +28,6 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "CParallelActiveWaitAltaLuxFilter.h"
 
 #include <windows.h>
-#include <stdio.h>
-#include <math.h>
-#include <malloc.h>
 #include <memory>
 #include <ppl.h>
 
@@ -44,103 +41,112 @@ A "contributor" is any person that distributes its contribution under this licen
 /// </remarks>
 int CParallelActiveWaitAltaLuxFilter::Run()
 {
-	if (ClipLimit == 1.0) 
-		return AL_OK;	  //< is OK, immediately returns original image
+	if (ClipLimit == 1.0)
+		return AL_OK; //< is OK, immediately returns original image
 
-	PixelType *pImage = (PixelType *)ImageBuffer;
+	auto pImage = static_cast<PixelType *>(ImageBuffer);
 
 	/// pulMapArray is pointer to mappings
-	unsigned int *pulMapArray = new unsigned int[NumHorRegions * NumVertRegions * NUM_GRAY_LEVELS];
-	if (pulMapArray == 0) 
-		return AL_OUT_OF_MEMORY;	  //< not enough memory
+	auto pulMapArray = std::make_unique<unsigned int[]>(NumHorRegions * NumVertRegions * NUM_GRAY_LEVELS);
+	if (pulMapArray == nullptr)
+		return AL_OUT_OF_MEMORY; //< not enough memory
 
 	/// region pixel count
-	unsigned int NumPixels = (unsigned int)RegionWidth * (unsigned int)RegionHeight;	//< region pixel count
+	auto NumPixels = static_cast<unsigned int>(RegionWidth) * static_cast<unsigned int>(RegionHeight);
+	//< region pixel count
 
-	unsigned int ulClipLimit;		//< clip limit
-	if (ClipLimit > 0.0) 
+	unsigned int ulClipLimit; //< clip limit
+	if (ClipLimit > 0.0)
 	{
 		/// calculate actual cliplimit
-		ulClipLimit = (unsigned int) (ClipLimit * (RegionWidth * RegionHeight) / NUM_GRAY_LEVELS);
+		ulClipLimit = static_cast<unsigned int>(ClipLimit * (RegionWidth * RegionHeight) / NUM_GRAY_LEVELS);
 		ulClipLimit = (ulClipLimit < 1UL) ? 1UL : ulClipLimit;
 	}
-	else 
-		ulClipLimit = 1UL<<14;		  //< large value, do not clip (AHE)
+	else
+		ulClipLimit = 1UL << 14; //< large value, do not clip (AHE)
 
 	/// Interpolate greylevel mappings to get CLAHE image
 	// create events for signaling that the first phase is completed
-	__declspec(align(32)) volatile LONG FirstPhaseCompleted[MAX_VERT_REGIONS+1];
-	for (int i = 0; i <= NumVertRegions; i++)
+	__declspec(align(32)) volatile LONG FirstPhaseCompleted[MAX_VERT_REGIONS + 1];
+	for (auto i = 0; i <= NumVertRegions; i++)
 		InterlockedExchange((volatile LONG*)&FirstPhaseCompleted[i], -1);
-	
-	concurrency::parallel_for((LONG)0, (LONG)(NumVertRegions + 1), [&](LONG uiY) 
+
+	concurrency::parallel_for((LONG)0, (LONG)(NumVertRegions + 1), [&](LONG uiY)
 	{
 		// first half
 		PixelType* pImPointer = pImage;
 		if (uiY > 0)
 			pImPointer += ((RegionHeight >> 1) + ((uiY - 1) * RegionHeight)) * OriginalImageWidth;
-		
+
 		if (uiY < NumVertRegions)
 		{
 			/// calculate greylevel mappings for each contextual region
-			for (LONG uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth) 
+			for (LONG uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth)
 			{
-				unsigned int *pHistogram = &pulMapArray[NUM_GRAY_LEVELS * (uiY * NumHorRegions + uiX)];
+				unsigned int* pHistogram = &pulMapArray[NUM_GRAY_LEVELS * (uiY * NumHorRegions + uiX)];
 				MakeHistogram(pImPointer, pHistogram);
 				ClipHistogram(pHistogram, ulClipLimit);
 				MapHistogram(pHistogram, NumPixels);
-				InterlockedExchange((volatile LONG*) &FirstPhaseCompleted[uiY], uiX);				
+				InterlockedExchange((volatile LONG*)&FirstPhaseCompleted[uiY], uiX);
 			}
 		}
 
 		// second half
-		unsigned int uiSubX, uiSubY;	//< size of subimages
-		unsigned int uiXL, uiXR, uiYU, uiYB;	//< auxiliary variables interpolation routine
+		unsigned int uiSubX, uiSubY; //< size of subimages
+		unsigned int uiXL, uiXR, uiYU, uiYB; //< auxiliary variables interpolation routine
 
 		pImPointer = pImage;
 		if (uiY > 0)
 			pImPointer += ((RegionHeight >> 1) + ((uiY - 1) * RegionHeight)) * OriginalImageWidth;
 
-		if (uiY == 0) 
-		{	
+		if (uiY == 0)
+		{
 			/// special case: top row
-			uiSubY = RegionHeight >> 1;  
-			uiYU = 0; 
+			uiSubY = RegionHeight >> 1;
+			uiYU = 0;
 			uiYB = 0;
-		} else {
-			if (uiY == NumVertRegions) 
-			{				  
+		}
+		else
+		{
+			if (uiY == NumVertRegions)
+			{
 				/// special case: bottom row
-				uiSubY = (RegionHeight >> 1) + (OriginalImageHeight - ImageHeight);	
-				uiYU = NumVertRegions - 1;	 
+				uiSubY = (RegionHeight >> 1) + (OriginalImageHeight - ImageHeight);
+				uiYU = NumVertRegions - 1;
 				uiYB = uiYU;
-			} else {
+			}
+			else
+			{
 				/// default values
-				uiSubY = RegionHeight; 
-				uiYU = uiY - 1; 
+				uiSubY = RegionHeight;
+				uiYU = uiY - 1;
 				uiYB = uiY;
 			}
 		}
 
-		for (LONG uiX = 0; uiX <= NumHorRegions; uiX++) 
+		for (LONG uiX = 0; uiX <= NumHorRegions; uiX++)
 		{
-			if (uiX == 0) 
+			if (uiX == 0)
 			{
 				/// special case: left column
-				uiSubX = RegionWidth >> 1; 
-				uiXL = 0; 
+				uiSubX = RegionWidth >> 1;
+				uiXL = 0;
 				uiXR = 0;
-			} else {
-				if (uiX == NumHorRegions) 
+			}
+			else
+			{
+				if (uiX == NumHorRegions)
 				{
 					/// special case: right column
-					uiSubX = (RegionWidth >> 1) + (OriginalImageWidth - ImageWidth);  
-					uiXL = NumHorRegions - 1; 
+					uiSubX = (RegionWidth >> 1) + (OriginalImageWidth - ImageWidth);
+					uiXL = NumHorRegions - 1;
 					uiXR = uiXL;
-				} else {
+				}
+				else
+				{
 					/// default values
-					uiSubX = RegionWidth; 
-					uiXL = uiX - 1; 
+					uiSubX = RegionWidth;
+					uiXL = uiX - 1;
 					uiXR = uiX;
 				}
 			}
@@ -149,24 +155,23 @@ int CParallelActiveWaitAltaLuxFilter::Run()
 				while (true)
 				{
 					// active waiting until processing of needed blocks on previous line has completed
-					LONG statePrevLine = InterlockedExchangeAdd((volatile LONG*)&FirstPhaseCompleted[uiY - 1], 0);
-					if ((statePrevLine > -1)  && ((statePrevLine >= uiXR) || (statePrevLine == (NumHorRegions - 1))))
-						break;					
+					auto statePrevLine = InterlockedExchangeAdd((volatile LONG*)&FirstPhaseCompleted[uiY - 1], 0);
+					if ((statePrevLine > -1) && ((statePrevLine >= uiXR) || (statePrevLine == (NumHorRegions - 1))))
+						break;
 					Sleep(1);
 				}
 			}
 
-			unsigned int* pulLU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXL)];
-			unsigned int* pulRU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXR)];
-			unsigned int* pulLB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXL)];
-			unsigned int* pulRB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXR)];
+			auto pulLU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXL)];
+			auto pulRU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXR)];
+			auto pulLB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXL)];
+			auto pulRB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXR)];
 
 			Interpolate(pImPointer, pulLU, pulRU, pulLB, pulRB, uiSubX, uiSubY);
 
-			pImPointer += uiSubX;	//< set pointer on next matrix
+			pImPointer += uiSubX; //< set pointer on next matrix
 		}
 	});
 
-	delete[] pulMapArray;
-	return AL_OK;			//< return status OK
+	return AL_OK; //< return status OK
 }

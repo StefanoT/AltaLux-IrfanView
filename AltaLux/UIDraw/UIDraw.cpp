@@ -26,14 +26,14 @@ A "contributor" is any person that distributes its contribution under this licen
 */
 
 #include "UIDraw.h"
-#include <stdio.h>
+#include <cstdio>
 
-int RectWidth(RECT &RectToMeasure)
+int RectWidth(RECT& RectToMeasure)
 {
 	return RectToMeasure.right - RectToMeasure.left;
 }
 
-int RectHeight(RECT &RectToMeasure)
+int RectHeight(RECT& RectToMeasure)
 {
 	return RectToMeasure.bottom - RectToMeasure.top;
 }
@@ -45,22 +45,22 @@ int RectHeight(RECT &RectToMeasure)
 /// <param name="QuadRect"></param>
 void DrawScaleQuad(HDC hdc, RECT QuadRect)
 {
-	int QuadWidth = (QuadRect.right - QuadRect.left) / 8;
-	int QuadHeight = (QuadRect.bottom - QuadRect.top) / 8;
+	const int QuadWidth = (QuadRect.right - QuadRect.left) / 8;
+	const int QuadHeight = (QuadRect.bottom - QuadRect.top) / 8;
 	HPEN hPen = CreatePen(PS_SOLID, 1, RGB(255, 0, 0));
 	SelectObject(hdc, hPen);
 	SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-	MoveToEx(hdc, QuadRect.left, QuadRect.top, NULL);
+	MoveToEx(hdc, QuadRect.left, QuadRect.top, nullptr);
 	LineTo(hdc, QuadRect.left + QuadWidth, QuadRect.top);
 
-	MoveToEx(hdc, QuadRect.left, QuadRect.top, NULL);
+	MoveToEx(hdc, QuadRect.left, QuadRect.top, nullptr);
 	LineTo(hdc, QuadRect.left, QuadRect.top + QuadHeight);
 
-	MoveToEx(hdc, QuadRect.right, QuadRect.bottom, NULL);
+	MoveToEx(hdc, QuadRect.right, QuadRect.bottom, nullptr);
 	LineTo(hdc, QuadRect.right - QuadWidth, QuadRect.bottom);
 
-	MoveToEx(hdc, QuadRect.right, QuadRect.bottom, NULL);
+	MoveToEx(hdc, QuadRect.right, QuadRect.bottom, nullptr);
 	LineTo(hdc, QuadRect.right, QuadRect.bottom - QuadHeight);
 
 	DeleteObject(hPen);
@@ -74,10 +74,10 @@ void DrawScaleQuad(HDC hdc, RECT QuadRect)
 /// <param name="FilterScale"></param>
 void DrawScaleGrid(HDC hdc, RECT rectTo, int FilterScale)
 {
-	int BlitHeight = rectTo.bottom - rectTo.top;
-	int BlitWidth = rectTo.right - rectTo.left;
-	for (int y = 0; y < FilterScale; y++)
-		for (int x = 0; x < FilterScale; x++)
+	const int BlitHeight = rectTo.bottom - rectTo.top;
+	const int BlitWidth = rectTo.right - rectTo.left;
+	for (auto y = 0; y < FilterScale; y++)
+		for (auto x = 0; x < FilterScale; x++)
 		{
 			RECT QuadRect;
 			QuadRect.left = rectTo.left + ((x * BlitWidth) / FilterScale);
@@ -99,17 +99,18 @@ void DrawScaleGrid(HDC hdc, RECT rectTo, int FilterScale)
 /// <param name="RectPosition"></param>
 /// <param name="ShowGrid">if true, overlay a grid showing the FilterScale</param>
 /// <param name="FilterScale"></param>
-void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int ImageWidth, int ImageHeight, RECT RectPosition, bool ShowGrid, int FilterScale)
+void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
+                     RECT RectPosition, bool ShowGrid, int FilterScale)
 {
 	RECT rectTo;
 	rectTo.left = rectTo.top = 0;
-	float ScalingX = (float)ImageWidth / RectWidth(RectPosition);
-	float ScalingY = (float)ImageHeight / RectHeight(RectPosition);
-	float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
-	rectTo.right = (int)(ImageWidth / MaxScaling);
-	rectTo.bottom = (int)(ImageHeight / MaxScaling);
-	int VerOffset = max(0, (RectWidth(RectPosition) - rectTo.right)) >> 1;
-	int HorOffset = max(0, (RectHeight(RectPosition) - rectTo.bottom)) >> 1;
+	float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
+	float ScalingY = static_cast<float>(ImageHeight) / RectHeight(RectPosition);
+	const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
+	rectTo.right = static_cast<int>(ImageWidth / MaxScaling);
+	rectTo.bottom = static_cast<int>(ImageHeight / MaxScaling);
+	const int VerOffset = max(0, (RectWidth(RectPosition) - rectTo.right)) >> 1;
+	const int HorOffset = max(0, (RectHeight(RectPosition) - rectTo.bottom)) >> 1;
 	OffsetRect(&rectTo, VerOffset, HorOffset);
 	OffsetRect(&rectTo, RectPosition.left, RectPosition.top);
 
@@ -118,7 +119,8 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int 
 	memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
 	ImageInfo.biWidth = ImageWidth & ~7;
 	ImageInfo.biHeight = ImageHeight;
-	StretchDIBits(hdc, rectTo.left, rectTo.top, rectTo.right - rectTo.left, rectTo.bottom - rectTo.top, 0, 0, ImageWidth, ImageHeight, ImageToDraw, (BITMAPINFO *)&ImageInfo, DIB_RGB_COLORS, SRCCOPY);
+	StretchDIBits(hdc, rectTo.left, rectTo.top, rectTo.right - rectTo.left, rectTo.bottom - rectTo.top, 0, 0, ImageWidth,
+	              ImageHeight, ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
 
 	if (ShowGrid)
 	{
@@ -127,24 +129,25 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int 
 	}
 }
 
-void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int ImageWidth, int ImageHeight, int FilterScale)
+void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
+               int FilterScale)
 {
 	RECT rectClient;
 	GetClientRect(hwnd, &rectClient);
 	rectClient.right -= 100;
 	RECT rectTo;
 	rectTo.left = rectTo.top = 0;
-	float ScalingX = (float)ImageWidth / (rectClient.right - rectClient.left);
-	float ScalingY = (float)ImageHeight / (rectClient.bottom - rectClient.top);
-	float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
-	rectTo.right = (int)(ImageWidth / MaxScaling);
-	rectTo.bottom = (int)(ImageHeight / MaxScaling);
-	int VerOffset = max(0, ((rectClient.right  - rectClient.left) - rectTo.right)) >> 1;
-	int HorOffset = max(0, ((rectClient.bottom - rectClient.top) - rectTo.bottom)) >> 1;
+	float ScalingX = static_cast<float>(ImageWidth) / (rectClient.right - rectClient.left);
+	float ScalingY = static_cast<float>(ImageHeight) / (rectClient.bottom - rectClient.top);
+	const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
+	rectTo.right = static_cast<int>(ImageWidth / MaxScaling);
+	rectTo.bottom = static_cast<int>(ImageHeight / MaxScaling);
+	const int VerOffset = max(0, ((rectClient.right - rectClient.left) - rectTo.right)) >> 1;
+	const int HorOffset = max(0, ((rectClient.bottom - rectClient.top) - rectTo.bottom)) >> 1;
 	OffsetRect(&rectTo, VerOffset, HorOffset);
 
 	PAINTSTRUCT ps;
-	HDC hdc = BeginPaint(hwnd,&ps);
+	HDC hdc = BeginPaint(hwnd, &ps);
 
 	HRGN bgRgn = CreateRectRgnIndirect(&rectClient);
 	HBRUSH hBrush = CreateSolidBrush(RGB(0,0,0));
@@ -159,15 +162,18 @@ void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int Imag
 		SetBkMode(ps.hdc, TRANSPARENT);
 		//paint text
 		DrawTextA(ps.hdc, CopyMsg, strlen(CopyMsg), &rectClient, DT_BOTTOM | DT_SINGLELINE | DT_CENTER);
-	} else {
+	}
+	else
+	{
 		// do not draw any text as it would overlap image
 	}
 
 	SetStretchBltMode(hdc, COLORONCOLOR);
-	StretchDIBits(hdc, rectTo.left, rectTo.top, rectTo.right - rectTo.left, rectTo.bottom - rectTo.top, 0, 0, ImageWidth, ImageHeight, ImageToDraw, (BITMAPINFO *)pBmHdr, DIB_RGB_COLORS, SRCCOPY);
+	StretchDIBits(hdc, rectTo.left, rectTo.top, rectTo.right - rectTo.left, rectTo.bottom - rectTo.top, 0, 0, ImageWidth,
+	              ImageHeight, ImageToDraw, reinterpret_cast<BITMAPINFO *>(pBmHdr), DIB_RGB_COLORS, SRCCOPY);
 
 	/// draw scale
 	DrawScaleGrid(hdc, rectTo, FilterScale);
-	
-	EndPaint(hwnd,&ps);
+
+	EndPaint(hwnd, &ps);
 }

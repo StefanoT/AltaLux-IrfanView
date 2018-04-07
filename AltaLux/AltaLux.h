@@ -57,9 +57,10 @@ Params:
 							- regID => dummy, just in case we arrange a special called-ID, so 
 							only IrfanView can call the DLL
 */
-extern "C"
-{
-	ALTALUX_API bool __cdecl StartEffects2(HANDLE hDib,HWND hwnd,int filter,RECT rect,int param1,int param2,char *iniFile,char *szAppName,int regID);
-	ALTALUX_API bool __cdecl AltaLux_Effects(HANDLE hDib,HWND hwnd,int filter,RECT rect,int param1,int param2,char *iniFile,char *szAppName,int regID);
-	ALTALUX_API int __cdecl GetPlugInInfo(char *versionString,char *fileFormats);
+extern "C" {
+ALTALUX_API bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2,
+                                       char* iniFile, char* szAppName, int regID);
+ALTALUX_API bool __cdecl AltaLux_Effects(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2,
+                                         char* iniFile, char* szAppName, int regID);
+ALTALUX_API int __cdecl GetPlugInInfo(char* versionString, char* fileFormats);
 }

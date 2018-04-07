@@ -35,6 +35,10 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "CParallelEventAltaLuxFilter.h"
 #include "CParallelActiveWaitAltaLuxFilter.h"
 
+#ifdef ENABLE_LOGGING
+#include "..\Log\easylogging++.h"
+#endif // ENABLE_LOGGING
+
 /// <summary>
 /// create an instance of the AltaLux filter using the default strategy
 /// </summary>
@@ -57,28 +61,39 @@ CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateAltaLuxFilter(int Width, int He
 /// <param name="HorSlices"></param>
 /// <param name="VerSlices"></param>
 /// <returns>Instance of AltaLux filter</returns>
-CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateSpecificAltaLuxFilter(int FilterType, int Width, int Height, int HorSlices, int VerSlices)
+CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateSpecificAltaLuxFilter(int FilterType, int Width, int Height,
+	int HorSlices, int VerSlices)
 {
-	CBaseAltaLuxFilter *NewFilterInstance = nullptr;
+	CBaseAltaLuxFilter* NewFilterInstance = nullptr;
 	try
 	{
 		switch (FilterType)
 		{
-			case ALTALUX_FILTER_SERIAL: NewFilterInstance = new CSerialAltaLuxFilter(Width, Height, HorSlices, VerSlices);
-				break;
-			case ALTALUX_FILTER_DEFAULT:
-			case ALTALUX_FILTER_PARALLEL_SPLIT_LOOP: NewFilterInstance = new CParallelSplitLoopAltaLuxFilter(Width, Height, HorSlices, VerSlices);
-				break;
-			case ALTALUX_FILTER_PARALLEL_ERROR: NewFilterInstance = new CParallelErrorAltaLuxFilter(Width, Height, HorSlices, VerSlices);
-				break;
-			case ALTALUX_FILTER_PARALLEL_EVENT: NewFilterInstance = new CParallelEventAltaLuxFilter(Width, Height, HorSlices, VerSlices);
-				break;
-			case ALTALUX_FILTER_ACTIVE_WAIT: NewFilterInstance = new CParallelActiveWaitAltaLuxFilter(Width, Height, HorSlices, VerSlices);
-				break;
+		case ALTALUX_FILTER_SERIAL: NewFilterInstance = new CSerialAltaLuxFilter(Width, Height, HorSlices, VerSlices);
+			break;
+		case ALTALUX_FILTER_PARALLEL_ERROR: NewFilterInstance = new CParallelErrorAltaLuxFilter(
+			Width, Height, HorSlices, VerSlices);
+			break;
+		case ALTALUX_FILTER_PARALLEL_EVENT: NewFilterInstance = new CParallelEventAltaLuxFilter(
+			Width, Height, HorSlices, VerSlices);
+			break;
+		case ALTALUX_FILTER_ACTIVE_WAIT: NewFilterInstance = new CParallelActiveWaitAltaLuxFilter(
+			Width, Height, HorSlices, VerSlices);
+			break;
+		case ALTALUX_FILTER_DEFAULT:
+		case ALTALUX_FILTER_PARALLEL_SPLIT_LOOP:
+		default:
+			NewFilterInstance = new CParallelSplitLoopAltaLuxFilter(
+				Width, Height, HorSlices, VerSlices);
+			break;
 		}
 	}
-	catch (std::exception& e){
+	catch (std::exception& e)
+	{
+#ifdef ENABLE_LOGGING
+		LOG(ERROR) << "Exception running filter instance (114): " << e.what();
+#endif
 		NewFilterInstance = nullptr;
-	}
+}
 	return NewFilterInstance;
 }

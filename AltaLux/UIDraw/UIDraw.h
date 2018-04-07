@@ -31,8 +31,10 @@ A "contributor" is any person that distributes its contribution under this licen
 
 void DrawScaleQuad(HDC hdc, RECT QuadRect);
 void DrawScaleGrid(HDC hdc, RECT rectTo, int FilterScale);
-void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int ImageWidth, int ImageHeight, RECT RectPosition, bool ShowGrid, int FilterScale);
-void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void *ImageToDraw, int ImageWidth, int ImageHeight, int FilterScale);
+void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
+                     RECT RectPosition, bool ShowGrid, int FilterScale);
+void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
+               int FilterScale);
 
-int RectWidth(RECT &RectToMeasure);
-int RectHeight(RECT &RectToMeasure);
+int RectWidth(RECT& RectToMeasure);
+int RectHeight(RECT& RectToMeasure);
