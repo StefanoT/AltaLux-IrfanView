@@ -59,7 +59,6 @@ const int RGB_PIXEL_SIZE = 3;
 
 HINSTANCE hDll;
 BITMAPINFOHEADER BmHdrCopy;
-unsigned char* ProcImage = nullptr;
 int ImageWidth;
 int ImageHeight;
 int FullImageWidth;
@@ -69,12 +68,14 @@ bool SkipProcessing;
 int ScaledImageWidth;
 int ScaledImageHeight;
 int ScalingFactor = 1;
-unsigned char* ScaledSrcImage = nullptr; // down-sampled source image
-unsigned char* ScaledProcImage = nullptr; // processed image
-unsigned char* ScaledProcImageGridM = nullptr; // processed image with lesser intensity
-unsigned char* ScaledProcImageGridP = nullptr; // processed image with higher intensity
-unsigned char* ScaledProcImageIntensityM = nullptr; // processed image with coarser grid
-unsigned char* ScaledProcImageIntensityP = nullptr; // processed image with finer grid
+std::weak_ptr<unsigned char[]> SrcImagePtr;				// source image
+std::weak_ptr<unsigned char[]> ProcImagePtr;			// processed image
+std::weak_ptr<unsigned char[]> ScaledSrcImagePtr;		// down-sampled source image
+std::weak_ptr<unsigned char[]> ScaledProcImagePtr;		// processed image
+std::weak_ptr<unsigned char[]> ScaledProcImageGridMPtr;	// processed image with lesser intensity
+std::weak_ptr<unsigned char[]> ScaledProcImageGridPPtr;	// processed image with higher intensity
+std::weak_ptr<unsigned char[]> ScaledProcImageIntensityMPtr;	// processed image with coarser grid
+std::weak_ptr<unsigned char[]> ScaledProcImageIntensityPPtr;	// processed image with finer grid
 /// GUI
 int FilterIntensity = AL_DEFAULT_STRENGTH;
 int FilterScale = DEFAULT_HOR_REGIONS;
@@ -106,10 +107,10 @@ void CopyScaledSrcImage(unsigned char* TargetImage)
 {
 	if (TargetImage == nullptr)
 		return;
+	std::shared_ptr<unsigned char[]> ScaledSrcImage = ScaledSrcImagePtr.lock();
 	if (ScaledSrcImage == nullptr)
 		return;
-
-	memcpy(TargetImage, ScaledSrcImage, ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE);
+	memcpy(TargetImage, ScaledSrcImage.get(), ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE);
 }
 
 void DoProcessing()
@@ -119,11 +120,16 @@ void DoProcessing()
 #endif
 
 	CBaseAltaLuxFilter* AltaLuxFilter = nullptr;
+	bool IsRescalingEnabled = false;
 	try
 	{
+		auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 		if (ScaledSrcImage != nullptr)
+		{
 			AltaLuxFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ScaledImageWidth, ScaledImageHeight, FilterScale,
-			                                                           FilterScale);
+				FilterScale);
+			IsRescalingEnabled = true;
+		}
 		else
 			AltaLuxFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, FilterScale, FilterScale);
 	}
@@ -144,59 +150,71 @@ void DoProcessing()
 		TIMED_SCOPE(timerBlkObj, "Filter processing");
 #endif
 		std::unique_ptr<CBaseAltaLuxFilter> AltaLuxFilterPtr(AltaLuxFilter);
-		if (ScaledSrcImage != nullptr)
+		if (IsRescalingEnabled)
 		{
 			// rescaling is enabled, so preview is computed on the smaller resampled image
-			CopyScaledSrcImage(ScaledProcImage);
-			AltaLuxFilterPtr->SetStrength(FilterIntensity);
-			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImage));
-#ifdef ENABLE_LOGGING
-			PERFORMANCE_CHECKPOINT(timerBlkObj);
-#endif
+			auto ScaledProcImage = ScaledProcImagePtr.lock();
+			if (ScaledProcImage != nullptr)
+			{
+				CopyScaledSrcImage(ScaledProcImage.get());
+				AltaLuxFilterPtr->SetStrength(FilterIntensity);
+				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImage.get()));
+			}
+			// preview intensity changes
 			const int STRENGTH_DELTA = 15;
 
 			// preview with lesser intensity
-			CopyScaledSrcImage(ScaledProcImageIntensityM);
-			AltaLuxFilterPtr->SetStrength(max(FilterIntensity - STRENGTH_DELTA, AL_MIN_STRENGTH));
-			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageIntensityM));
-#ifdef ENABLE_LOGGING
-			PERFORMANCE_CHECKPOINT(timerBlkObj);
-#endif
+			auto ScaledProcImageIntensityM = ScaledProcImageIntensityMPtr.lock();
+			if (ScaledProcImageIntensityM != nullptr)
+			{
+				CopyScaledSrcImage(ScaledProcImageIntensityM.get());
+				AltaLuxFilterPtr->SetStrength(max(FilterIntensity - STRENGTH_DELTA, AL_MIN_STRENGTH));
+				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageIntensityM.get()));
+			}
 
 			// preview with higher intensity
-			CopyScaledSrcImage(ScaledProcImageIntensityP);
-			AltaLuxFilterPtr->SetStrength(min(FilterIntensity + STRENGTH_DELTA, AL_MAX_STRENGTH));
-			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageIntensityP));
-#ifdef ENABLE_LOGGING
-			PERFORMANCE_CHECKPOINT(timerBlkObj);
-#endif
+			auto ScaledProcImageIntensityP = ScaledProcImageIntensityPPtr.lock();
+			if (ScaledProcImageIntensityP != nullptr)
+			{
+				CopyScaledSrcImage(ScaledProcImageIntensityP.get());
+				AltaLuxFilterPtr->SetStrength(min(FilterIntensity + STRENGTH_DELTA, AL_MAX_STRENGTH));
+				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageIntensityP.get()));
+			}
 
+			// preview with grid changes
 			const int SLICE_DELTA = 2;
 
 			// preview with coarser grid
-			CopyScaledSrcImage(ScaledProcImageGridM);
-			AltaLuxFilterPtr->SetSlices(
-				max(FilterScale - SLICE_DELTA, MIN_HOR_REGIONS), max(FilterScale - SLICE_DELTA, MIN_VERT_REGIONS));
-			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageGridM));
-#ifdef ENABLE_LOGGING
-			PERFORMANCE_CHECKPOINT(timerBlkObj);
-#endif
+			auto ScaledProcImageGridM = ScaledProcImageGridMPtr.lock();
+			if (ScaledProcImageGridM != nullptr)
+			{
+				CopyScaledSrcImage(ScaledProcImageGridM.get());
+				AltaLuxFilterPtr->SetSlices(
+					max(FilterScale - SLICE_DELTA, MIN_HOR_REGIONS), max(FilterScale - SLICE_DELTA, MIN_VERT_REGIONS));
+				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageGridM.get()));
+			}
 
 			// preview with finer grid
-			CopyScaledSrcImage(ScaledProcImageGridP);
-			AltaLuxFilterPtr->SetSlices(
-				min(FilterScale + SLICE_DELTA, MAX_HOR_REGIONS), min(FilterScale + SLICE_DELTA, MAX_VERT_REGIONS));
-			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageGridP));
-#ifdef ENABLE_LOGGING
-			PERFORMANCE_CHECKPOINT(timerBlkObj);
-#endif
+			auto ScaledProcImageGridP = ScaledProcImageGridPPtr.lock();
+			if (ScaledProcImageGridP != nullptr)
+			{
+				CopyScaledSrcImage(ScaledProcImageGridP.get());
+				AltaLuxFilterPtr->SetSlices(
+					min(FilterScale + SLICE_DELTA, MAX_HOR_REGIONS), min(FilterScale + SLICE_DELTA, MAX_VERT_REGIONS));
+				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageGridP.get()));
+			}
 		}
 		else
 		{
 			// full-scale view only
-			memcpy(ProcImage, SrcImageUniquePtr.get(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
-			AltaLuxFilterPtr->SetStrength(FilterIntensity);
-			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ProcImage));
+			auto SrcImage = SrcImagePtr.lock();
+			auto ProcImage = ProcImagePtr.lock();
+			if ((SrcImage != nullptr) && (ProcImage != nullptr))
+			{
+				memcpy(ProcImage.get(), SrcImage.get(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
+				AltaLuxFilterPtr->SetStrength(FilterIntensity);
+				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ProcImage.get()));
+			}
 		}
 	}
 	catch (std::exception& e)
@@ -320,58 +338,86 @@ void HandlePaintMessage(HWND hwnd)
 			int SavedFilterScale = FilterScale;
 
 			// draw original image
-			RECT OriginalImageRect = rectClient;
-			ScaleRect(OriginalImageRect, 31);
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledSrcImage, ScaledImageWidth, ScaledImageHeight, OriginalImageRect, false,
-			                FilterScale);
+			auto ScaledSrcImage = SrcImagePtr.lock();
+			if (ScaledSrcImage != nullptr)
+			{
+				RECT OriginalImageRect = rectClient;
+				ScaleRect(OriginalImageRect, 31);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledSrcImage.get(), ScaledImageWidth, ScaledImageHeight, OriginalImageRect, false,
+					FilterScale);
+			}
 
 			// draw processed image with lesser intensity
-			RECT IntensityMImageRect = rectClient;
-			ScaleRect(IntensityMImageRect, 31);
-			OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM, ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
-			                false, FilterScale);
+			auto ScaledProcImageIntensityM = ScaledProcImageIntensityMPtr.lock();
+			if (ScaledProcImageIntensityM != nullptr)
+			{
+				RECT IntensityMImageRect = rectClient;
+				ScaleRect(IntensityMImageRect, 31);
+				OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM.get(), ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
+					false, FilterScale);
+			}
 
 			// draw processed image with higher intensity
-			RECT IntensityPImageRect = rectClient;
-			ScaleRect(IntensityPImageRect, 31);
-			OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)) / 2,
-			           (RectHeight(rectClient) - RectHeight(IntensityPImageRect)));
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP, ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
-			                false, FilterScale);
+			auto ScaledProcImageIntensityP = ScaledProcImageIntensityPPtr.lock();
+			if (ScaledProcImageIntensityP != nullptr)
+			{
+				RECT IntensityPImageRect = rectClient;
+				ScaleRect(IntensityPImageRect, 31);
+				OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)) / 2,
+					(RectHeight(rectClient) - RectHeight(IntensityPImageRect)));
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP.get(), ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
+					false, FilterScale);
+			}
 
 			// draw processed image with coarser grid
-			RECT GridMImageRect = rectClient;
-			ScaleRect(GridMImageRect, 31);
-			FilterScale = max(SavedFilterScale - 2, MIN_HOR_REGIONS);
-			OffsetRect(&GridMImageRect, 0, (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM, ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
-			                FilterScale);
+			auto ScaledProcImageGridM = ScaledProcImageGridMPtr.lock();
+			if (ScaledProcImageGridM != nullptr)
+			{
+				RECT GridMImageRect = rectClient;
+				ScaleRect(GridMImageRect, 31);
+				FilterScale = max(SavedFilterScale - 2, MIN_HOR_REGIONS);
+				OffsetRect(&GridMImageRect, 0, (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM.get(), ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
+					FilterScale);
+			}
 
 			// draw processed image with finer grid
-			RECT GridPImageRect = rectClient;
-			ScaleRect(GridPImageRect, 31);
-			FilterScale = min(SavedFilterScale + 2, MAX_HOR_REGIONS);
-			OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)),
-			           (RectHeight(rectClient) - RectHeight(GridPImageRect)) / 2);
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP, ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
-			                FilterScale);
+			auto ScaledProcImageGridP = ScaledProcImageGridPPtr.lock();
+			if (ScaledProcImageGridP != nullptr)
+			{
+				RECT GridPImageRect = rectClient;
+				ScaleRect(GridPImageRect, 31);
+				FilterScale = min(SavedFilterScale + 2, MAX_HOR_REGIONS);
+				OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)),
+					(RectHeight(rectClient) - RectHeight(GridPImageRect)) / 2);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP.get(), ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
+					FilterScale);
+			}
 
 			FilterScale = SavedFilterScale;
 
 			// draw processed image
-			RECT CentralImageRect = rectClient;
-			ScaleRect(CentralImageRect, 55);
-			OffsetRect(&CentralImageRect, (RectWidth(rectClient) - RectWidth(CentralImageRect)) / 2,
-			           (RectHeight(rectClient) - RectHeight(CentralImageRect)) / 2);
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage, ScaledImageWidth, ScaledImageHeight, CentralImageRect, true,
-			                FilterScale);
+			auto ScaledProcImage = ScaledProcImagePtr.lock();
+			if (ScaledProcImage != nullptr)
+			{
+				RECT CentralImageRect = rectClient;
+				ScaleRect(CentralImageRect, 55);
+				OffsetRect(&CentralImageRect, (RectWidth(rectClient) - RectWidth(CentralImageRect)) / 2,
+					(RectHeight(rectClient) - RectHeight(CentralImageRect)) / 2);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get(), ScaledImageWidth, ScaledImageHeight, CentralImageRect, true,
+					FilterScale);
+			}
 		}
 		else
 		{
-			// draw processed image only
-			DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage, ScaledImageWidth, ScaledImageHeight, rectClient, true,
-			                FilterScale);
+			auto ScaledProcImage = ScaledProcImagePtr.lock();
+			if (ScaledProcImage != nullptr)
+			{
+				// draw processed image only
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get(), ScaledImageWidth, ScaledImageHeight, rectClient, true,
+					FilterScale);
+			}
 		}
 	}
 	catch (std::exception& e)
@@ -707,7 +753,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
 
 	const int SECURITY_PADDING = 4096;
-	std::unique_ptr<unsigned char[]> SrcImageUniquePtr;
+	std::shared_ptr<unsigned char[]> SrcImage;
 	RECT ClipRect = rect;
 	{
 		ScopedBitmapHeader pbBmHdr(hDib);
@@ -756,46 +802,40 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		LOG(INFO) << "Allocating source image (553)";
 #endif
 
-		SrcImageUniquePtr = std::make_unique<unsigned char[]>((ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING);
-		if (SrcImageUniquePtr == nullptr)
+		SrcImage = std::make_shared<unsigned char[]>((ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING);
+		if (SrcImage == nullptr)
 		{
 #ifdef ENABLE_LOGGING
 			LOG(ERROR) << "Cannot create Source image (490): " << e.what();
 #endif
 			return false;
 		}
+		SrcImagePtr = SrcImage;
 
 		// copy from ImageBits into SrcImage
 #ifdef ENABLE_LOGGING
 		LOG(INFO) << "Copying source image (568)";
 #endif
-		CopyFromSourceImage(SrcImageUniquePtr.get(), ClipRect, ImageBits, ImageBitsStride);
+		CopyFromSourceImage(SrcImage.get(), ClipRect, ImageBits, ImageBitsStride);
 	}
 
 	/// ProcImage
 #ifdef ENABLE_LOGGING
 	LOG(INFO) << "Allocating processed image (594)";
 #endif
-	try
+	std::shared_ptr<unsigned char[]> ProcImage(AllocateRGBImage(ImageWidth, ImageHeight));
+	if (ProcImage == nullptr)
 	{
-		ProcImage = AllocateRGBImage(ImageWidth, ImageHeight);
-	}
-	catch (std::exception& e)
-	{
-		ProcImage = nullptr;
 #ifdef ENABLE_LOGGING
 		LOG(ERROR) << "Cannot create processed image (598): " << e.what();
 #endif
-	}
-	if (ProcImage == nullptr)
-	{
 		return false;
 	}
-	std::unique_ptr<unsigned char[]> ProcImageUniquePtr(ProcImage);
+	ProcImagePtr = ProcImage;
 #ifdef ENABLE_LOGGING
 	LOG(INFO) << "Copying processed image (606)";
 #endif
-	memcpy(ProcImageUniquePtr.get(), SrcImageUniquePtr.get(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
+	memcpy(ProcImage.get(), SrcImage.get(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
 
 	/// param1 : [0..100], default 25
 	/// param2 : [2..16], default 8
@@ -813,49 +853,49 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 
 		ComputeScalingFactor();
 
-		ScaledSrcImage = AllocateRGBImage(ScaledImageWidth, ScaledImageHeight);
+		auto ScaledSrcImage = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
 		if (ScaledSrcImage == nullptr)
 			return false;
-		std::unique_ptr<unsigned char[]> ScaledSrcImageUniquePtr(ScaledSrcImage);
+		ScaledSrcImagePtr = ScaledSrcImage;
 
-		ScaledProcImage = AllocateRGBImage(ScaledImageWidth, ScaledImageHeight);
+		auto ScaledProcImage = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
 		if (ScaledProcImage == nullptr)
 			return false;
-		std::unique_ptr<unsigned char[]> ScaledProcImageUniquePtr(ScaledProcImage);
+		ScaledProcImagePtr = ScaledProcImage;
 
 		// allocate buffer for processed image with coarser grid
-		ScaledProcImageGridM = AllocateRGBImage(ScaledImageWidth, ScaledImageHeight);
+		auto ScaledProcImageGridM = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
 		if (ScaledProcImageGridM == nullptr)
 			return false;
-		std::unique_ptr<unsigned char[]> ScaledProcImageGridMUniquePtr(ScaledProcImageGridM);
+		ScaledProcImageGridMPtr = ScaledProcImageGridM;
 
 		// allocate buffer for processed image with finer grid
-		ScaledProcImageGridP = AllocateRGBImage(ScaledImageWidth, ScaledImageHeight);
+		auto ScaledProcImageGridP = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
 		if (ScaledProcImageGridP == nullptr)
 			return false;
-		std::unique_ptr<unsigned char[]> ScaledProcImageGridPUniquePtr(ScaledProcImageGridP);
+		ScaledProcImageGridPPtr = ScaledProcImageGridP;
 
 		// allocate buffer for processed image with lesser intensity
-		ScaledProcImageIntensityM = AllocateRGBImage(ScaledImageWidth, ScaledImageHeight);
+		auto ScaledProcImageIntensityM = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
 		if (ScaledProcImageIntensityM == nullptr)
 			return false;
-		std::unique_ptr<unsigned char[]> ScaledProcImageIntensityMUniquePtr(ScaledProcImageIntensityM);
+		ScaledProcImageIntensityMPtr = ScaledProcImageIntensityM;
 
 		// allocate buffer for processed image with higher intensity
-		ScaledProcImageIntensityP = AllocateRGBImage(ScaledImageWidth, ScaledImageHeight);
+		auto ScaledProcImageIntensityP = std::make_shared<unsigned char[]>(AllocateRGBImage(ScaledImageWidth, ScaledImageHeight));
 		if (ScaledProcImageIntensityP == nullptr)
 			return false;
-		std::unique_ptr<unsigned char[]> ScaledProcImageIntensityPUniquePtr(ScaledProcImageIntensityP);
+		ScaledProcImageIntensityPPtr = ScaledProcImageIntensityP;
 
-		ScaleDownImage(SrcImageUniquePtr.get(), ImageWidth, ImageHeight, ScaledSrcImageUniquePtr.get(), ScalingFactor);
+		ScaleDownImage(SrcImage.get(), ImageWidth, ImageHeight, ScaledSrcImage.get(), ScalingFactor);
 
 		// copy scaled source image
 		int ScaledImageSize = ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE;
-		memcpy(ScaledProcImageUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
-		memcpy(ScaledProcImageGridMUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
-		memcpy(ScaledProcImageGridPUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
-		memcpy(ScaledProcImageIntensityMUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
-		memcpy(ScaledProcImageIntensityPUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
+		memcpy(ScaledProcImage.get(), ScaledSrcImage.get(), ScaledImageSize);
+		memcpy(ScaledProcImageGridM.get(), ScaledSrcImage.get(), ScaledImageSize);
+		memcpy(ScaledProcImageGridP.get(), ScaledSrcImage.get(), ScaledImageSize);
+		memcpy(ScaledProcImageIntensityM.get(), ScaledSrcImage.get(), ScaledImageSize);
+		memcpy(ScaledProcImageIntensityP.get(), ScaledSrcImage.get(), ScaledImageSize);
 
 		int ret = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, (DLGPROC)DlgProc);
 
@@ -884,13 +924,13 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #ifdef ENABLE_LOGGING
 			TIMED_SCOPE(timerBlkObj, "Filter processing of full resolution image");
 #endif
-			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImageUniquePtr.get()));
+			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage.get()));
 		}
 
 		ScopedBitmapHeader pbBmHdr(hDib);
 		BYTE* ImageBits = (BYTE *)&(*pbBmHdr) + (WORD)pbBmHdr->biSize;
 		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
-		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImageUniquePtr.get(), ClipRect);
+		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImage.get(), ClipRect);
 	}
 	catch (std::exception& e)
 	{
