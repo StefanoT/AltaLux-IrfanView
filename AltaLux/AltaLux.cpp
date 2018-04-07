@@ -42,6 +42,7 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "Filter/CBaseAltaLuxFilter.h"
 #include "Filter/CAltaLuxFilterFactory.h"
 #include "UIDraw/UIDraw.h"
+#include "ScopedBitmapHeader.h"
 
 #ifdef ENABLE_LOGGING
 #define ELPP_NO_DEFAULT_LOG_FILE
@@ -54,8 +55,9 @@ A "contributor" is any person that distributes its contribution under this licen
 INITIALIZE_EASYLOGGINGPP
 #endif // ENABLE_LOGGING
 
+const int RGB_PIXEL_SIZE = 3;
+
 HINSTANCE hDll;
-LPBITMAPINFOHEADER pbBmHdr;
 BITMAPINFOHEADER BmHdrCopy;
 unsigned char* ProcImage = nullptr;
 int ImageWidth;
@@ -107,7 +109,6 @@ void CopyScaledSrcImage(unsigned char* TargetImage)
 	if (ScaledSrcImage == nullptr)
 		return;
 
-	const int RGB_PIXEL_SIZE = 3;
 	memcpy(TargetImage, ScaledSrcImage, ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE);
 }
 
@@ -193,7 +194,7 @@ void DoProcessing()
 		else
 		{
 			// full-scale view only
-			memcpy(ProcImage, SrcImageUniquePtr.get(), ImageWidth * ImageHeight * 3);
+			memcpy(ProcImage, SrcImageUniquePtr.get(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
 			AltaLuxFilterPtr->SetStrength(FilterIntensity);
 			AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ProcImage));
 		}
@@ -242,14 +243,14 @@ void ScaleDownImage(void* SrcImage, int SrcImageWidth, int SrcImageHeight, void*
 
 	auto DestImagePtr = static_cast<unsigned char *>(DestImage);
 	auto SrcImagePtr = static_cast<unsigned char *>(SrcImage);
-	const int SrcImageStride = SrcImageWidth * 3;
+	const int SrcImageStride = SrcImageWidth * RGB_PIXEL_SIZE;
 	const int DestImageWidth = SrcImageWidth / ScalingFactor;
 	const int DestImageHeight = SrcImageHeight / ScalingFactor;
 	unsigned char* DestPixelPtr = DestImagePtr;
 
 	for (int y = 0; y < DestImageHeight; y++)
 	{
-		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * 3];
+		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * RGB_PIXEL_SIZE];
 		for (int x = 0; x < DestImageWidth; x++)
 		{
 			unsigned int RAcc = 0;
@@ -258,9 +259,9 @@ void ScaleDownImage(void* SrcImage, int SrcImageWidth, int SrcImageHeight, void*
 			for (int iy = 0; iy < ScalingFactor; iy++)
 				for (int ix = 0; ix < ScalingFactor; ix++)
 				{
-					RAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * 3)]);
-					GAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * 3) + 1]);
-					BAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * 3) + 2]);
+					RAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE)]);
+					GAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE) + 1]);
+					BAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE) + 2]);
 				}
 			if (ScalingFactor == 2)
 			{
@@ -274,8 +275,8 @@ void ScaleDownImage(void* SrcImage, int SrcImageWidth, int SrcImageHeight, void*
 				DestPixelPtr[1] = static_cast<unsigned char>(GAcc / (ScalingFactor * ScalingFactor));
 				DestPixelPtr[2] = static_cast<unsigned char>(BAcc / (ScalingFactor * ScalingFactor));
 			}
-			SrcPixelPtr += ScalingFactor * 3;
-			DestPixelPtr += 3;
+			SrcPixelPtr += ScalingFactor * RGB_PIXEL_SIZE;
+			DestPixelPtr += RGB_PIXEL_SIZE;
 		}
 	}
 }
@@ -544,7 +545,7 @@ unsigned char* AllocateRGBImage(int ImageWidth, int ImageHeight)
 	unsigned char* AllocatedImage = nullptr;
 	try
 	{
-		AllocatedImage = (unsigned char *)malloc((ImageWidth * ImageHeight * 3) + SECURITY_PADDING);
+		AllocatedImage = (unsigned char *)malloc((ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING);
 	}
 	catch (std::exception& e)
 	{
@@ -605,8 +606,6 @@ void ComputeScalingFactor()
 
 void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* SrcImage, RECT ClipRect)
 {
-	const int RGB_PIXEL_SIZE = 3;
-
 	// copy the image back into ImageBits
 	if (CroppedImage)
 	{
@@ -648,19 +647,17 @@ void NormalizeClipRect(RECT& ClipRect)
 
 void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits, DWORD ImageBitsStride)
 {
-	const int IMAGE_BPP = 3;
-
 	if (CroppedImage)
 	{
 		// copy only part of source image
 		unsigned char* SrcImagePtr = SrcImage;
 		unsigned char* ImageBitsPtr = ImageBits;
-		ImageBitsPtr += ClipRect.left * IMAGE_BPP;
+		ImageBitsPtr += ClipRect.left * RGB_PIXEL_SIZE;
 		ImageBitsPtr += ImageBitsStride * ClipRect.top;
 		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
 		{
-			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * IMAGE_BPP);
-			SrcImagePtr += ImageWidth * IMAGE_BPP;
+			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * RGB_PIXEL_SIZE);
+			SrcImagePtr += ImageWidth * RGB_PIXEL_SIZE;
 			ImageBitsPtr += ImageBitsStride;
 		}
 	}
@@ -671,8 +668,8 @@ void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits
 		unsigned char* ImageBitsPtr = ImageBits;
 		for (int y = 0; y < FullImageHeight; y++)
 		{
-			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * IMAGE_BPP);
-			SrcImagePtr += ImageWidth * IMAGE_BPP;
+			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * RGB_PIXEL_SIZE);
+			SrcImagePtr += ImageWidth * RGB_PIXEL_SIZE;
 			ImageBitsPtr += ImageBitsStride;
 		}
 	}
@@ -710,71 +707,70 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
 
 	const int SECURITY_PADDING = 4096;
-	const int IMAGE_BPP = 3; // 24 bits per pixel only
-	pbBmHdr = (LPBITMAPINFOHEADER)GlobalLock(hDib);
-	BmHdrCopy = *pbBmHdr;
-	if (pbBmHdr->biPlanes != 1)
-	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Only planar images are supported (478)";
-#endif
-		GlobalUnlock(hDib);
-		return false;
-	}
-	if (pbBmHdr->biBitCount != 24)
-	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Only 24-bit images are supported (484)";
-#endif
-		GlobalUnlock(hDib);
-		return false;
-	}
+	std::unique_ptr<unsigned char[]> SrcImageUniquePtr;
 	RECT ClipRect = rect;
-	FullImageWidth = abs(pbBmHdr->biWidth);
-	FullImageHeight = abs(pbBmHdr->biHeight);
-	/// ClipRect is actually (left, top, width, height) !
-	ImageWidth = ClipRect.right;
-	ImageHeight = ClipRect.bottom;
-
-	CroppedImage = IsCroppedImage();
-	if (CroppedImage)
 	{
-		NormalizeClipRect(ClipRect);
-		BmHdrCopy.biWidth = ImageWidth;
-		BmHdrCopy.biHeight = ImageHeight;
+		ScopedBitmapHeader pbBmHdr(hDib);
+		// TODO BmHdrCopy = pbBmHdr->;
+		if (pbBmHdr->biPlanes != 1)
+		{
 #ifdef ENABLE_LOGGING
-		LOG(INFO) << "Cropped image: width " << ImageWidth << " height " << ImageHeight;
+			LOG(ERROR) << "Only planar images are supported (478)";
 #endif
-	}
-	else
-	{
+			return false;
+		}
+		if (pbBmHdr->biBitCount != 24)
+		{
 #ifdef ENABLE_LOGGING
-		LOG(INFO) << "Full image: width " << ImageWidth << " height " << ImageHeight;
+			LOG(ERROR) << "Only 24-bit images are supported (484)";
 #endif
-	}
+			return false;
+		}
+		FullImageWidth = abs(pbBmHdr->biWidth);
+		FullImageHeight = abs(pbBmHdr->biHeight);
+		/// ClipRect is actually (left, top, width, height) !
+		ImageWidth = ClipRect.right;
+		ImageHeight = ClipRect.bottom;
 
-	BYTE* ImageBits = (BYTE *)pbBmHdr + (WORD)pbBmHdr->biSize;
-	DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
-	/// SrcImage
+		CroppedImage = IsCroppedImage();
+		if (CroppedImage)
+		{
+			NormalizeClipRect(ClipRect);
+			BmHdrCopy.biWidth = ImageWidth;
+			BmHdrCopy.biHeight = ImageHeight;
 #ifdef ENABLE_LOGGING
-	LOG(INFO) << "Allocating source image (553)";
+			LOG(INFO) << "Cropped image: width " << ImageWidth << " height " << ImageHeight;
+#endif
+		}
+		else
+		{
+#ifdef ENABLE_LOGGING
+			LOG(INFO) << "Full image: width " << ImageWidth << " height " << ImageHeight;
+#endif
+		}
+
+		BYTE* ImageBits = (BYTE *)&(*pbBmHdr) + (WORD)pbBmHdr->biSize;
+		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
+		/// SrcImage
+#ifdef ENABLE_LOGGING
+		LOG(INFO) << "Allocating source image (553)";
 #endif
 
-	auto SrcImageUniquePtr = std::make_unique<unsigned char[]>((ImageWidth * ImageHeight * IMAGE_BPP) + SECURITY_PADDING);
-	if (SrcImageUniquePtr == nullptr)
-	{
+		SrcImageUniquePtr = std::make_unique<unsigned char[]>((ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING);
+		if (SrcImageUniquePtr == nullptr)
+		{
 #ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Cannot create Source image (490): " << e.what();
+			LOG(ERROR) << "Cannot create Source image (490): " << e.what();
 #endif
-		GlobalUnlock(hDib);
-		return false;
+			return false;
+		}
+
+		// copy from ImageBits into SrcImage
+#ifdef ENABLE_LOGGING
+		LOG(INFO) << "Copying source image (568)";
+#endif
+		CopyFromSourceImage(SrcImageUniquePtr.get(), ClipRect, ImageBits, ImageBitsStride);
 	}
-
-	// copy from ImageBits into SrcImage
-#ifdef ENABLE_LOGGING
-	LOG(INFO) << "Copying source image (568)";
-#endif
-	CopyFromSourceImage(SrcImageUniquePtr.get(), ClipRect, ImageBits, ImageBitsStride);
 
 	/// ProcImage
 #ifdef ENABLE_LOGGING
@@ -793,14 +789,13 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 	}
 	if (ProcImage == nullptr)
 	{
-		GlobalUnlock(hDib);
 		return false;
 	}
 	std::unique_ptr<unsigned char[]> ProcImageUniquePtr(ProcImage);
 #ifdef ENABLE_LOGGING
 	LOG(INFO) << "Copying processed image (606)";
 #endif
-	memcpy(ProcImageUniquePtr.get(), SrcImageUniquePtr.get(), ImageWidth * ImageHeight * IMAGE_BPP);
+	memcpy(ProcImageUniquePtr.get(), SrcImageUniquePtr.get(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
 
 	/// param1 : [0..100], default 25
 	/// param2 : [2..16], default 8
@@ -855,7 +850,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		ScaleDownImage(SrcImageUniquePtr.get(), ImageWidth, ImageHeight, ScaledSrcImageUniquePtr.get(), ScalingFactor);
 
 		// copy scaled source image
-		int ScaledImageSize = ScaledImageWidth * ScaledImageHeight * IMAGE_BPP;
+		int ScaledImageSize = ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE;
 		memcpy(ScaledProcImageUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
 		memcpy(ScaledProcImageGridMUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
 		memcpy(ScaledProcImageGridPUniquePtr.get(), ScaledSrcImageUniquePtr.get(), ScaledImageSize);
@@ -872,9 +867,6 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 
 		param1 = FilterIntensity;
 		param2 = FilterScale;
-
-		pbBmHdr = (LPBITMAPINFOHEADER)GlobalLock(hDib); // lock again the DIB
-		ImageBits = (BYTE *)pbBmHdr + (WORD)pbBmHdr->biSize;
 	}
 
 	// if the filter parameters are unspecified, revert to default ones
@@ -894,6 +886,10 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #endif
 			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImageUniquePtr.get()));
 		}
+
+		ScopedBitmapHeader pbBmHdr(hDib);
+		BYTE* ImageBits = (BYTE *)&(*pbBmHdr) + (WORD)pbBmHdr->biSize;
+		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
 		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImageUniquePtr.get(), ClipRect);
 	}
 	catch (std::exception& e)
@@ -902,8 +898,6 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		LOG(ERROR) << "Exception running filter instance (651): " << e.what();
 #endif
 	}
-
-	GlobalUnlock(hDib);
 	return true;
 }
 

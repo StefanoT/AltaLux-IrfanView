@@ -69,6 +69,9 @@
     <ClInclude Include="Log\SetupLog.h">
       <Filter>Logging</Filter>
     </ClInclude>
+    <ClInclude Include="ScopedBitmapHeader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
