@@ -300,11 +300,16 @@ void ScaleDownImage(void* SrcImage, int SrcImageWidth, int SrcImageHeight, void*
 	}
 }
 
-void ClearImageArea(HDC hdc, RECT& rectClient)
+void FillImageArea(HDC hdc, const RECT& rectClient, BYTE R, BYTE G, BYTE B)
 {
 	HRGN bgRgn = CreateRectRgnIndirect(&rectClient);
-	HBRUSH hBrush = CreateSolidBrush(RGB(0, 0, 0));
+	HBRUSH hBrush = CreateSolidBrush(RGB(R, G, B));
 	FillRgn(hdc, bgRgn, hBrush);
+}
+
+void ClearImageArea(HDC hdc, const RECT& rectClient)
+{
+	FillImageArea(hdc, rectClient, 0, 0, 0);
 }
 
 void UpdateSliders(HWND hwnd)
@@ -336,10 +341,14 @@ void HandlePaintMessage(HWND hwnd)
 		ClearImageArea(hdc, rectClient);
 		if (CompleteVisualization)
 		{
+			const BYTE LESS_INTENSE = 5;
+			const BYTE MORE_INTENSE = 15;
+			const BYTE CURR_INTENSE = 10;
+
 			int SavedFilterScale = FilterScale;
 
 			// draw original image
-			auto ScaledSrcImage = SrcImagePtr.lock();
+			auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 			if (ScaledSrcImage != nullptr)
 			{
 				RECT OriginalImageRect = rectClient;
@@ -355,6 +364,7 @@ void HandlePaintMessage(HWND hwnd)
 				RECT IntensityMImageRect = rectClient;
 				ScaleRect(IntensityMImageRect, 31);
 				OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
+				FillImageArea(hdc, IntensityMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
 					false, FilterScale);
 			}
@@ -367,6 +377,7 @@ void HandlePaintMessage(HWND hwnd)
 				ScaleRect(IntensityPImageRect, 31);
 				OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)) / 2,
 					(RectHeight(rectClient) - RectHeight(IntensityPImageRect)));
+				FillImageArea(hdc, IntensityPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
 					false, FilterScale);
 			}
@@ -379,6 +390,7 @@ void HandlePaintMessage(HWND hwnd)
 				ScaleRect(GridMImageRect, 31);
 				FilterScale = max(SavedFilterScale - 2, MIN_HOR_REGIONS);
 				OffsetRect(&GridMImageRect, 0, (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
+				FillImageArea(hdc, GridMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM.get()->data(), ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
 					FilterScale);
 			}
@@ -392,6 +404,7 @@ void HandlePaintMessage(HWND hwnd)
 				FilterScale = min(SavedFilterScale + 2, MAX_HOR_REGIONS);
 				OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)),
 					(RectHeight(rectClient) - RectHeight(GridPImageRect)) / 2);
+				FillImageArea(hdc, GridPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP.get()->data(), ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
 					FilterScale);
 			}
@@ -406,6 +419,7 @@ void HandlePaintMessage(HWND hwnd)
 				ScaleRect(CentralImageRect, 55);
 				OffsetRect(&CentralImageRect, (RectWidth(rectClient) - RectWidth(CentralImageRect)) / 2,
 					(RectHeight(rectClient) - RectHeight(CentralImageRect)) / 2);
+				FillImageArea(hdc, CentralImageRect, CURR_INTENSE, CURR_INTENSE, CURR_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, CentralImageRect, true,
 					FilterScale);
 			}
@@ -586,28 +600,6 @@ int GetRGBImageSize(int ImageWidth, int ImageHeight)
 {
 	const int SECURITY_PADDING = 4096;
 	return (ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING;
-}
-
-unsigned char* AllocateRGBImage(int ImageWidth, int ImageHeight)
-{
-	const int SECURITY_PADDING = 4096;
-
-	if ((ImageWidth <= 0) || (ImageHeight <= 0))
-		return nullptr;
-
-	unsigned char* AllocatedImage = nullptr;
-	try
-	{
-		AllocatedImage = new unsigned char[(ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING];
-	}
-	catch (std::exception& e)
-	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Cannot create image buffer (427): " << e.what();
-#endif
-		AllocatedImage = nullptr;
-	}
-	return AllocatedImage;
 }
 
 /// <summary>
