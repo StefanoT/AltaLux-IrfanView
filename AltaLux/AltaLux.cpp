@@ -81,6 +81,7 @@ std::weak_ptr<std::vector<unsigned char>> ScaledProcImageIntensityPPtr;	// proce
 int FilterIntensity = AL_DEFAULT_STRENGTH;
 int FilterScale = DEFAULT_HOR_REGIONS;
 bool CompleteVisualization = true;
+bool NoZoom = false;
 
 BOOL APIENTRY DllMain(HANDLE hModule,
                       DWORD ul_reason_for_call,
@@ -354,7 +355,7 @@ void HandlePaintMessage(HWND hwnd)
 				RECT OriginalImageRect = rectClient;
 				ScaleRect(OriginalImageRect, 31);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledSrcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, OriginalImageRect, false,
-					FilterScale);
+					FilterScale, NoZoom);
 			}
 
 			// draw processed image with lesser intensity
@@ -366,7 +367,7 @@ void HandlePaintMessage(HWND hwnd)
 				OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
 				FillImageArea(hdc, IntensityMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
-					false, FilterScale);
+					false, FilterScale, NoZoom);
 			}
 
 			// draw processed image with higher intensity
@@ -379,7 +380,7 @@ void HandlePaintMessage(HWND hwnd)
 					(RectHeight(rectClient) - RectHeight(IntensityPImageRect)));
 				FillImageArea(hdc, IntensityPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
-					false, FilterScale);
+					false, FilterScale, NoZoom);
 			}
 
 			// draw processed image with coarser grid
@@ -392,7 +393,7 @@ void HandlePaintMessage(HWND hwnd)
 				OffsetRect(&GridMImageRect, 0, (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
 				FillImageArea(hdc, GridMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM.get()->data(), ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
-					FilterScale);
+					FilterScale, NoZoom);
 			}
 
 			// draw processed image with finer grid
@@ -406,7 +407,7 @@ void HandlePaintMessage(HWND hwnd)
 					(RectHeight(rectClient) - RectHeight(GridPImageRect)) / 2);
 				FillImageArea(hdc, GridPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP.get()->data(), ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
-					FilterScale);
+					FilterScale, NoZoom);
 			}
 
 			FilterScale = SavedFilterScale;
@@ -421,7 +422,7 @@ void HandlePaintMessage(HWND hwnd)
 					(RectHeight(rectClient) - RectHeight(CentralImageRect)) / 2);
 				FillImageArea(hdc, CentralImageRect, CURR_INTENSE, CURR_INTENSE, CURR_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, CentralImageRect, true,
-					FilterScale);
+					FilterScale, NoZoom);
 			}
 		}
 		else
@@ -431,7 +432,7 @@ void HandlePaintMessage(HWND hwnd)
 			{
 				// draw processed image only
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, rectClient, true,
-					FilterScale);
+					FilterScale, NoZoom);
 			}
 		}
 	}
@@ -554,6 +555,12 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			case IDC_TOGGLEVISUALIZATION:
 				{
 					CompleteVisualization = !CompleteVisualization;
+					InvalidateRgn(hwnd, nullptr, true);
+					return TRUE;
+				}
+			case IDC_TOGGLEZOOM:
+				{
+					NoZoom = !NoZoom;
 					InvalidateRgn(hwnd, nullptr, true);
 					return TRUE;
 				}

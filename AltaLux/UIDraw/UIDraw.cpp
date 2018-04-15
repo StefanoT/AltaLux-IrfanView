@@ -99,33 +99,51 @@ void DrawScaleGrid(HDC hdc, RECT rectTo, int FilterScale)
 /// <param name="RectPosition"></param>
 /// <param name="ShowGrid">if true, overlay a grid showing the FilterScale</param>
 /// <param name="FilterScale"></param>
+/// <param name="NoRescaling">if true, draw the central part of the image without any rescaling</param>
+/// <remarks>NoRescaling works only if input image is wider and taller than drawing area</remarks>
 void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
-                     RECT RectPosition, bool ShowGrid, int FilterScale)
+                     RECT RectPosition, bool ShowGrid, int FilterScale, bool NoRescaling)
 {
 	RECT rectTo;
 	rectTo.left = rectTo.top = 0;
-	float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
-	float ScalingY = static_cast<float>(ImageHeight) / RectHeight(RectPosition);
-	const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
-	rectTo.right = static_cast<int>(ImageWidth / MaxScaling);
-	rectTo.bottom = static_cast<int>(ImageHeight / MaxScaling);
-	const int VerOffset = max(0, (RectWidth(RectPosition) - rectTo.right)) >> 1;
-	const int HorOffset = max(0, (RectHeight(RectPosition) - rectTo.bottom)) >> 1;
-	OffsetRect(&rectTo, VerOffset, HorOffset);
-	OffsetRect(&rectTo, RectPosition.left, RectPosition.top);
 
-	SetStretchBltMode(hdc, COLORONCOLOR);
-	BITMAPINFOHEADER ImageInfo;
-	memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
-	ImageInfo.biWidth = ImageWidth & ~7;
-	ImageInfo.biHeight = ImageHeight;
-	StretchDIBits(hdc, rectTo.left, rectTo.top, rectTo.right - rectTo.left, rectTo.bottom - rectTo.top, 0, 0, ImageWidth,
-	              ImageHeight, ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
-
-	if (ShowGrid)
+	if ((NoRescaling) && (ImageWidth > RectWidth(RectPosition)) && (ImageHeight > RectHeight(RectPosition)))
 	{
-		/// draw scale
-		DrawScaleGrid(hdc, rectTo, FilterScale);
+		SetStretchBltMode(hdc, COLORONCOLOR);
+		BITMAPINFOHEADER ImageInfo;
+		memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
+		ImageInfo.biWidth = ImageWidth & ~7;
+		ImageInfo.biHeight = ImageHeight;
+
+		const int HorOffset = (ImageWidth - RectWidth(RectPosition)) >> 1;
+		const int VerOffset = (ImageHeight - RectHeight(RectPosition)) >> 1;
+
+		StretchDIBits(hdc, RectPosition.left, RectPosition.top, RectWidth(RectPosition), RectHeight(RectPosition), HorOffset, VerOffset,
+			RectWidth(RectPosition), RectHeight(RectPosition), ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
+	} else {
+		float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
+		float ScalingY = static_cast<float>(ImageHeight) / RectHeight(RectPosition);
+		const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
+		rectTo.right = static_cast<int>(ImageWidth / MaxScaling);
+		rectTo.bottom = static_cast<int>(ImageHeight / MaxScaling);
+		const int VerOffset = max(0, (RectWidth(RectPosition) - rectTo.right)) >> 1;
+		const int HorOffset = max(0, (RectHeight(RectPosition) - rectTo.bottom)) >> 1;
+		OffsetRect(&rectTo, VerOffset, HorOffset);
+		OffsetRect(&rectTo, RectPosition.left, RectPosition.top);
+
+		SetStretchBltMode(hdc, COLORONCOLOR);
+		BITMAPINFOHEADER ImageInfo;
+		memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
+		ImageInfo.biWidth = ImageWidth & ~7;
+		ImageInfo.biHeight = ImageHeight;
+		StretchDIBits(hdc, rectTo.left, rectTo.top, RectWidth(rectTo), RectHeight(rectTo), 0, 0, ImageWidth,
+			ImageHeight, ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
+
+		if (ShowGrid)
+		{
+			/// draw scale
+			DrawScaleGrid(hdc, rectTo, FilterScale);
+		}
 	}
 }
 

@@ -13,7 +13,7 @@
 #undef APSTUDIO_READONLY_SYMBOLS
 
 /////////////////////////////////////////////////////////////////////////////
-// Italian (Italy) resources
+// Italiano (Italia) resources
 
 #if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ITA)
 LANGUAGE LANG_ITALIAN, SUBLANG_ITALIAN
@@ -61,8 +61,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,7,0,89
- PRODUCTVERSION 1,7,0,89
+ FILEVERSION 1,8,0,91
+ PRODUCTVERSION 1,8,0,91
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -79,12 +79,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Stefano Tommesani"
             VALUE "FileDescription", "AltaLux Image Enhancement Filter"
-            VALUE "FileVersion", "1.7.0.89"
+            VALUE "FileVersion", "1.8.0.91"
             VALUE "InternalName", "AltaLux.dll"
-            VALUE "LegalCopyright", "Copyright Stefano Tommesani 2005/2015  All rights reserved."
+            VALUE "LegalCopyright", "Copyright Stefano Tommesani 2005/2018  All rights reserved."
             VALUE "OriginalFilename", "AltaLux.dll"
             VALUE "ProductName", "AltaLux Image Enhancement Filter"
-            VALUE "ProductVersion", "1.7.0.89"
+            VALUE "ProductVersion", "1.8.0.91"
         END
     END
     BLOCK "VarFileInfo"
@@ -112,11 +112,12 @@ BEGIN
     RTEXT           "Scale",IDC_STATIC,540,185,34,8
     CONTROL         "",IDC_STATIC,"Static",SS_ETCHEDVERT | SS_SUNKEN,533,0,65,338
     PUSHBUTTON      "Default",ID_DEFAULT,541,317,50,14
-    PUSHBUTTON      "Toggle visualization",IDC_TOGGLEVISUALIZATION,432,317,78,14
-    CONTROL         1005,IDC_STATIC,"Static",SS_BITMAP,540,199,17,15
-    CONTROL         1006,IDC_STATIC,"Static",SS_BITMAP,540,287,17,15
-    CONTROL         1008,IDC_STATIC,"Static",SS_BITMAP,540,73,14,25
-    CONTROL         1009,IDC_STATIC,"Static",SS_BITMAP,540,145,15,27
+    PUSHBUTTON      "Toggle visualization",IDC_TOGGLEVISUALIZATION,432,316,78,14
+    CONTROL         IDC_DEFAULT,IDC_STATIC,"Static",SS_BITMAP,540,199,17,15
+    CONTROL         IDC_TOGGLEVISUALIZATION,IDC_STATIC,"Static",SS_BITMAP,540,287,17,15
+    CONTROL         IDB_BITMAP_BATTERY_LOW,IDC_STATIC,"Static",SS_BITMAP,540,73,14,25
+    CONTROL         IDB_BITMAP_BATTERY_FULL,IDC_STATIC,"Static",SS_BITMAP,540,145,15,27
+    PUSHBUTTON      "Toggle zoom",IDC_TOGGLEZOOM,15,316,50,14
 END
 
 
@@ -126,9 +127,13 @@ END
 //
 
 IDB_BITMAP_GRID_LARGE   BITMAP                  "Bitmap\\bmp00001.bmp"
+
 IDB_BITMAP_GRID_SMALL   BITMAP                  "Bitmap\\bitmap1.bmp"
+
 IDB_BITMAP_BATTERY_LOW  BITMAP                  "Bitmap\\bmp00002.bmp"
+
 IDB_BITMAP_BATTERY_FULL BITMAP                  "Bitmap\\bmp00003.bmp"
+
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -147,7 +152,18 @@ BEGIN
 END
 #endif    // APSTUDIO_INVOKED
 
-#endif    // Italian (Italy) resources
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// AFX_DIALOG_LAYOUT
+//
+
+IDD_DIALOG1 AFX_DIALOG_LAYOUT
+BEGIN
+    0
+END
+
+#endif    // Italiano (Italia) resources
 /////////////////////////////////////////////////////////////////////////////
 
 
