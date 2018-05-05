@@ -109,6 +109,7 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 
 	if ((NoRescaling) && (ImageWidth > RectWidth(RectPosition)) && (ImageHeight > RectHeight(RectPosition)))
 	{
+		// draw central part of image with no rescaling
 		SetStretchBltMode(hdc, COLORONCOLOR);
 		BITMAPINFOHEADER ImageInfo;
 		memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
@@ -121,6 +122,7 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 		StretchDIBits(hdc, RectPosition.left, RectPosition.top, RectWidth(RectPosition), RectHeight(RectPosition), HorOffset, VerOffset,
 			RectWidth(RectPosition), RectHeight(RectPosition), ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
 	} else {
+		// draw full image with rescaling
 		float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
 		float ScalingY = static_cast<float>(ImageHeight) / RectHeight(RectPosition);
 		const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);

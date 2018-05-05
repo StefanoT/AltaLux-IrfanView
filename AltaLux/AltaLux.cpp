@@ -56,6 +56,9 @@ A "contributor" is any person that distributes its contribution under this licen
 INITIALIZE_EASYLOGGINGPP
 #endif // ENABLE_LOGGING
 
+using WeakImagePtr = std::weak_ptr<std::vector<unsigned char>>;
+using SharedImagePtr = std::shared_ptr<std::vector<unsigned char>>;
+
 const int RGB_PIXEL_SIZE = 3;
 
 HINSTANCE hDll;
@@ -69,14 +72,14 @@ bool SkipProcessing;
 int ScaledImageWidth;
 int ScaledImageHeight;
 int ScalingFactor = 1;
-std::weak_ptr<std::vector<unsigned char>> SrcImagePtr;				// source image
-std::weak_ptr<std::vector<unsigned char>> ProcImagePtr;			// processed image
-std::weak_ptr<std::vector<unsigned char>> ScaledSrcImagePtr;		// down-sampled source image
-std::weak_ptr<std::vector<unsigned char>> ScaledProcImagePtr;		// processed image
-std::weak_ptr<std::vector<unsigned char>> ScaledProcImageGridMPtr;	// processed image with lesser intensity
-std::weak_ptr<std::vector<unsigned char>> ScaledProcImageGridPPtr;	// processed image with higher intensity
-std::weak_ptr<std::vector<unsigned char>> ScaledProcImageIntensityMPtr;	// processed image with coarser grid
-std::weak_ptr<std::vector<unsigned char>> ScaledProcImageIntensityPPtr;	// processed image with finer grid
+WeakImagePtr SrcImagePtr;				// source image
+WeakImagePtr ProcImagePtr;				// processed image
+WeakImagePtr ScaledSrcImagePtr;			// down-sampled source image
+WeakImagePtr ScaledProcImagePtr;		// processed image
+WeakImagePtr ScaledProcImageGridMPtr;	// processed image with lesser intensity
+WeakImagePtr ScaledProcImageGridPPtr;	// processed image with higher intensity
+WeakImagePtr ScaledProcImageIntensityMPtr;	// processed image with coarser grid
+WeakImagePtr ScaledProcImageIntensityPPtr;	// processed image with finer grid
 /// GUI
 int FilterIntensity = AL_DEFAULT_STRENGTH;
 int FilterScale = DEFAULT_HOR_REGIONS;
@@ -248,7 +251,7 @@ void ScaleRect(RECT& RectToScale, int ScalingFactor)
 /// <param name="DestImage"></param>
 /// <param name="ScalingFactor">dest image width = source image width / ScalingFactor, same for height</param>
 /// <remarks>Downsampling is computed with simple averaging as it is used only for previews</remarks>
-void ScaleDownImage(void* SrcImage, int SrcImageWidth, int SrcImageHeight, void* DestImage, int ScalingFactor)
+void ScaleDownImage(void* SrcImage, const int SrcImageWidth, const int SrcImageHeight, void* DestImage, const int ScalingFactor)
 {
 	if (SrcImage == nullptr)
 		return;
@@ -283,11 +286,11 @@ void ScaleDownImage(void* SrcImage, int SrcImageWidth, int SrcImageHeight, void*
 					GAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE) + 1]);
 					BAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE) + 2]);
 				}
-			if (ScalingFactor == 2)
+			if ((ScalingFactor == 2) || (ScalingFactor == 4))
 			{
-				DestPixelPtr[0] = static_cast<unsigned char>(RAcc >> 2);
-				DestPixelPtr[1] = static_cast<unsigned char>(GAcc >> 2);
-				DestPixelPtr[2] = static_cast<unsigned char>(BAcc >> 2);
+				DestPixelPtr[0] = static_cast<unsigned char>(RAcc >> ScalingFactor);
+				DestPixelPtr[1] = static_cast<unsigned char>(GAcc >> ScalingFactor);
+				DestPixelPtr[2] = static_cast<unsigned char>(BAcc >> ScalingFactor);
 			}
 			else
 			{
@@ -346,8 +349,6 @@ void HandlePaintMessage(HWND hwnd)
 			const BYTE MORE_INTENSE = 15;
 			const BYTE CURR_INTENSE = 10;
 
-			int SavedFilterScale = FilterScale;
-
 			// draw original image
 			auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 			if (ScaledSrcImage != nullptr)
@@ -389,11 +390,10 @@ void HandlePaintMessage(HWND hwnd)
 			{
 				RECT GridMImageRect = rectClient;
 				ScaleRect(GridMImageRect, 31);
-				FilterScale = max(SavedFilterScale - 2, MIN_HOR_REGIONS);
 				OffsetRect(&GridMImageRect, 0, (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
 				FillImageArea(hdc, GridMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM.get()->data(), ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
-					FilterScale, NoZoom);
+					max(FilterScale - 2, MIN_HOR_REGIONS), NoZoom);
 			}
 
 			// draw processed image with finer grid
@@ -401,16 +401,13 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImageGridP != nullptr)
 			{
 				RECT GridPImageRect = rectClient;
-				ScaleRect(GridPImageRect, 31);
-				FilterScale = min(SavedFilterScale + 2, MAX_HOR_REGIONS);
+				ScaleRect(GridPImageRect, 31);				
 				OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)),
 					(RectHeight(rectClient) - RectHeight(GridPImageRect)) / 2);
 				FillImageArea(hdc, GridPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP.get()->data(), ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
-					FilterScale, NoZoom);
+					min(FilterScale + 2, MAX_HOR_REGIONS), NoZoom);
 			}
-
-			FilterScale = SavedFilterScale;
 
 			// draw processed image
 			auto ScaledProcImage = ScaledProcImagePtr.lock();
@@ -759,7 +756,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 #define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
 
 	const int SECURITY_PADDING = 4096;
-	std::shared_ptr<std::vector<unsigned char>> SrcImage;
+	SharedImagePtr SrcImage;
 	RECT ClipRect = rect;
 	{
 		ScopedBitmapHeader pbBmHdr(hDib);
