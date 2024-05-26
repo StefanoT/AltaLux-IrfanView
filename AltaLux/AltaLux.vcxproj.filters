@@ -19,12 +19,6 @@
     <Filter Include="Source Files\Filter">
       <UniqueIdentifier>{c7a9b14e-c782-48a8-b9f1-0c4a288ee68f}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\Logging">
-      <UniqueIdentifier>{0cc34e74-6c9e-40b4-864c-fc83f4a1f1d7}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Logging">
-      <UniqueIdentifier>{17a514b9-10b0-47b3-b1bc-4ecc40f2cc65}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <Text Include="ReadMe.txt" />
@@ -63,12 +57,6 @@
     <ClInclude Include="Filter\CParallelSplitLoopAltaLuxFilter.h">
       <Filter>Header Files\Filter</Filter>
     </ClInclude>
-    <ClInclude Include="Log\easylogging++.h">
-      <Filter>Logging</Filter>
-    </ClInclude>
-    <ClInclude Include="Log\SetupLog.h">
-      <Filter>Logging</Filter>
-    </ClInclude>
     <ClInclude Include="ScopedBitmapHeader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -106,9 +94,6 @@
     </ClCompile>
     <ClCompile Include="Filter\CParallelSplitLoopAltaLuxFilter.cpp">
       <Filter>Source Files\Filter</Filter>
-    </ClCompile>
-    <ClCompile Include="Log\SetupLog.cpp">
-      <Filter>Source Files\Logging</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

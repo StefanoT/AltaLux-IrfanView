@@ -44,27 +44,19 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "Filter/CAltaLuxFilterFactory.h"
 #include "UIDraw/UIDraw.h"
 #include "ScopedBitmapHeader.h"
-
-#ifdef ENABLE_LOGGING
-#define ELPP_NO_DEFAULT_LOG_FILE
-#include "Log\easylogging++.h"
-#include "Log\SetupLog.h"
-
-#define ELPP_AS_DLL // Tells Easylogging++ that it's used for DLL
-#define ELPP_EXPORT_SYMBOLS // Tells Easylogging++ to export symbols
-
-INITIALIZE_EASYLOGGINGPP
-#endif // ENABLE_LOGGING
+#include <iostream>
 
 using WeakImagePtr = std::weak_ptr<std::vector<unsigned char>>;
 using SharedImagePtr = std::shared_ptr<std::vector<unsigned char>>;
 
-const int RGB_PIXEL_SIZE = 3;
+const int RGB24_PIXEL_SIZE = 3;
+const int RGB32_PIXEL_SIZE = 4;
 
 HINSTANCE hDll;
 BITMAPINFOHEADER BmHdrCopy;
 int ImageWidth;
 int ImageHeight;
+int ImageBitDepth;
 int FullImageWidth;
 int FullImageHeight;
 bool CroppedImage;
@@ -96,9 +88,6 @@ BOOL APIENTRY DllMain(HANDLE hModule,
 	case DLL_PROCESS_ATTACH:
 		{
 			hDll = (HINSTANCE)hModule;
-#ifdef ENABLE_LOGGING
-		SetupLogging();
-#endif
 		}
 	case DLL_THREAD_ATTACH:
 	case DLL_THREAD_DETACH:
@@ -115,46 +104,62 @@ void CopyScaledSrcImage(unsigned char* TargetImage)
 	auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 	if (ScaledSrcImage == nullptr)
 		return;
-	memcpy(TargetImage, ScaledSrcImage.get()->data(), ScaledImageWidth * ScaledImageHeight * RGB_PIXEL_SIZE);
+	memcpy(TargetImage, ScaledSrcImage.get()->data(), ScaledImageWidth * ScaledImageHeight * ImageBitDepth);
+}
+
+/// <summary>
+/// Creates and returns an instance of CBaseAltaLuxFilter based on image dimensions.
+/// The function determines whether to use a scaled or full-size image based on the availability of the scaled source image. 
+/// </summary>
+/// <param name="IsRescalingEnabled">A reference to a boolean that will be set to true if scaling is enabled (i.e., the scaled image was used to create the filter), or false if the full-size image was used.</param>
+/// <returns>A pointer to an instance of the AltaLux filter if successful, nullptr otherwise.</returns>
+CBaseAltaLuxFilter* InstantiateFilter(bool& IsRescalingEnabled)
+{
+	try
+	{
+		auto ScaledSrcImage = ScaledSrcImagePtr.lock();
+		IsRescalingEnabled = (ScaledSrcImage != nullptr);
+		if (IsRescalingEnabled)		
+		{
+			return CAltaLuxFilterFactory::CreateAltaLuxFilter(ScaledImageWidth, ScaledImageHeight, FilterScale, FilterScale);			
+		}
+		else
+		{
+			return CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, FilterScale, FilterScale);			
+		}
+	}
+	catch (std::exception& e)
+	{
+		return nullptr;
+	}
 }
 
 void DoProcessing()
 {
-#ifdef ENABLE_LOGGING
-	TIMED_FUNC(DoProcessingTimerObj);
-#endif
-
-	CBaseAltaLuxFilter* AltaLuxFilter = nullptr;
 	bool IsRescalingEnabled = false;
-	try
-	{
-		auto ScaledSrcImage = ScaledSrcImagePtr.lock();
-		if (ScaledSrcImage != nullptr)
-		{
-			AltaLuxFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ScaledImageWidth, ScaledImageHeight, FilterScale,
-				FilterScale);
-			IsRescalingEnabled = true;
-		}
-		else
-			AltaLuxFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, FilterScale, FilterScale);
-	}
-	catch (std::exception& e)
-	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Cannot create filter instance (77): " << e.what();
-#endif
-		AltaLuxFilter = nullptr;
-	}
-
+	CBaseAltaLuxFilter* AltaLuxFilter = InstantiateFilter(IsRescalingEnabled);
 	if (AltaLuxFilter == nullptr)
 		return;
 
 	try
 	{
-#ifdef ENABLE_LOGGING
-		TIMED_SCOPE(timerBlkObj, "Filter processing");
-#endif
 		std::unique_ptr<CBaseAltaLuxFilter> AltaLuxFilterPtr(AltaLuxFilter);
+
+		auto processImage = [&](const SharedImagePtr image) 
+		{
+			switch (ImageBitDepth) 
+			{
+				case RGB24_PIXEL_SIZE:
+					AltaLuxFilterPtr->ProcessRGB24(static_cast<void*>(image.get()->data()));
+					break;
+				case RGB32_PIXEL_SIZE:
+					AltaLuxFilterPtr->ProcessRGB32(static_cast<void*>(image.get()->data()));
+					break;
+				default:
+					break;
+			}
+		};
+
 		if (IsRescalingEnabled)
 		{
 			// rescaling is enabled, so preview is computed on the smaller resampled image
@@ -163,7 +168,7 @@ void DoProcessing()
 			{
 				CopyScaledSrcImage(ScaledProcImage.get()->data());
 				AltaLuxFilterPtr->SetStrength(FilterIntensity);
-				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImage.get()->data()));
+				processImage(ScaledProcImage);
 			}
 			// preview intensity changes
 			const int STRENGTH_DELTA = 15;
@@ -174,7 +179,7 @@ void DoProcessing()
 			{
 				CopyScaledSrcImage(ScaledProcImageIntensityM.get()->data());
 				AltaLuxFilterPtr->SetStrength(max(FilterIntensity - STRENGTH_DELTA, AL_MIN_STRENGTH));
-				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageIntensityM.get()->data()));
+				processImage(ScaledProcImageIntensityM);
 			}
 
 			// preview with higher intensity
@@ -183,7 +188,7 @@ void DoProcessing()
 			{
 				CopyScaledSrcImage(ScaledProcImageIntensityP.get()->data());
 				AltaLuxFilterPtr->SetStrength(min(FilterIntensity + STRENGTH_DELTA, AL_MAX_STRENGTH));
-				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageIntensityP.get()->data()));
+				processImage(ScaledProcImageIntensityP);
 			}
 
 			// preview with grid changes
@@ -196,7 +201,7 @@ void DoProcessing()
 				CopyScaledSrcImage(ScaledProcImageGridM.get()->data());
 				AltaLuxFilterPtr->SetSlices(
 					max(FilterScale - SLICE_DELTA, MIN_HOR_REGIONS), max(FilterScale - SLICE_DELTA, MIN_VERT_REGIONS));
-				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageGridM.get()->data()));
+				processImage(ScaledProcImageGridM);
 			}
 
 			// preview with finer grid
@@ -206,7 +211,7 @@ void DoProcessing()
 				CopyScaledSrcImage(ScaledProcImageGridP.get()->data());
 				AltaLuxFilterPtr->SetSlices(
 					min(FilterScale + SLICE_DELTA, MAX_HOR_REGIONS), min(FilterScale + SLICE_DELTA, MAX_VERT_REGIONS));
-				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ScaledProcImageGridP.get()->data()));
+				processImage(ScaledProcImageGridP);
 			}
 		}
 		else
@@ -216,30 +221,31 @@ void DoProcessing()
 			auto ProcImage = ProcImagePtr.lock();
 			if ((SrcImage != nullptr) && (ProcImage != nullptr))
 			{
-				memcpy(ProcImage.get()->data(), SrcImage.get()->data(), ImageWidth * ImageHeight * RGB_PIXEL_SIZE);
+				memcpy(ProcImage.get()->data(), SrcImage.get()->data(), ImageWidth * ImageHeight * ImageBitDepth);
 				AltaLuxFilterPtr->SetStrength(FilterIntensity);
-				AltaLuxFilterPtr->ProcessRGB24(static_cast<void *>(ProcImage.get()->data()));
+				processImage(ProcImage);
 			}
 		}
 	}
 	catch (std::exception& e)
 	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Exception running filter instance (114): " << e.what();
-#endif
 	}
 }
 
+/// <summary>
+/// Modifies the provided rectangle, scaling its width and height by the provided scaling factor, expressed as a percentage. 
+/// The scaled rectangle is repositioned to start at the origin(0, 0).
+/// </summary>
+/// <param name="RectToScale">The RECT structure representing the rectangle to be scaled</param>
+/// <param name=" ScalingFactor">The scaling factor, expressed as a percentage. A factor of 100 means no scaling (100%), 50 means the rectangle is reduced to half its original size, and 200 doubles the size.</param>
 void ScaleRect(RECT& RectToScale, int ScalingFactor)
 {
-	int RectWidth = RectToScale.right - RectToScale.left;
-	int RectHeight = RectToScale.bottom - RectToScale.top;
-	RectWidth = (RectWidth * ScalingFactor) / 100;
-	RectHeight = (RectHeight * ScalingFactor) / 100;
+	int originalWidth = RectToScale.right - RectToScale.left;
+	int originalHeight = RectToScale.bottom - RectToScale.top;
 	RectToScale.left = 0;
 	RectToScale.top = 0;
-	RectToScale.right = RectWidth;
-	RectToScale.bottom = RectHeight;
+	RectToScale.right = (originalWidth * ScalingFactor) / 100;
+	RectToScale.bottom = (originalHeight * ScalingFactor) / 100;
 }
 
 /// <summary>
@@ -260,20 +266,20 @@ void ScaleDownImage(void* SrcImage, const int SrcImageWidth, const int SrcImageH
 	if (ScalingFactor == 1)
 	{
 		/// no rescaling
-		memcpy(DestImage, SrcImage, SrcImageWidth * SrcImageHeight * 3);
+		memcpy(DestImage, SrcImage, SrcImageWidth * SrcImageHeight * ImageBitDepth);
 		return;
 	}
 
 	auto DestImagePtr = static_cast<unsigned char *>(DestImage);
 	auto SrcImagePtr = static_cast<unsigned char *>(SrcImage);
-	const int SrcImageStride = SrcImageWidth * RGB_PIXEL_SIZE;
+	const int SrcImageStride = SrcImageWidth * ImageBitDepth;
 	const int DestImageWidth = SrcImageWidth / ScalingFactor;
 	const int DestImageHeight = SrcImageHeight / ScalingFactor;
 	unsigned char* DestPixelPtr = DestImagePtr;
 
 	for (int y = 0; y < DestImageHeight; y++)
 	{
-		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * RGB_PIXEL_SIZE];
+		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * ImageBitDepth];
 		for (int x = 0; x < DestImageWidth; x++)
 		{
 			unsigned int RAcc = 0;
@@ -282,9 +288,9 @@ void ScaleDownImage(void* SrcImage, const int SrcImageWidth, const int SrcImageH
 			for (int iy = 0; iy < ScalingFactor; iy++)
 				for (int ix = 0; ix < ScalingFactor; ix++)
 				{
-					RAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE)]);
-					GAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE) + 1]);
-					BAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * RGB_PIXEL_SIZE) + 2]);
+					RAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * ImageBitDepth)]);
+					GAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * ImageBitDepth) + 1]);
+					BAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * ImageBitDepth) + 2]);
 				}
 			if ((ScalingFactor == 2) || (ScalingFactor == 4))
 			{
@@ -298,8 +304,8 @@ void ScaleDownImage(void* SrcImage, const int SrcImageWidth, const int SrcImageH
 				DestPixelPtr[1] = static_cast<unsigned char>(GAcc / (ScalingFactor * ScalingFactor));
 				DestPixelPtr[2] = static_cast<unsigned char>(BAcc / (ScalingFactor * ScalingFactor));
 			}
-			SrcPixelPtr += ScalingFactor * RGB_PIXEL_SIZE;
-			DestPixelPtr += RGB_PIXEL_SIZE;
+			SrcPixelPtr += ScalingFactor * ImageBitDepth;
+			DestPixelPtr += ImageBitDepth;
 		}
 	}
 }
@@ -328,6 +334,29 @@ void UpdateSliders(HWND hwnd)
 	            (LPARAM)FilterScale);
 }
 
+void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2) 
+{
+	HPEN hPen = CreatePen(PS_SOLID, 1, RGB(128, 128, 128)); // Create a gray pen
+	HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
+
+	MoveToEx(hdc, x1, y1, NULL); // Move to the start point
+	LineTo(hdc, x2, y2);         // Draw to the end point
+
+	SelectObject(hdc, oldPen);
+	DeleteObject(hPen);
+}
+
+void PrepareVisualization(HDC hdc, RECT rectClient)
+{
+	ClearImageArea(hdc, rectClient);
+
+	auto rectWidth = RectWidth(rectClient);
+	auto rectHeight = RectHeight(rectClient);
+	DrawGrayLine(hdc, rectClient.left, rectClient.top + rectHeight / 3, rectClient.right, rectClient.top + rectHeight / 3);
+	DrawGrayLine(hdc, rectClient.left + rectWidth / 3, rectClient.top, rectClient.left + rectWidth / 3, rectClient.top + rectHeight / 3);
+	DrawGrayLine(hdc, rectClient.right - rectWidth / 3, rectClient.top + rectHeight / 3, rectClient.right - rectWidth / 3, rectClient.bottom);
+}
+
 /// <summary>
 /// repaint the GUI
 /// </summary>
@@ -342,21 +371,25 @@ void HandlePaintMessage(HWND hwnd)
 	HDC hdc = BeginPaint(hwnd, &ps);
 	try
 	{
-		ClearImageArea(hdc, rectClient);
+		PrepareVisualization(hdc, rectClient);
+
 		if (CompleteVisualization)
 		{
 			const BYTE LESS_INTENSE = 5;
 			const BYTE MORE_INTENSE = 15;
 			const BYTE CURR_INTENSE = 10;
 
+			const int SMALL_PICTURE = 32;
+
 			// draw original image
 			auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 			if (ScaledSrcImage != nullptr)
 			{
 				RECT OriginalImageRect = rectClient;
-				ScaleRect(OriginalImageRect, 31);
+				ScaleRect(OriginalImageRect, SMALL_PICTURE);
+				// draw in top-left corner
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledSrcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, OriginalImageRect, false,
-					FilterScale, NoZoom);
+					FilterScale, NoZoom, L"Original image");
 			}
 
 			// draw processed image with lesser intensity
@@ -364,11 +397,12 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImageIntensityM != nullptr)
 			{
 				RECT IntensityMImageRect = rectClient;
-				ScaleRect(IntensityMImageRect, 31);
+				ScaleRect(IntensityMImageRect, SMALL_PICTURE);
+				// draw in top-mid position
 				OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
 				FillImageArea(hdc, IntensityMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
-					false, FilterScale, NoZoom);
+					false, FilterScale, NoZoom, L"Weaker filter (- Intensity)");
 			}
 
 			// draw processed image with higher intensity
@@ -376,12 +410,12 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImageIntensityP != nullptr)
 			{
 				RECT IntensityPImageRect = rectClient;
-				ScaleRect(IntensityPImageRect, 31);
-				OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)) / 2,
-					(RectHeight(rectClient) - RectHeight(IntensityPImageRect)));
+				ScaleRect(IntensityPImageRect, SMALL_PICTURE);
+				// draw in top-right corner
+				OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)), 0);
 				FillImageArea(hdc, IntensityPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
-					false, FilterScale, NoZoom);
+					false, FilterScale, NoZoom, L"Stronger filter (+ Intensity)");
 			}
 
 			// draw processed image with coarser grid
@@ -389,11 +423,12 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImageGridM != nullptr)
 			{
 				RECT GridMImageRect = rectClient;
-				ScaleRect(GridMImageRect, 31);
-				OffsetRect(&GridMImageRect, 0, (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
+				ScaleRect(GridMImageRect, SMALL_PICTURE);
+				// draw in right-mid position
+				OffsetRect(&GridMImageRect, RectWidth(rectClient) - RectWidth(GridMImageRect), (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
 				FillImageArea(hdc, GridMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM.get()->data(), ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
-					max(FilterScale - 2, MIN_HOR_REGIONS), NoZoom);
+					max(FilterScale - 2, MIN_HOR_REGIONS), NoZoom, L"Coarser grid (- Scale)");
 			}
 
 			// draw processed image with finer grid
@@ -401,12 +436,12 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImageGridP != nullptr)
 			{
 				RECT GridPImageRect = rectClient;
-				ScaleRect(GridPImageRect, 31);				
-				OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)),
-					(RectHeight(rectClient) - RectHeight(GridPImageRect)) / 2);
+				ScaleRect(GridPImageRect, SMALL_PICTURE);
+				// draw in bottom-right corner
+				OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)), RectHeight(rectClient) - RectHeight(GridPImageRect));
 				FillImageArea(hdc, GridPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP.get()->data(), ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
-					min(FilterScale + 2, MAX_HOR_REGIONS), NoZoom);
+					min(FilterScale + 2, MAX_HOR_REGIONS), NoZoom, L"Finer grid (+ Scale)");
 			}
 
 			// draw processed image
@@ -414,12 +449,15 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImage != nullptr)
 			{
 				RECT CentralImageRect = rectClient;
-				ScaleRect(CentralImageRect, 55);
-				OffsetRect(&CentralImageRect, (RectWidth(rectClient) - RectWidth(CentralImageRect)) / 2,
-					(RectHeight(rectClient) - RectHeight(CentralImageRect)) / 2);
+				RECT SmallImageRect = rectClient;
+				ScaleRect(SmallImageRect, SMALL_PICTURE);
+				// draw in bottom-left corner
+				CentralImageRect.left = 0;
+				CentralImageRect.top = (RectHeight(rectClient) - RectHeight(SmallImageRect)) / 2;
+				CentralImageRect.right = ((RectWidth(rectClient) - RectWidth(SmallImageRect)) / 2) + RectWidth(SmallImageRect);
 				FillImageArea(hdc, CentralImageRect, CURR_INTENSE, CURR_INTENSE, CURR_INTENSE);
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, CentralImageRect, true,
-					FilterScale, NoZoom);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, CentralImageRect, false,
+					FilterScale, NoZoom, L"Processed image");
 			}
 		}
 		else
@@ -428,18 +466,24 @@ void HandlePaintMessage(HWND hwnd)
 			if (ScaledProcImage != nullptr)
 			{
 				// draw processed image only
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, rectClient, true,
-					FilterScale, NoZoom);
+				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, rectClient, false,
+					FilterScale, NoZoom, L"Processed image");
 			}
 		}
 	}
 	catch (std::exception& e)
 	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Exception handling paint message (263): " << e.what();
-#endif
 	}
 	EndPaint(hwnd, &ps);
+}
+
+void RepositionControl(HWND hwnd, int controlId, int offset, int windowWidth)
+{
+	HWND OkButtonCtrl = GetDlgItem(hwnd, controlId);
+	RECT rect;
+	GetWindowRect(OkButtonCtrl, &rect);
+	MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&rect, 2);
+	SetWindowPos(OkButtonCtrl, NULL, windowWidth - offset, rect.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
 }
 
 char SetupIniFile[1024];
@@ -595,6 +639,36 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			HandlePaintMessage(hwnd);
 			return FALSE;
 		}
+	case WM_SIZE:
+	{
+		int width = LOWORD(lparam);  // New width of the window
+		int height = HIWORD(lparam); // New height of the window
+		// Reposition or resize controls based on the new width and height
+		// x=572 in the dialog definition in the RC file maps to an offset of 88
+		const int DEF_OFFSET = 88;
+		RepositionControl(hwnd, IDOK, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDCANCEL, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_INTENSITY_SLIDER, DEF_OFFSET - 32, width);
+		RepositionControl(hwnd, IDC_SCALE_SLIDER, DEF_OFFSET - 32, width);		
+		RepositionControl(hwnd, IDC_INTENSITY_STATIC, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_SCALE_STATIC, DEF_OFFSET, width);
+		RepositionControl(hwnd, ID_DEFAULT, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_TOGGLEVISUALIZATION, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_TOGGLEZOOM, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_BITMAP_GRID_LARGE_STATIC, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_BITMAP_GRID_SMALL_STATIC, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_BITMAP_INTENSITY_LOW_STATIC, DEF_OFFSET, width);
+		RepositionControl(hwnd, IDC_BITMAP_INTENSITY_HIGH_STATIC, DEF_OFFSET, width);
+		InvalidateRgn(hwnd, nullptr, true);
+		return TRUE;
+	}
+	case WM_GETMINMAXINFO:
+	{
+		MINMAXINFO* pMMI = (MINMAXINFO*)lparam;
+		pMMI->ptMinTrackSize.x = 800;  // Minimum width of the window
+		pMMI->ptMinTrackSize.y = 650;  // Minimum height of the window
+		return TRUE;
+	}
 	default: return FALSE;
 	}
 	return TRUE;
@@ -603,7 +677,7 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 int GetRGBImageSize(int ImageWidth, int ImageHeight)
 {
 	const int SECURITY_PADDING = 4096;
-	return (ImageWidth * ImageHeight * RGB_PIXEL_SIZE) + SECURITY_PADDING;
+	return (ImageWidth * ImageHeight * ImageBitDepth) + SECURITY_PADDING;
 }
 
 /// <summary>
@@ -612,9 +686,6 @@ int GetRGBImageSize(int ImageWidth, int ImageHeight)
 /// <remarks>scaled image width must be a multiple of 8, if not a minor scaling factor is chosen</remarks>
 void ComputeScalingFactor()
 {
-#ifdef ENABLE_LOGGING
-	LOG(INFO) << "Calculating scaling factor (474)";
-#endif
 	int HorScaling = ImageWidth / 1000;
 	int VerScaling = ImageHeight / 800;
 	ScalingFactor = min(HorScaling, VerScaling);
@@ -627,24 +698,15 @@ void ComputeScalingFactor()
 		if ((ScaledImageWidth & 0x07) != 0)
 			// fix for non-standard, multiple of 4 rescaled images that may not be drawn correctly
 		{
-#ifdef ENABLE_LOGGING
-			LOG(INFO) << "Scaled image width " << ScaledImageWidth << " is not a multiple of 4";
-#endif
 			ScalingFactor--;
 		}
 		else
 			break;
 	}
-#ifdef ENABLE_LOGGING
-	LOG(INFO) << "Scaling factor is " << ScalingFactor;
-#endif
 	if (ScalingFactor > 1)
 	{
 		ScaledImageWidth = ImageWidth / ScalingFactor;
 		ScaledImageHeight = ImageHeight / ScalingFactor;
-#ifdef ENABLE_LOGGING
-		LOG(INFO) << "Scaled image: width " << ScaledImageWidth << " height " << ScaledImageHeight;
-#endif
 	}
 	else
 	{
@@ -660,12 +722,12 @@ void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* Sr
 	{
 		unsigned char* SrcImagePtr = SrcImage;
 		unsigned char* ImageBitsPtr = ImageBits;
-		ImageBitsPtr += ClipRect.left * RGB_PIXEL_SIZE;
+		ImageBitsPtr += ClipRect.left * ImageBitDepth;
 		ImageBitsPtr += ImageBitsStride * ClipRect.top;
 		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
 		{
-			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * RGB_PIXEL_SIZE);
-			SrcImagePtr += ImageWidth * RGB_PIXEL_SIZE;
+			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * ImageBitDepth);
+			SrcImagePtr += ImageWidth * ImageBitDepth;
 			ImageBitsPtr += ImageBitsStride;
 		}
 	}
@@ -675,8 +737,8 @@ void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* Sr
 		unsigned char* ImageBitsPtr = ImageBits;
 		for (int y = 0; y < FullImageHeight; y++)
 		{
-			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * RGB_PIXEL_SIZE);
-			SrcImagePtr += ImageWidth * RGB_PIXEL_SIZE;
+			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * ImageBitDepth);
+			SrcImagePtr += ImageWidth * ImageBitDepth;
 			ImageBitsPtr += ImageBitsStride;
 		}
 	}
@@ -701,12 +763,12 @@ void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits
 		// copy only part of source image
 		unsigned char* SrcImagePtr = SrcImage;
 		unsigned char* ImageBitsPtr = ImageBits;
-		ImageBitsPtr += ClipRect.left * RGB_PIXEL_SIZE;
+		ImageBitsPtr += ClipRect.left * ImageBitDepth;
 		ImageBitsPtr += ImageBitsStride * ClipRect.top;
 		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
 		{
-			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * RGB_PIXEL_SIZE);
-			SrcImagePtr += ImageWidth * RGB_PIXEL_SIZE;
+			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * ImageBitDepth);
+			SrcImagePtr += ImageWidth * ImageBitDepth;
 			ImageBitsPtr += ImageBitsStride;
 		}
 	}
@@ -717,8 +779,8 @@ void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits
 		unsigned char* ImageBitsPtr = ImageBits;
 		for (int y = 0; y < FullImageHeight; y++)
 		{
-			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * RGB_PIXEL_SIZE);
-			SrcImagePtr += ImageWidth * RGB_PIXEL_SIZE;
+			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * ImageBitDepth);
+			SrcImagePtr += ImageWidth * ImageBitDepth;
 			ImageBitsPtr += ImageBitsStride;
 		}
 	}
@@ -734,6 +796,26 @@ bool IsCroppedImage()
 	if ((FullImageHeight & 7) != 0)
 		return true;
 	return false;
+}
+
+/// <summary>
+/// Verify if the image bit depth provided in the bitmap header is supported
+/// </summary>
+/// <param name="pbBmHdr">Pointer to the bitmap header which contains information about the bitmap image.</param>
+/// <returns>Returns true if the bit depth is supported (24 or 32 bits per pixel); otherwise, false.</returns>
+bool isSupportedBitDepth(ScopedBitmapHeader& pbBmHdr)
+{
+	switch (pbBmHdr->biBitCount) {
+	case 24:
+		ImageBitDepth = RGB24_PIXEL_SIZE;  // Typically 3 bytes
+		break;
+	case 32:
+		ImageBitDepth = RGB32_PIXEL_SIZE;  // Typically 4 bytes
+		break;
+	default:
+		return false;  // Unsupported bit depth
+	}
+	return true;
 }
 
 /// <summary>
@@ -763,18 +845,11 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		memcpy(&BmHdrCopy, &(*pbBmHdr), sizeof(BITMAPINFOHEADER));
 		if (pbBmHdr->biPlanes != 1)
 		{
-#ifdef ENABLE_LOGGING
-			LOG(ERROR) << "Only planar images are supported (478)";
-#endif
 			return false;
 		}
-		if (pbBmHdr->biBitCount != 24)
-		{
-#ifdef ENABLE_LOGGING
-			LOG(ERROR) << "Only 24-bit images are supported (484)";
-#endif
+		if (!isSupportedBitDepth(pbBmHdr))
 			return false;
-		}
+
 		FullImageWidth = abs(pbBmHdr->biWidth);
 		FullImageHeight = abs(pbBmHdr->biHeight);
 		/// ClipRect is actually (left, top, width, height) !
@@ -787,66 +862,31 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 			NormalizeClipRect(ClipRect);
 			BmHdrCopy.biWidth = ImageWidth;
 			BmHdrCopy.biHeight = ImageHeight;
-#ifdef ENABLE_LOGGING
-			LOG(INFO) << "Cropped image: width " << ImageWidth << " height " << ImageHeight;
-#endif
-		}
-		else
-		{
-#ifdef ENABLE_LOGGING
-			LOG(INFO) << "Full image: width " << ImageWidth << " height " << ImageHeight;
-#endif
 		}
 
 		BYTE* ImageBits = pbBmHdr.GetImageBits();
 		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
 		/// SrcImage
-#ifdef ENABLE_LOGGING
-		LOG(INFO) << "Allocating source image (553)";
-#endif
-
 		SrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));
-		if (SrcImage == nullptr)
-		{
-#ifdef ENABLE_LOGGING
-			LOG(ERROR) << "Cannot create Source image (490): " << e.what();
-#endif
-			return false;
-		}
+		if (SrcImage == nullptr)		
+			return false;		
 		SrcImagePtr = SrcImage;
 
 		// copy from ImageBits into SrcImage
-#ifdef ENABLE_LOGGING
-		LOG(INFO) << "Copying source image (568)";
-#endif
 		CopyFromSourceImage(SrcImage.get()->data(), ClipRect, ImageBits, ImageBitsStride);
 	}
 
 	/// ProcImage
-#ifdef ENABLE_LOGGING
-	LOG(INFO) << "Allocating processed image (594)";
-#endif
 	auto ProcImage = std::make_shared<std::vector<unsigned char>>(*SrcImage.get());
 	if (ProcImage == nullptr)
-	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Cannot create processed image (598): " << e.what();
-#endif
 		return false;
-	}
 	ProcImagePtr = ProcImage;
-#ifdef ENABLE_LOGGING
-	LOG(INFO) << "Copying processed image (606)";
-#endif
 
 	/// param1 : [0..100], default 25
 	/// param2 : [2..16], default 8
 	if ((param1 == -1) || (param2 == -1))
 	{
 		// show GUI
-#ifdef ENABLE_LOGGING
-		LOG(INFO) << "Loading saved settings (544)";
-#endif
 		strcpy(SetupIniFile, iniFile);
 		FilterIntensity = GetPrivateProfileIntA("AltaLux", "Intensity", AL_DEFAULT_STRENGTH, SetupIniFile);
 		FilterScale = GetPrivateProfileIntA("AltaLux", "Scale", DEFAULT_HOR_REGIONS, SetupIniFile);
@@ -912,13 +952,8 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		std::unique_ptr<CBaseAltaLuxFilter> AltaLuxFilter(
 			CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, param2, param2));
 		AltaLuxFilter->SetStrength(param1);
-		{
-#ifdef ENABLE_LOGGING
-			TIMED_SCOPE(timerBlkObj, "Filter processing of full resolution image");
-#endif
-			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage.get()->data()));
-		}
-
+		AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage.get()->data()));
+		
 		ScopedBitmapHeader pbBmHdr(hDib);
 		BYTE* ImageBits = pbBmHdr.GetImageBits();
 		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
@@ -926,9 +961,6 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 	}
 	catch (std::exception& e)
 	{
-#ifdef ENABLE_LOGGING
-		LOG(ERROR) << "Exception running filter instance (651): " << e.what();
-#endif
 	}
 	return true;
 }

@@ -27,6 +27,7 @@ A "contributor" is any person that distributes its contribution under this licen
 
 #include "UIDraw.h"
 #include <cstdio>
+#include <tchar.h>
 
 int RectWidth(RECT& RectToMeasure)
 {
@@ -102,7 +103,7 @@ void DrawScaleGrid(HDC hdc, RECT rectTo, int FilterScale)
 /// <param name="NoRescaling">if true, draw the central part of the image without any rescaling</param>
 /// <remarks>NoRescaling works only if input image is wider and taller than drawing area</remarks>
 void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
-                     RECT RectPosition, bool ShowGrid, int FilterScale, bool NoRescaling)
+                     RECT RectPosition, bool ShowGrid, int FilterScale, bool NoRescaling, LPCWSTR Title)
 {
 	RECT rectTo;
 	rectTo.left = rectTo.top = 0;
@@ -121,6 +122,10 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 
 		StretchDIBits(hdc, RectPosition.left, RectPosition.top, RectWidth(RectPosition), RectHeight(RectPosition), HorOffset, VerOffset,
 			RectWidth(RectPosition), RectHeight(RectPosition), ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
+
+		SetTextColor(hdc, RGB(255, 255, 255));  // white text
+		SetBkColor(hdc, RGB(0, 0, 0));          // black background		
+		TextOut(hdc, RectPosition.left, RectPosition.top, Title, wcslen(Title));
 	} else {
 		// draw full image with rescaling
 		float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
@@ -146,6 +151,10 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 			/// draw scale
 			DrawScaleGrid(hdc, rectTo, FilterScale);
 		}
+
+		SetTextColor(hdc, RGB(255, 255, 255));  // white text
+		SetBkColor(hdc, RGB(0, 0, 0));          // black background		
+		TextOut(hdc, rectTo.left, rectTo.top, Title, wcslen(Title));
 	}
 }
 

@@ -7,8 +7,8 @@
     <LocalDebuggerCommandArguments>"C:\source\projects\AltaLux\IrfanView Plugin\AltaLux\TestImage.jpg"</LocalDebuggerCommandArguments>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <LocalDebuggerCommand>F:\Program Files\IrfanView\i_view64.exe</LocalDebuggerCommand>
+    <LocalDebuggerCommand>c:\Program Files\IrfanView\i_view64.exe</LocalDebuggerCommand>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerWorkingDirectory>F:\Program Files\IrfanView</LocalDebuggerWorkingDirectory>
+    <LocalDebuggerWorkingDirectory>c:\Program Files\IrfanView</LocalDebuggerWorkingDirectory>
   </PropertyGroup>
 </Project>

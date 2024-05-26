@@ -64,3 +64,4 @@ ALTALUX_API bool __cdecl AltaLux_Effects(HANDLE hDib, HWND hwnd, int filter, REC
                                          char* iniFile, char* szAppName, int regID);
 ALTALUX_API int __cdecl GetPlugInInfo(char* versionString, char* fileFormats);
 }
+

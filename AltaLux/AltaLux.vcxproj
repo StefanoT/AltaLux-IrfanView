@@ -22,7 +22,7 @@
     <ProjectGuid>{4C680C3B-B4F0-4063-83CD-4E0800C89154}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>AltaLux</RootNamespace>
-    <WindowsTargetPlatformVersion>7.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -34,7 +34,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141_xp</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
@@ -47,7 +47,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141_xp</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -73,7 +73,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <OutDir>F:\Program Files\IrfanView\Plugins\</OutDir>
+    <OutDir>c:\Program Files\IrfanView\Plugins\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
@@ -156,8 +156,6 @@
     <ClInclude Include="Filter\CParallelEventAltaLuxFilter.h" />
     <ClInclude Include="Filter\CParallelSplitLoopAltaLuxFilter.h" />
     <ClInclude Include="Filter\CSerialAltaLuxFilter.h" />
-    <ClInclude Include="Log\easylogging++.h" />
-    <ClInclude Include="Log\SetupLog.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="ScopedBitmapHeader.h" />
     <ClInclude Include="stdafx.h" />
@@ -173,7 +171,6 @@
     <ClCompile Include="Filter\CParallelEventAltaLuxFilter.cpp" />
     <ClCompile Include="Filter\CParallelSplitLoopAltaLuxFilter.cpp" />
     <ClCompile Include="Filter\CSerialAltaLuxFilter.cpp" />
-    <ClCompile Include="Log\SetupLog.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
