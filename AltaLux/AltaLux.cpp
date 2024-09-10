@@ -696,8 +696,8 @@ void ComputeScalingFactor()
 		ScaledImageWidth = ImageWidth / ScalingFactor;
 		ScaledImageHeight = ImageHeight / ScalingFactor;
 		if ((ScaledImageWidth & 0x07) != 0)
-			// fix for non-standard, multiple of 4 rescaled images that may not be drawn correctly
 		{
+			// fix for non-standard, multiple of 4 rescaled images that may not be drawn correctly
 			ScalingFactor--;
 		}
 		else
@@ -715,13 +715,22 @@ void ComputeScalingFactor()
 	}
 }
 
+/// <summary>
+/// copy the image back into ImageBits
+/// </summary>
+/// <param name="ImageBits"></param>
+/// <param name="ImageBitsStride"></param>
+/// <param name="SrcImage"></param>
+/// <param name="ClipRect"></param>
 void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* SrcImage, RECT ClipRect)
 {
-	// copy the image back into ImageBits
+	if (!ImageBits || !SrcImage)
+		return;
+
+	unsigned char* SrcImagePtr = SrcImage;
+	unsigned char* ImageBitsPtr = ImageBits;
 	if (CroppedImage)
 	{
-		unsigned char* SrcImagePtr = SrcImage;
-		unsigned char* ImageBitsPtr = ImageBits;
 		ImageBitsPtr += ClipRect.left * ImageBitDepth;
 		ImageBitsPtr += ImageBitsStride * ClipRect.top;
 		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
@@ -733,8 +742,6 @@ void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* Sr
 	}
 	else
 	{
-		unsigned char* SrcImagePtr = SrcImage;
-		unsigned char* ImageBitsPtr = ImageBits;
 		for (int y = 0; y < FullImageHeight; y++)
 		{
 			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * ImageBitDepth);
@@ -758,11 +765,14 @@ void NormalizeClipRect(RECT& ClipRect)
 
 void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits, DWORD ImageBitsStride)
 {
+	if (!ImageBits || !SrcImage)
+		return;
+
+	unsigned char* SrcImagePtr = SrcImage;
+	unsigned char* ImageBitsPtr = ImageBits;
 	if (CroppedImage)
 	{
 		// copy only part of source image
-		unsigned char* SrcImagePtr = SrcImage;
-		unsigned char* ImageBitsPtr = ImageBits;
 		ImageBitsPtr += ClipRect.left * ImageBitDepth;
 		ImageBitsPtr += ImageBitsStride * ClipRect.top;
 		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
@@ -775,8 +785,6 @@ void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits
 	else
 	{
 		// copy whole source image
-		unsigned char* SrcImagePtr = SrcImage;
-		unsigned char* ImageBitsPtr = ImageBits;
 		for (int y = 0; y < FullImageHeight; y++)
 		{
 			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * ImageBitDepth);
@@ -952,7 +960,10 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		std::unique_ptr<CBaseAltaLuxFilter> AltaLuxFilter(
 			CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, param2, param2));
 		AltaLuxFilter->SetStrength(param1);
-		AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage.get()->data()));
+		if (ImageBitDepth == RGB32_PIXEL_SIZE)
+			AltaLuxFilter->ProcessRGB32(static_cast<void*>(SrcImage.get()->data()));
+		else
+			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage.get()->data()));
 		
 		ScopedBitmapHeader pbBmHdr(hDib);
 		BYTE* ImageBits = pbBmHdr.GetImageBits();
@@ -973,7 +984,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 /// <returns></returns>
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 {
-	sprintf(versionString, "1.08"); // your version-nr
+	sprintf(versionString, "1.09"); // your version-nr
 	sprintf(fileFormats, "AltaLux image enhancement filter"); // some infos
 	return 0;
 }
