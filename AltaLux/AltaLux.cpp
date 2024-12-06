@@ -46,6 +46,14 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "ScopedBitmapHeader.h"
 #include <iostream>
 
+#include <dwmapi.h>
+#pragma comment(lib, "Dwmapi.lib")
+
+#include <Uxtheme.h>
+#include <vssym32.h>
+
+#pragma comment(lib, "uxtheme.lib")
+
 using WeakImagePtr = std::weak_ptr<std::vector<unsigned char>>;
 using SharedImagePtr = std::shared_ptr<std::vector<unsigned char>>;
 
@@ -346,15 +354,18 @@ void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2)
 	DeleteObject(hPen);
 }
 
-void PrepareVisualization(HDC hdc, RECT rectClient)
+void PrepareVisualization(HDC hdc, RECT rectClient, bool drawLines)
 {
 	ClearImageArea(hdc, rectClient);
 
-	auto rectWidth = RectWidth(rectClient);
-	auto rectHeight = RectHeight(rectClient);
-	DrawGrayLine(hdc, rectClient.left, rectClient.top + rectHeight / 3, rectClient.right, rectClient.top + rectHeight / 3);
-	DrawGrayLine(hdc, rectClient.left + rectWidth / 3, rectClient.top, rectClient.left + rectWidth / 3, rectClient.top + rectHeight / 3);
-	DrawGrayLine(hdc, rectClient.right - rectWidth / 3, rectClient.top + rectHeight / 3, rectClient.right - rectWidth / 3, rectClient.bottom);
+	if (drawLines)
+	{
+		auto rectWidth = RectWidth(rectClient);
+		auto rectHeight = RectHeight(rectClient);
+		DrawGrayLine(hdc, rectClient.left, rectClient.top + rectHeight / 3, rectClient.right, rectClient.top + rectHeight / 3);
+		DrawGrayLine(hdc, rectClient.left + rectWidth / 3, rectClient.top, rectClient.left + rectWidth / 3, rectClient.top + rectHeight / 3);
+		DrawGrayLine(hdc, rectClient.right - rectWidth / 3, rectClient.top + rectHeight / 3, rectClient.right - rectWidth / 3, rectClient.bottom);
+	}
 }
 
 /// <summary>
@@ -371,7 +382,7 @@ void HandlePaintMessage(HWND hwnd)
 	HDC hdc = BeginPaint(hwnd, &ps);
 	try
 	{
-		PrepareVisualization(hdc, rectClient);
+		PrepareVisualization(hdc, rectClient, CompleteVisualization);
 
 		if (CompleteVisualization)
 		{
@@ -486,7 +497,51 @@ void RepositionControl(HWND hwnd, int controlId, int offset, int windowWidth)
 	SetWindowPos(OkButtonCtrl, NULL, windowWidth - offset, rect.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
 }
 
+/// <summary>
+/// Check whether dark mode is enabled
+/// </summary>
+/// <returns>true if dark mode, false otherwise</returns>
+bool IsDarkModeEnabled() {
+	DWORD dwValue = 0;
+	DWORD dwSize = sizeof(dwValue);
+
+	// Open the registry key where the theme setting is stored
+	LSTATUS status = RegGetValueW(
+		HKEY_CURRENT_USER,
+		L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+		L"AppsUseLightTheme",
+		RRF_RT_DWORD,
+		NULL,
+		&dwValue,
+		&dwSize
+	);
+
+	if (status == ERROR_SUCCESS) {
+		return dwValue == 0;  // 0 means dark mode is enabled, 1 means light mode is enabled
+	}
+
+	return false;  // Default to false (light mode) if the registry value can't be read
+}
+
+void AdjustForDarkMode(HWND hwnd) {
+	if (IsDarkModeEnabled()) {
+		// Set dark background and light text for dark mode
+		SetClassLongPtr(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(45, 45, 48))); // Dark background
+		SetTextColor(GetDC(hwnd), RGB(255, 255, 255));  // White text
+	}
+	else {
+		// Light background and dark text for light mode
+		SetClassLongPtr(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(255, 255, 255))); // Light background
+		SetTextColor(GetDC(hwnd), RGB(0, 0, 0));  // Black text
+	}
+	InvalidateRect(hwnd, NULL, TRUE); // Redraw the window to apply the new styles
+}
+
 char SetupIniFile[1024];
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 
 BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -496,7 +551,11 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	{
 	case WM_INITDIALOG:
 		{
-			// Do stuff you need to init your dialogbox here	    
+			// Do stuff you need to init your dialogbox here	  			
+			// enable dark mode for title bar
+			BOOL value = TRUE;
+			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
+
 			HWND hwndBitmap = GetDlgItem(hwnd, IDC_SFONDO);
 			SetWindowPos(hwndBitmap, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
 
@@ -516,10 +575,12 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			            (WPARAM)TRUE, // redraw flag 
 			            (LPARAM)FilterScale);
 
+			AdjustForDarkMode(hwnd);
 			DoProcessing();
 			InvalidateRgn(hwnd, nullptr, true);
 			return TRUE;
 		}
+
 	case WM_LBUTTONDOWN:
 		{
 			int MouseXPos = LOWORD(lparam);
@@ -563,6 +624,7 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			}
 			return TRUE;
 		}
+
 	case WM_COMMAND:
 		{
 			switch (LOWORD(wparam))
@@ -607,6 +669,7 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				}
 			}
 		}
+
 	case WM_VSCROLL:
 		{
 			HWND hwndTrack = (HWND)lparam;
@@ -634,41 +697,53 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			}
 			return TRUE;
 		}
+
 	case WM_PAINT:
 		{
 			HandlePaintMessage(hwnd);
 			return FALSE;
 		}
+
 	case WM_SIZE:
-	{
-		int width = LOWORD(lparam);  // New width of the window
-		int height = HIWORD(lparam); // New height of the window
-		// Reposition or resize controls based on the new width and height
-		// x=572 in the dialog definition in the RC file maps to an offset of 88
-		const int DEF_OFFSET = 88;
-		RepositionControl(hwnd, IDOK, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDCANCEL, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_INTENSITY_SLIDER, DEF_OFFSET - 32, width);
-		RepositionControl(hwnd, IDC_SCALE_SLIDER, DEF_OFFSET - 32, width);		
-		RepositionControl(hwnd, IDC_INTENSITY_STATIC, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_SCALE_STATIC, DEF_OFFSET, width);
-		RepositionControl(hwnd, ID_DEFAULT, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_TOGGLEVISUALIZATION, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_TOGGLEZOOM, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_BITMAP_GRID_LARGE_STATIC, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_BITMAP_GRID_SMALL_STATIC, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_BITMAP_INTENSITY_LOW_STATIC, DEF_OFFSET, width);
-		RepositionControl(hwnd, IDC_BITMAP_INTENSITY_HIGH_STATIC, DEF_OFFSET, width);
-		InvalidateRgn(hwnd, nullptr, true);
-		return TRUE;
-	}
+		{
+			int width = LOWORD(lparam);  // New width of the window
+			int height = HIWORD(lparam); // New height of the window
+			// Reposition or resize controls based on the new width and height
+			// x=572 in the dialog definition in the RC file maps to an offset of 88
+			const int DEF_OFFSET = 88;
+			RepositionControl(hwnd, IDOK, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDCANCEL, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_INTENSITY_SLIDER, DEF_OFFSET - 32, width);
+			RepositionControl(hwnd, IDC_SCALE_SLIDER, DEF_OFFSET - 32, width);		
+			RepositionControl(hwnd, IDC_INTENSITY_STATIC, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_SCALE_STATIC, DEF_OFFSET, width);
+			RepositionControl(hwnd, ID_DEFAULT, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_TOGGLEVISUALIZATION, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_TOGGLEZOOM, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_BITMAP_GRID_LARGE_STATIC, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_BITMAP_GRID_SMALL_STATIC, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_BITMAP_INTENSITY_LOW_STATIC, DEF_OFFSET, width);
+			RepositionControl(hwnd, IDC_BITMAP_INTENSITY_HIGH_STATIC, DEF_OFFSET, width);
+			InvalidateRgn(hwnd, nullptr, true);
+			return TRUE;
+		}
+
 	case WM_GETMINMAXINFO:
-	{
-		MINMAXINFO* pMMI = (MINMAXINFO*)lparam;
-		pMMI->ptMinTrackSize.x = 800;  // Minimum width of the window
-		pMMI->ptMinTrackSize.y = 650;  // Minimum height of the window
-		return TRUE;
-	}
+		{
+			MINMAXINFO* pMMI = (MINMAXINFO*)lparam;
+			pMMI->ptMinTrackSize.x = 800;  // Minimum width of the window
+			pMMI->ptMinTrackSize.y = 650;  // Minimum height of the window
+			return TRUE;
+		}
+
+	case WM_SETTINGCHANGE:
+		{
+			if (IsDarkModeEnabled()) {
+				AdjustForDarkMode(hwnd); // Reapply dark mode when the system theme changes
+			}
+			return TRUE;
+		}
+
 	default: return FALSE;
 	}
 	return TRUE;
