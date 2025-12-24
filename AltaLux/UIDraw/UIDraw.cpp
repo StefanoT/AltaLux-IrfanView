@@ -39,6 +39,15 @@ int RectHeight(RECT& RectToMeasure)
 	return RectToMeasure.bottom - RectToMeasure.top;
 }
 
+BITMAPINFOHEADER MakeBitmapInfo(const BITMAPINFOHEADER* src, int width, int height)
+{
+	BITMAPINFOHEADER info;
+	memcpy(&info, src, sizeof(BITMAPINFOHEADER)); // copy all original header fields
+	info.biWidth = ((width + 7) / 8) * 8;         // round up to nearest multiple of 8
+	info.biHeight = height;
+	return info;
+}
+
 /// <summary>
 /// Draw a quad
 /// </summary>
@@ -49,8 +58,8 @@ void DrawScaleQuad(HDC hdc, RECT QuadRect)
 	const int QuadWidth = (QuadRect.right - QuadRect.left) / 8;
 	const int QuadHeight = (QuadRect.bottom - QuadRect.top) / 8;
 	HPEN hPen = CreatePen(PS_SOLID, 1, RGB(255, 0, 0));
-	SelectObject(hdc, hPen);
-	SelectObject(hdc, GetStockObject(NULL_BRUSH));
+	HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+	HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
 	MoveToEx(hdc, QuadRect.left, QuadRect.top, nullptr);
 	LineTo(hdc, QuadRect.left + QuadWidth, QuadRect.top);
@@ -64,6 +73,8 @@ void DrawScaleQuad(HDC hdc, RECT QuadRect)
 	MoveToEx(hdc, QuadRect.right, QuadRect.bottom, nullptr);
 	LineTo(hdc, QuadRect.right, QuadRect.bottom - QuadHeight);
 
+	SelectObject(hdc, hOldPen);
+	SelectObject(hdc, hOldBrush);
 	DeleteObject(hPen);
 }
 
@@ -112,10 +123,7 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 	{
 		// draw central part of image with no rescaling
 		SetStretchBltMode(hdc, COLORONCOLOR);
-		BITMAPINFOHEADER ImageInfo;
-		memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
-		ImageInfo.biWidth = ImageWidth & ~7;
-		ImageInfo.biHeight = ImageHeight;
+		BITMAPINFOHEADER ImageInfo = MakeBitmapInfo(pBmHdr, ImageWidth, ImageHeight);
 
 		const int HorOffset = (ImageWidth - RectWidth(RectPosition)) >> 1;
 		const int VerOffset = (ImageHeight - RectHeight(RectPosition)) >> 1;
@@ -133,16 +141,13 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 		const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
 		rectTo.right = static_cast<int>(ImageWidth / MaxScaling);
 		rectTo.bottom = static_cast<int>(ImageHeight / MaxScaling);
-		const int VerOffset = max(0, (RectWidth(RectPosition) - rectTo.right)) >> 1;
-		const int HorOffset = max(0, (RectHeight(RectPosition) - rectTo.bottom)) >> 1;
-		OffsetRect(&rectTo, VerOffset, HorOffset);
+		const int xOffset = max(0, (RectWidth(RectPosition) - rectTo.right)) >> 1;
+		const int yOffset = max(0, (RectHeight(RectPosition) - rectTo.bottom)) >> 1;
+		OffsetRect(&rectTo, xOffset, yOffset);
 		OffsetRect(&rectTo, RectPosition.left, RectPosition.top);
 
 		SetStretchBltMode(hdc, COLORONCOLOR);
-		BITMAPINFOHEADER ImageInfo;
-		memcpy(&ImageInfo, pBmHdr, sizeof(BITMAPINFOHEADER));
-		ImageInfo.biWidth = ImageWidth & ~7;
-		ImageInfo.biHeight = ImageHeight;
+		BITMAPINFOHEADER ImageInfo = MakeBitmapInfo(pBmHdr, ImageWidth, ImageHeight);
 		StretchDIBits(hdc, rectTo.left, rectTo.top, RectWidth(rectTo), RectHeight(rectTo), 0, 0, ImageWidth,
 			ImageHeight, ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
 
@@ -171,9 +176,9 @@ void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int Imag
 	const float MaxScaling = (ScalingX > ScalingY ? ScalingX : ScalingY);
 	rectTo.right = static_cast<int>(ImageWidth / MaxScaling);
 	rectTo.bottom = static_cast<int>(ImageHeight / MaxScaling);
-	const int VerOffset = max(0, ((rectClient.right - rectClient.left) - rectTo.right)) >> 1;
-	const int HorOffset = max(0, ((rectClient.bottom - rectClient.top) - rectTo.bottom)) >> 1;
-	OffsetRect(&rectTo, VerOffset, HorOffset);
+	const int xOffset = max(0, ((rectClient.right - rectClient.left) - rectTo.right)) >> 1;
+	const int yOffset = max(0, ((rectClient.bottom - rectClient.top) - rectTo.bottom)) >> 1;
+	OffsetRect(&rectTo, xOffset, yOffset);
 
 	PAINTSTRUCT ps;
 	HDC hdc = BeginPaint(hwnd, &ps);
@@ -181,6 +186,8 @@ void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int Imag
 	HRGN bgRgn = CreateRectRgnIndirect(&rectClient);
 	HBRUSH hBrush = CreateSolidBrush(RGB(0,0,0));
 	FillRgn(hdc, bgRgn, hBrush);
+	DeleteObject(bgRgn);
+	DeleteObject(hBrush);
 
 	if (ScalingX > ScalingY)
 	{

@@ -1,0 +1,172 @@
+# Doxyfile for AltaLux Project
+
+#---------------------------------------------------------------------------
+# Project related configuration options
+#---------------------------------------------------------------------------
+DOXYFILE_ENCODING      = UTF-8
+PROJECT_NAME           = "AltaLux"
+PROJECT_NUMBER         = 1.10
+PROJECT_BRIEF          = "Advanced CLAHE Image Enhancement Plugin for IrfanView"
+PROJECT_LOGO           = 
+OUTPUT_DIRECTORY       = ./Documentation
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+
+#---------------------------------------------------------------------------
+# Build related configuration options
+#---------------------------------------------------------------------------
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+INLINE_INHERITED_MEMB  = NO
+FULL_PATH_NAMES        = YES
+STRIP_FROM_PATH        = 
+SHORT_NAMES            = NO
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = NO
+MULTILINE_CPP_IS_BRIEF = NO
+INHERIT_DOCS           = YES
+SEPARATE_MEMBER_PAGES  = NO
+TAB_SIZE               = 4
+
+#---------------------------------------------------------------------------
+# Input related configuration options
+#---------------------------------------------------------------------------
+INPUT                  = . \
+                         ./Filter \
+                         ./UIDraw \
+                         README_DOCUMENTATION.md \
+                         API_REFERENCE.md
+FILE_PATTERNS          = *.cpp \
+                         *.h \
+                         *.md
+RECURSIVE              = YES
+EXCLUDE                = ./Debug \
+                         ./Release \
+                         ./x64 \
+                         ./.vs
+EXCLUDE_PATTERNS       = */Debug/* \
+                         */Release/* \
+                         */x64/* \
+                         */.vs/*
+EXAMPLE_PATH           = 
+EXAMPLE_PATTERNS       = 
+IMAGE_PATH             = ./Bitmap
+
+#---------------------------------------------------------------------------
+# Source browsing options
+#---------------------------------------------------------------------------
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+REFERENCES_LINK_SOURCE = YES
+USE_HTAGS              = NO
+VERBATIM_HEADERS       = YES
+
+#---------------------------------------------------------------------------
+# Alphabetical index options
+#---------------------------------------------------------------------------
+ALPHABETICAL_INDEX     = YES
+COLS_IN_ALPHA_INDEX    = 5
+
+#---------------------------------------------------------------------------
+# HTML output options
+#---------------------------------------------------------------------------
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_FILE_EXTENSION    = .html
+HTML_HEADER            = 
+HTML_FOOTER            = 
+HTML_STYLESHEET        = 
+HTML_EXTRA_STYLESHEET  = 
+HTML_EXTRA_FILES       = 
+HTML_COLORSTYLE_HUE    = 220
+HTML_COLORSTYLE_SAT    = 100
+HTML_COLORSTYLE_GAMMA  = 80
+HTML_TIMESTAMP         = YES
+HTML_DYNAMIC_SECTIONS  = YES
+HTML_INDEX_NUM_ENTRIES = 100
+
+#---------------------------------------------------------------------------
+# LaTeX output options
+#---------------------------------------------------------------------------
+GENERATE_LATEX         = NO
+LATEX_OUTPUT           = latex
+LATEX_CMD_NAME         = latex
+MAKEINDEX_CMD_NAME     = makeindex
+COMPACT_LATEX          = NO
+PAPER_TYPE             = a4
+EXTRA_PACKAGES         = 
+LATEX_HEADER           = 
+PDF_HYPERLINKS         = YES
+USE_PDFLATEX           = YES
+LATEX_BATCHMODE        = NO
+LATEX_HIDE_INDICES     = NO
+
+#---------------------------------------------------------------------------
+# RTF output options
+#---------------------------------------------------------------------------
+GENERATE_RTF           = NO
+
+#---------------------------------------------------------------------------
+# Man page output options
+#---------------------------------------------------------------------------
+GENERATE_MAN           = NO
+
+#---------------------------------------------------------------------------
+# XML output options
+#---------------------------------------------------------------------------
+GENERATE_XML           = NO
+
+#---------------------------------------------------------------------------
+# Preprocessor options
+#---------------------------------------------------------------------------
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+SEARCH_INCLUDES        = YES
+INCLUDE_PATH           = 
+PREDEFINED             = ALTALUX_EXPORTS \
+                         DOXYGEN_SHOULD_SKIP_THIS
+SKIP_FUNCTION_MACROS   = YES
+
+#---------------------------------------------------------------------------
+# Diagram options
+#---------------------------------------------------------------------------
+HAVE_DOT               = NO
+CLASS_DIAGRAMS         = YES
+HIDE_UNDOC_RELATIONS   = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+GROUP_GRAPHS           = YES
+UML_LOOK               = NO
+TEMPLATE_RELATIONS     = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+GRAPHICAL_HIERARCHY    = YES
+DIRECTORY_GRAPH        = YES
+DOT_IMAGE_FORMAT       = png
+INTERACTIVE_SVG        = NO
+DOT_PATH               = 
+DOTFILE_DIRS           = 
+MAX_DOT_GRAPH_DEPTH    = 0
+DOT_TRANSPARENT        = NO
+DOT_MULTI_TARGETS      = NO
+GENERATE_LEGEND        = YES
+DOT_CLEANUP            = YES
+
+#---------------------------------------------------------------------------
+# Search engine options
+#---------------------------------------------------------------------------
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO

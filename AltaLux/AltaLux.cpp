@@ -96,6 +96,7 @@ BOOL APIENTRY DllMain(HANDLE hModule,
 	case DLL_PROCESS_ATTACH:
 		{
 			hDll = (HINSTANCE)hModule;
+			break;
 		}
 	case DLL_THREAD_ATTACH:
 	case DLL_THREAD_DETACH:
@@ -121,23 +122,27 @@ void CopyScaledSrcImage(unsigned char* TargetImage)
 /// </summary>
 /// <param name="IsRescalingEnabled">A reference to a boolean that will be set to true if scaling is enabled (i.e., the scaled image was used to create the filter), or false if the full-size image was used.</param>
 /// <returns>A pointer to an instance of the AltaLux filter if successful, nullptr otherwise.</returns>
-CBaseAltaLuxFilter* InstantiateFilter(bool& IsRescalingEnabled)
+std::unique_ptr<CBaseAltaLuxFilter> InstantiateFilter(bool& IsRescalingEnabled)
 {
 	try
-	{
-		auto ScaledSrcImage = ScaledSrcImagePtr.lock();
-		IsRescalingEnabled = (ScaledSrcImage != nullptr);
+	{		
+		IsRescalingEnabled = ScaledSrcImagePtr.lock() != nullptr;
+		CBaseAltaLuxFilter* rawFilter = nullptr;
 		if (IsRescalingEnabled)		
 		{
-			return CAltaLuxFilterFactory::CreateAltaLuxFilter(ScaledImageWidth, ScaledImageHeight, FilterScale, FilterScale);			
+			rawFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ScaledImageWidth, ScaledImageHeight, FilterScale, FilterScale);			
 		}
 		else
 		{
-			return CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, FilterScale, FilterScale);			
+			rawFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, FilterScale, FilterScale);			
 		}
+		return std::unique_ptr<CBaseAltaLuxFilter>(rawFilter);
 	}
 	catch (std::exception& e)
 	{
+	#ifdef ENABLE_LOGGING
+		std::cerr << "Exception: " << e.what() << std::endl;
+	#endif	
 		return nullptr;
 	}
 }
@@ -145,14 +150,12 @@ CBaseAltaLuxFilter* InstantiateFilter(bool& IsRescalingEnabled)
 void DoProcessing()
 {
 	bool IsRescalingEnabled = false;
-	CBaseAltaLuxFilter* AltaLuxFilter = InstantiateFilter(IsRescalingEnabled);
-	if (AltaLuxFilter == nullptr)
+	auto AltaLuxFilterPtr = InstantiateFilter(IsRescalingEnabled);
+	if (!AltaLuxFilterPtr)
 		return;
 
 	try
 	{
-		std::unique_ptr<CBaseAltaLuxFilter> AltaLuxFilterPtr(AltaLuxFilter);
-
 		auto processImage = [&](const SharedImagePtr image) 
 		{
 			switch (ImageBitDepth) 
@@ -235,8 +238,10 @@ void DoProcessing()
 			}
 		}
 	}
-	catch (std::exception& e)
-	{
+	catch (const std::exception& e) {
+	#ifdef ENABLE_LOGGING
+		std::cerr << "Exception: " << e.what() << std::endl;
+	#endif	
 	}
 }
 
@@ -257,49 +262,55 @@ void ScaleRect(RECT& RectToScale, int ScalingFactor)
 }
 
 /// <summary>
-/// Down-samples incoming image for computing preview on smaller images
+/// Down-samples the source image into the destination image using simple averaging.
+/// Supports only 24-bit or 32-bit RGB images.
 /// </summary>
-/// <param name="SrcImage"></param>
-/// <param name="SrcImageWidth"></param>
-/// <param name="SrcImageHeight"></param>
-/// <param name="DestImage"></param>
-/// <param name="ScalingFactor">dest image width = source image width / ScalingFactor, same for height</param>
+/// <param name="src">Pointer to source image data</param>
+/// <param name="srcWidth">Width of the source image</param>
+/// <param name="srcHeight">Height of the source image</param>
+/// <param name="dest">Pointer to destination image data</param>
+/// <param name="scalingFactor">Factor by which to scale down (integer >= 1)</param>
+/// <param name="bitDepth">Bytes per pixel (3 or 4)</param>
 /// <remarks>Downsampling is computed with simple averaging as it is used only for previews</remarks>
-void ScaleDownImage(void* SrcImage, const int SrcImageWidth, const int SrcImageHeight, void* DestImage, const int ScalingFactor)
+void ScaleDownImage(unsigned char* SrcImage, const int SrcImageWidth, const int SrcImageHeight, unsigned char* DestImage, const int ScalingFactor, const int BitDepth)
 {
-	if (SrcImage == nullptr)
+	if (!SrcImage || !DestImage || ScalingFactor <= 0 || (BitDepth != 3 && BitDepth != 4))
 		return;
-	if (DestImage == nullptr)
-		return;
+
 	if (ScalingFactor == 1)
 	{
 		/// no rescaling
-		memcpy(DestImage, SrcImage, SrcImageWidth * SrcImageHeight * ImageBitDepth);
+		memcpy(DestImage, SrcImage, SrcImageWidth * SrcImageHeight * BitDepth);
 		return;
 	}
 
 	auto DestImagePtr = static_cast<unsigned char *>(DestImage);
 	auto SrcImagePtr = static_cast<unsigned char *>(SrcImage);
-	const int SrcImageStride = SrcImageWidth * ImageBitDepth;
+	const int SrcImageStride = SrcImageWidth * BitDepth;
 	const int DestImageWidth = SrcImageWidth / ScalingFactor;
 	const int DestImageHeight = SrcImageHeight / ScalingFactor;
 	unsigned char* DestPixelPtr = DestImagePtr;
+	const int ScalingArea = ScalingFactor * ScalingFactor;
 
 	for (int y = 0; y < DestImageHeight; y++)
 	{
-		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * ImageBitDepth];
+		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * BitDepth];
 		for (int x = 0; x < DestImageWidth; x++)
 		{
 			unsigned int RAcc = 0;
 			unsigned int GAcc = 0;
 			unsigned int BAcc = 0;
 			for (int iy = 0; iy < ScalingFactor; iy++)
+			{
+				int SrcPixelIndex = iy * SrcImageStride;
 				for (int ix = 0; ix < ScalingFactor; ix++)
 				{
-					RAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * ImageBitDepth)]);
-					GAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * ImageBitDepth) + 1]);
-					BAcc += static_cast<unsigned int>(SrcPixelPtr[(iy * SrcImageStride) + (ix * ImageBitDepth) + 2]);
+					RAcc += static_cast<unsigned int>(SrcPixelPtr[SrcPixelIndex]);
+					GAcc += static_cast<unsigned int>(SrcPixelPtr[SrcPixelIndex + 1]);
+					BAcc += static_cast<unsigned int>(SrcPixelPtr[SrcPixelIndex + 2]);
+					SrcPixelIndex += BitDepth;
 				}
+			}
 			if ((ScalingFactor == 2) || (ScalingFactor == 4))
 			{
 				DestPixelPtr[0] = static_cast<unsigned char>(RAcc >> ScalingFactor);
@@ -308,12 +319,12 @@ void ScaleDownImage(void* SrcImage, const int SrcImageWidth, const int SrcImageH
 			}
 			else
 			{
-				DestPixelPtr[0] = static_cast<unsigned char>(RAcc / (ScalingFactor * ScalingFactor));
-				DestPixelPtr[1] = static_cast<unsigned char>(GAcc / (ScalingFactor * ScalingFactor));
-				DestPixelPtr[2] = static_cast<unsigned char>(BAcc / (ScalingFactor * ScalingFactor));
+				DestPixelPtr[0] = static_cast<unsigned char>(RAcc / ScalingArea);
+				DestPixelPtr[1] = static_cast<unsigned char>(GAcc / ScalingArea);
+				DestPixelPtr[2] = static_cast<unsigned char>(BAcc / ScalingArea);
 			}
-			SrcPixelPtr += ScalingFactor * ImageBitDepth;
-			DestPixelPtr += ImageBitDepth;
+			SrcPixelPtr += ScalingFactor * BitDepth;
+			DestPixelPtr += BitDepth;
 		}
 	}
 }
@@ -332,14 +343,16 @@ void ClearImageArea(HDC hdc, const RECT& rectClient)
 
 void UpdateSliders(HWND hwnd)
 {
-	HWND hwndTrack = GetDlgItem(hwnd, IDC_SLIDER1);
-	SendMessage(hwndTrack, TBM_SETPOS,
-	            (WPARAM)TRUE, // redraw flag 
-	            (LPARAM)FilterIntensity);
-	hwndTrack = GetDlgItem(hwnd, IDC_SLIDER2);
-	SendMessage(hwndTrack, TBM_SETPOS,
-	            (WPARAM)TRUE, // redraw flag 
-	            (LPARAM)FilterScale);
+	HWND hSlider1 = GetDlgItem(hwnd, IDC_SLIDER1);
+	HWND hSlider2 = GetDlgItem(hwnd, IDC_SLIDER2);
+
+	// Set the slider positions
+	SendMessage(hSlider1, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)FilterIntensity);
+	SendMessage(hSlider2, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)FilterScale);
+
+	// Force immediate repaint of sliders
+	RedrawWindow(hSlider1, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+	RedrawWindow(hSlider2, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
 }
 
 void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2) 
@@ -380,6 +393,7 @@ void HandlePaintMessage(HWND hwnd)
 
 	PAINTSTRUCT ps;
 	HDC hdc = BeginPaint(hwnd, &ps);
+
 	try
 	{
 		PrepareVisualization(hdc, rectClient, CompleteVisualization);
@@ -484,8 +498,17 @@ void HandlePaintMessage(HWND hwnd)
 	}
 	catch (std::exception& e)
 	{
+	#ifdef ENABLE_LOGGING
+		std::cerr << "Exception: " << e.what() << std::endl;
+	#endif
 	}
 	EndPaint(hwnd, &ps);
+
+	// Ensure child controls repaint (optional but useful)
+	EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
+		RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+		return TRUE;
+		}, 0);
 }
 
 void RepositionControl(HWND hwnd, int controlId, int offset, int windowWidth)
@@ -523,18 +546,37 @@ bool IsDarkModeEnabled() {
 	return false;  // Default to false (light mode) if the registry value can't be read
 }
 
+// Helper RAII wrapper for HBRUSH
+class ScopedBrush {
+public:
+	explicit ScopedBrush(COLORREF color) : brush_(CreateSolidBrush(color)) {}
+	~ScopedBrush() { if (brush_) DeleteObject(brush_); }
+	HBRUSH get() const { return brush_; }
+private:
+	HBRUSH brush_;
+};
+
+// Global RAII-managed brush`
+static ScopedBrush* gBackgroundBrush = new ScopedBrush(RGB(255, 255, 255));  // default light color
+
+// Enum to track current mode
+enum class ThemeMode { Light, Dark };
+static ThemeMode gCurrentTheme = ThemeMode::Light;
+
+// Updates window and controls for dark mode/light mode
 void AdjustForDarkMode(HWND hwnd) {
-	if (IsDarkModeEnabled()) {
-		// Set dark background and light text for dark mode
-		SetClassLongPtr(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(45, 45, 48))); // Dark background
-		SetTextColor(GetDC(hwnd), RGB(255, 255, 255));  // White text
-	}
-	else {
-		// Light background and dark text for light mode
-		SetClassLongPtr(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(255, 255, 255))); // Light background
-		SetTextColor(GetDC(hwnd), RGB(0, 0, 0));  // Black text
-	}
-	InvalidateRect(hwnd, NULL, TRUE); // Redraw the window to apply the new styles
+	bool darkMode = IsDarkModeEnabled();
+	ThemeMode desiredTheme = darkMode ? ThemeMode::Dark : ThemeMode::Light;
+
+	if (desiredTheme == gCurrentTheme) return;
+	gCurrentTheme = desiredTheme;
+
+	COLORREF bgColor = darkMode ? RGB(45, 45, 48) : RGB(255, 255, 255);
+
+	delete gBackgroundBrush;
+	gBackgroundBrush = new ScopedBrush(bgColor);
+
+	RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 }
 
 char SetupIniFile[1024];
@@ -551,7 +593,6 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	{
 	case WM_INITDIALOG:
 		{
-			// Do stuff you need to init your dialogbox here	  			
 			// enable dark mode for title bar
 			BOOL value = TRUE;
 			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
@@ -574,10 +615,6 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			SendMessage(hwndTrack, TBM_SETPOS,
 			            (WPARAM)TRUE, // redraw flag 
 			            (LPARAM)FilterScale);
-
-			AdjustForDarkMode(hwnd);
-			DoProcessing();
-			InvalidateRgn(hwnd, nullptr, true);
 			return TRUE;
 		}
 
@@ -615,11 +652,16 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 					FilterIntensity = min(FilterIntensity + 15, AL_MAX_STRENGTH);
 					ChangedSettings = true;
 				}
+
 				if (ChangedSettings)
 				{
-					UpdateSliders(hwnd);
+					// Recompute filtered images
 					DoProcessing();
-					InvalidateRgn(hwnd, nullptr, true);
+					// Repaint sliders fully
+					UpdateSliders(hwnd);
+					// Full repaint of the main dialog
+					InvalidateRect(hwnd, nullptr, TRUE);
+					UpdateWindow(hwnd);
 				}
 			}
 			return TRUE;
@@ -650,59 +692,84 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				{
 					FilterIntensity = AL_DEFAULT_STRENGTH;
 					FilterScale = DEFAULT_HOR_REGIONS;
-					UpdateSliders(hwnd);
 					DoProcessing();
-					InvalidateRgn(hwnd, nullptr, true);
+					UpdateSliders(hwnd);        // redraw sliders after processing
+					InvalidateRect(hwnd, nullptr, TRUE);  // redraw dialog/image
+					UpdateWindow(hwnd);
 					return TRUE;
 				}
 			case IDC_TOGGLEVISUALIZATION:
 				{
 					CompleteVisualization = !CompleteVisualization;
-					InvalidateRgn(hwnd, nullptr, true);
+					RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 					return TRUE;
 				}
 			case IDC_TOGGLEZOOM:
 				{
 					NoZoom = !NoZoom;
-					InvalidateRgn(hwnd, nullptr, true);
+					RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 					return TRUE;
 				}
 			}
 		}
 
 	case WM_VSCROLL:
+	{
+		HWND hwndTrack = (HWND)lparam;
+		int dwPos = SendMessage(hwndTrack, TBM_GETPOS, 0, 0);
+
+		if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER1))
+			FilterIntensity = dwPos;
+		if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER2))
+			FilterScale = dwPos;
+
+		switch (LOWORD(wparam))
 		{
-			HWND hwndTrack = (HWND)lparam;
-			switch (LOWORD(wparam))
-			{
-			case TB_THUMBTRACK:
-				{
-					int dwPos = SendMessage(hwndTrack, TBM_GETPOS, 0, 0);
-					if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER1))
-						FilterIntensity = dwPos;
-					if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER2))
-						FilterScale = dwPos;
-					break;
-				}
-			case TB_ENDTRACK:
-				{
-					int dwPos = SendMessage(hwndTrack, TBM_GETPOS, 0, 0);
-					if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER1))
-						FilterIntensity = dwPos;
-					if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER2))
-						FilterScale = dwPos;
-					DoProcessing();
-					InvalidateRgn(hwnd, nullptr, true);
-				}
-			}
-			return TRUE;
+		case TB_THUMBTRACK:
+		case TB_THUMBPOSITION:
+			// Optional live preview
+			// DoProcessing();
+			// InvalidateRect(hwnd, nullptr, TRUE);
+			break;
+
+		case TB_ENDTRACK:
+			DoProcessing();
+			UpdateSliders(hwnd); // redraw sliders fully
+			RedrawWindow(hwnd, nullptr, nullptr,
+				RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+			break;
 		}
+		return TRUE;
+	}
 
 	case WM_PAINT:
 		{
 			HandlePaintMessage(hwnd);
-			return FALSE;
+			return TRUE;
 		}
+
+	case WM_CTLCOLORSTATIC:
+	case WM_CTLCOLORBTN:
+	{
+		HDC hdc = reinterpret_cast<HDC>(wparam);
+		SetBkMode(hdc, TRANSPARENT);
+
+		SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark
+			? RGB(255, 255, 255)
+			: RGB(0, 0, 0));
+
+		return reinterpret_cast<INT_PTR>(gBackgroundBrush->get());	
+	}
+
+	case WM_THEMECHANGED:
+	case WM_SETTINGCHANGE:
+		AdjustForDarkMode(hwnd);
+		InvalidateRect(hwnd, nullptr, TRUE);
+		EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
+			RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+			return TRUE;
+			}, 0);
+		break;
 
 	case WM_SIZE:
 		{
@@ -733,14 +800,6 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			MINMAXINFO* pMMI = (MINMAXINFO*)lparam;
 			pMMI->ptMinTrackSize.x = 800;  // Minimum width of the window
 			pMMI->ptMinTrackSize.y = 650;  // Minimum height of the window
-			return TRUE;
-		}
-
-	case WM_SETTINGCHANGE:
-		{
-			if (IsDarkModeEnabled()) {
-				AdjustForDarkMode(hwnd); // Reapply dark mode when the system theme changes
-			}
 			return TRUE;
 		}
 
@@ -926,11 +985,8 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 	{
 		ScopedBitmapHeader pbBmHdr(hDib);
 		memcpy(&BmHdrCopy, &(*pbBmHdr), sizeof(BITMAPINFOHEADER));
-		if (pbBmHdr->biPlanes != 1)
-		{
-			return false;
-		}
-		if (!isSupportedBitDepth(pbBmHdr))
+
+		if (pbBmHdr->biPlanes != 1 || !isSupportedBitDepth(pbBmHdr))
 			return false;
 
 		FullImageWidth = abs(pbBmHdr->biWidth);
@@ -948,11 +1004,9 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		}
 
 		BYTE* ImageBits = pbBmHdr.GetImageBits();
-		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
+		DWORD ImageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * pbBmHdr->biBitCount));
 		/// SrcImage
-		SrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));
-		if (SrcImage == nullptr)		
-			return false;		
+		SrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));		
 		SrcImagePtr = SrcImage;
 
 		// copy from ImageBits into SrcImage
@@ -961,8 +1015,6 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 
 	/// ProcImage
 	auto ProcImage = std::make_shared<std::vector<unsigned char>>(*SrcImage.get());
-	if (ProcImage == nullptr)
-		return false;
 	ProcImagePtr = ProcImage;
 
 	/// param1 : [0..100], default 25
@@ -977,39 +1029,27 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		ComputeScalingFactor();
 
 		auto ScaledSrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
-		if (ScaledSrcImage == nullptr)
-			return false;
 		ScaledSrcImagePtr = ScaledSrcImage;
 
-		ScaleDownImage(SrcImage.get()->data(), ImageWidth, ImageHeight, ScaledSrcImage.get()->data(), ScalingFactor);
+		ScaleDownImage(SrcImage->data(), ImageWidth, ImageHeight, ScaledSrcImage->data(), ScalingFactor, ImageBitDepth);
 
 		auto ScaledProcImage = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		if (ScaledProcImage == nullptr)
-			return false;
 		ScaledProcImagePtr = ScaledProcImage;
 
 		// allocate buffer for processed image with coarser grid
 		auto ScaledProcImageGridM = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		if (ScaledProcImageGridM == nullptr)
-			return false;
 		ScaledProcImageGridMPtr = ScaledProcImageGridM;
 
 		// allocate buffer for processed image with finer grid
 		auto ScaledProcImageGridP = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		if (ScaledProcImageGridP == nullptr)
-			return false;
 		ScaledProcImageGridPPtr = ScaledProcImageGridP;
 
 		// allocate buffer for processed image with lesser intensity
 		auto ScaledProcImageIntensityM = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		if (ScaledProcImageIntensityM == nullptr)
-			return false;
 		ScaledProcImageIntensityMPtr = ScaledProcImageIntensityM;
 
 		// allocate buffer for processed image with higher intensity
 		auto ScaledProcImageIntensityP = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		if (ScaledProcImageIntensityP == nullptr)
-			return false;
 		ScaledProcImageIntensityPPtr = ScaledProcImageIntensityP;
 
 		int ret = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, (DLGPROC)DlgProc);
@@ -1036,17 +1076,21 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 			CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, param2, param2));
 		AltaLuxFilter->SetStrength(param1);
 		if (ImageBitDepth == RGB32_PIXEL_SIZE)
-			AltaLuxFilter->ProcessRGB32(static_cast<void*>(SrcImage.get()->data()));
+			AltaLuxFilter->ProcessRGB32(static_cast<void*>(SrcImage->data()));
 		else
-			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage.get()->data()));
+			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage->data()));
 		
 		ScopedBitmapHeader pbBmHdr(hDib);
 		BYTE* ImageBits = pbBmHdr.GetImageBits();
-		DWORD ImageBitsStride = WIDTHBYTES((DWORD)FullImageWidth * pbBmHdr->biBitCount);
-		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImage.get()->data(), ClipRect);
+		DWORD ImageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * pbBmHdr->biBitCount));
+		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImage->data(), ClipRect);
 	}
 	catch (std::exception& e)
-	{
+	{		
+	#ifdef ENABLE_LOGGING
+		std::cerr << "Exception: " << e.what() << std::endl;
+	#endif
+		return false;
 	}
 	return true;
 }
@@ -1059,7 +1103,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 /// <returns></returns>
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 {
-	sprintf(versionString, "1.09"); // your version-nr
+	sprintf(versionString, "1.10"); // your version-nr
 	sprintf(fileFormats, "AltaLux image enhancement filter"); // some infos
 	return 0;
 }

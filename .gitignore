@@ -7,3 +7,7 @@ AltaLux/AltaLux.aps
 AltaLux/AltaLux/x64/Debug/
 AltaLux/AltaLux/x64/Release/
 AltaLux/x64/Release/
+AltaLux/AltaLux/Release/
+AltaLux/Release/
+AltaLuxBench/Release/
+AltaLuxUnitTest/Release/

@@ -33,6 +33,7 @@ A "contributor" is any person that distributes its contribution under this licen
 #include <malloc.h>
 #include <memory>
 #include <ppl.h>
+#include <immintrin.h> // For SSE2 if available
 
 #ifdef ENABLE_LOGGING
 	#include "..\Log\easylogging++.h"
@@ -569,25 +570,15 @@ int CBaseAltaLuxFilter::ProcessBGR32(void* Image)
 }
 
 /// private methods
-
-
-#ifdef _WIN64
-	void FloatToInt(unsigned int *int_pointer, float f)
-	{
-		*int_pointer = (unsigned int)f;
-	}
-#else
-__forceinline void FloatToInt(unsigned int* int_pointer, float f)
+inline unsigned int FloatToInt(float f)
 {
-	__asm
-	{
-		fld f
-		mov edx,int_pointer
-		frndint
-		fistp dword ptr[edx];
-	}
+#ifdef __SSE2__  // If SSE2 is available
+	return _mm_cvtt_ss2si(_mm_set_ss(f));
+#else
+	// Portable fallback
+	return static_cast<unsigned int>(std::lround(f));
+#endif
 }
-#endif  // _WIN64
 
 void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int ClipLimit)
 /* This function performs clipping of the histogram and redistribution of bins.
@@ -669,11 +660,10 @@ void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogr
 
 	for (int i = 0; i < RegionHeight; i++)
 	{
-		PixelType* pImagePointer = &pImage[RegionWidth];
-		while (pImage < pImagePointer)
+		PixelType* pRegionEnd = &pImage[RegionWidth];
+		while (pImage < pRegionEnd)
 			pHistogram[*pImage++]++;
-		pImagePointer += OriginalImageWidth;
-		pImage = &pImagePointer[-RegionWidth];
+		pImage += OriginalImageWidth-RegionWidth;
 	}
 }
 
@@ -688,8 +678,7 @@ void CBaseAltaLuxFilter::MapHistogram(unsigned int* pHistogram, unsigned int Num
 	for (unsigned int i = 0; i < NUM_GRAY_LEVELS; i++)
 	{
 		HistoSum += pHistogram[i];
-		unsigned int TargetValue;
-		FloatToInt(&TargetValue, HistoSum * Scale);
+		unsigned int TargetValue = FloatToInt(HistoSum * Scale);
 		pHistogram[i] = min(MAX_GRAY_VALUE, TargetValue);
 	}
 }
