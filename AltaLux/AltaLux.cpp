@@ -85,6 +85,7 @@ int FilterIntensity = AL_DEFAULT_STRENGTH;
 int FilterScale = DEFAULT_HOR_REGIONS;
 bool CompleteVisualization = true;
 bool NoZoom = false;
+const int SMALL_PICTURE = 32;  // Scaling factor for preview images
 
 /// <summary>
 /// DLL entry point called by Windows when the DLL is loaded or unloaded.
@@ -466,8 +467,6 @@ void HandlePaintMessage(HWND hwnd)
 			const BYTE MORE_INTENSE = 15;
 			const BYTE CURR_INTENSE = 10;
 
-			const int SMALL_PICTURE = 32;
-
 			// draw original image
 			auto ScaledSrcImage = ScaledSrcImagePtr.lock();
 			if (ScaledSrcImage != nullptr)
@@ -489,7 +488,7 @@ void HandlePaintMessage(HWND hwnd)
 				OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
 				FillImageArea(hdc, IntensityMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
-					false, FilterScale, NoZoom, L"Weaker filter (- Intensity)");
+					false, FilterScale, NoZoom, L"Weaker (- Intensity)");
 			}
 
 			// draw processed image with higher intensity
@@ -502,7 +501,7 @@ void HandlePaintMessage(HWND hwnd)
 				OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)), 0);
 				FillImageArea(hdc, IntensityPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
 				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
-					false, FilterScale, NoZoom, L"Stronger filter (+ Intensity)");
+					false, FilterScale, NoZoom, L"Stronger (+ Intensity)");
 			}
 
 			// draw processed image with coarser grid
@@ -715,27 +714,72 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 			if ((CompleteVisualization) && (MouseXPos < rectClient.right))
 			{
-				const int ThirdWidth = RectWidth(rectClient) / 3;
-				const int ThirdHeight = RectHeight(rectClient) / 3;
+				// Calculate small image dimensions (matching SMALL_PICTURE scaling)
+				RECT smallImageRect = rectClient;
+				ScaleRect(smallImageRect, SMALL_PICTURE);
+				const int SmallWidth = RectWidth(smallImageRect);
+				const int SmallHeight = RectHeight(smallImageRect);
+
 				auto ChangedSettings = false;
-				if ((MouseXPos < ThirdWidth) && (MouseYPos > ThirdHeight) && (MouseYPos < (2 * ThirdHeight)))
+
+				// Top-left: Original image (reset both sliders to minimum)
+				RECT OriginalImageRect;
+				OriginalImageRect.left = 0;
+				OriginalImageRect.top = 0;
+				OriginalImageRect.right = SmallWidth;
+				OriginalImageRect.bottom = SmallHeight;
+				if (PtInRect(&OriginalImageRect, POINT{MouseXPos, MouseYPos}))
 				{
-					FilterScale = max(FilterScale - 2, MIN_HOR_REGIONS);
+					FilterIntensity = AL_MIN_STRENGTH;  // 0 - disables filter
+					FilterScale = MIN_HOR_REGIONS;      // 2 - minimum grid size
 					ChangedSettings = true;
 				}
-				if ((MouseXPos > (rectClient.right - ThirdWidth)) && (MouseYPos > ThirdHeight) && (MouseYPos < (2 * ThirdHeight)))
-				{
-					FilterScale = min(FilterScale + 2, MAX_HOR_REGIONS);
-					ChangedSettings = true;
-				}
-				if ((MouseYPos < ThirdHeight) && (MouseXPos > ThirdWidth) && (MouseXPos < (2 * ThirdWidth)))
+
+				// Top-middle: Weaker (- Intensity)
+				RECT IntensityMRect;
+				IntensityMRect.left = (RectWidth(rectClient) - SmallWidth) / 2;
+				IntensityMRect.top = 0;
+				IntensityMRect.right = IntensityMRect.left + SmallWidth;
+				IntensityMRect.bottom = SmallHeight;
+				if (PtInRect(&IntensityMRect, POINT{MouseXPos, MouseYPos}))
 				{
 					FilterIntensity = max(FilterIntensity - 15, AL_MIN_STRENGTH);
 					ChangedSettings = true;
 				}
-				if ((MouseYPos > (rectClient.bottom - ThirdHeight)) && (MouseXPos > ThirdWidth) && (MouseXPos < (2 * ThirdWidth)))
+
+				// Top-right: Stronger (+ Intensity)
+				RECT IntensityPRect;
+				IntensityPRect.left = RectWidth(rectClient) - SmallWidth;
+				IntensityPRect.top = 0;
+				IntensityPRect.right = RectWidth(rectClient);
+				IntensityPRect.bottom = SmallHeight;
+				if (PtInRect(&IntensityPRect, POINT{MouseXPos, MouseYPos}))
 				{
 					FilterIntensity = min(FilterIntensity + 15, AL_MAX_STRENGTH);
+					ChangedSettings = true;
+				}
+
+				// Right-middle: Coarser grid (- Scale)
+				RECT GridMRect;
+				GridMRect.left = RectWidth(rectClient) - SmallWidth;
+				GridMRect.top = (RectHeight(rectClient) - SmallHeight) / 2;
+				GridMRect.right = RectWidth(rectClient);
+				GridMRect.bottom = GridMRect.top + SmallHeight;
+				if (PtInRect(&GridMRect, POINT{MouseXPos, MouseYPos}))
+				{
+					FilterScale = max(FilterScale - 2, MIN_HOR_REGIONS);
+					ChangedSettings = true;
+				}
+
+				// Bottom-right: Finer grid (+ Scale)
+				RECT GridPRect;
+				GridPRect.left = RectWidth(rectClient) - SmallWidth;
+				GridPRect.top = RectHeight(rectClient) - SmallHeight;
+				GridPRect.right = RectWidth(rectClient);
+				GridPRect.bottom = RectHeight(rectClient);
+				if (PtInRect(&GridPRect, POINT{MouseXPos, MouseYPos}))
+				{
+					FilterScale = min(FilterScale + 2, MAX_HOR_REGIONS);
 					ChangedSettings = true;
 				}
 

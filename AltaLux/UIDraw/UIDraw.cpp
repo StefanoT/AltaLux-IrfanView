@@ -131,9 +131,12 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 		StretchDIBits(hdc, RectPosition.left, RectPosition.top, RectWidth(RectPosition), RectHeight(RectPosition), HorOffset, VerOffset,
 			RectWidth(RectPosition), RectHeight(RectPosition), ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
 
-		SetTextColor(hdc, RGB(255, 255, 255));  // white text
+		// Draw centered caption
+		SetTextColor(hdc, RGB(192, 192, 192));  // light gray text
 		SetBkColor(hdc, RGB(0, 0, 0));          // black background
-		TextOut(hdc, RectPosition.left, RectPosition.top, Title, static_cast<int>(wcslen(Title)));
+		RECT textRect = RectPosition;
+		textRect.bottom = textRect.top + 20;  // Height for one line of text
+		DrawText(hdc, Title, static_cast<int>(wcslen(Title)), &textRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
 	} else {
 		// draw full image with rescaling
 		float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
@@ -157,9 +160,12 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 			DrawScaleGrid(hdc, rectTo, FilterScale);
 		}
 
-		SetTextColor(hdc, RGB(255, 255, 255));  // white text
+		// Draw centered caption
+		SetTextColor(hdc, RGB(192, 192, 192));  // light gray text
 		SetBkColor(hdc, RGB(0, 0, 0));          // black background
-		TextOut(hdc, rectTo.left, rectTo.top, Title, static_cast<int>(wcslen(Title)));
+		RECT textRect = rectTo;
+		textRect.bottom = textRect.top + 20;  // Height for one line of text
+		DrawText(hdc, Title, static_cast<int>(wcslen(Title)), &textRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
 	}
 }
 
