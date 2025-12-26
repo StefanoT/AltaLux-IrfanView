@@ -86,6 +86,14 @@ int FilterScale = DEFAULT_HOR_REGIONS;
 bool CompleteVisualization = true;
 bool NoZoom = false;
 
+/// <summary>
+/// DLL entry point called by Windows when the DLL is loaded or unloaded.
+/// Stores the module handle for later use by the plugin.
+/// </summary>
+/// <param name="hModule">Handle to the DLL module</param>
+/// <param name="ul_reason_for_call">Reason for calling function (attach/detach)</param>
+/// <param name="lpReserved">Reserved parameter</param>
+/// <returns>TRUE if successful, FALSE otherwise</returns>
 BOOL APIENTRY DllMain(HANDLE hModule,
                       DWORD ul_reason_for_call,
                       LPVOID lpReserved
@@ -106,6 +114,11 @@ BOOL APIENTRY DllMain(HANDLE hModule,
 	return TRUE;
 }
 
+/// <summary>
+/// Copies the scaled source image data to the target buffer.
+/// Used to initialize preview buffers before processing.
+/// </summary>
+/// <param name="TargetImage">Destination buffer to receive the scaled source image data</param>
 void CopyScaledSrcImage(unsigned char* TargetImage)
 {
 	if (TargetImage == nullptr)
@@ -147,6 +160,11 @@ std::unique_ptr<CBaseAltaLuxFilter> InstantiateFilter(bool& IsRescalingEnabled)
 	}
 }
 
+/// <summary>
+/// Processes the current image with the AltaLux filter using current settings.
+/// Generates multiple preview variants with different intensity and grid scale values.
+/// If rescaling is enabled, processes the downsampled image; otherwise processes the full-size image.
+/// </summary>
 void DoProcessing()
 {
 	bool IsRescalingEnabled = false;
@@ -329,18 +347,38 @@ void ScaleDownImage(unsigned char* SrcImage, const int SrcImageWidth, const int 
 	}
 }
 
+/// <summary>
+/// Fills a rectangular area with a solid color.
+/// </summary>
+/// <param name="hdc">Device context handle</param>
+/// <param name="rectClient">Rectangle area to fill</param>
+/// <param name="R">Red component (0-255)</param>
+/// <param name="G">Green component (0-255)</param>
+/// <param name="B">Blue component (0-255)</param>
 void FillImageArea(HDC hdc, const RECT& rectClient, BYTE R, BYTE G, BYTE B)
 {
 	HRGN bgRgn = CreateRectRgnIndirect(&rectClient);
 	HBRUSH hBrush = CreateSolidBrush(RGB(R, G, B));
 	FillRgn(hdc, bgRgn, hBrush);
+	DeleteObject(hBrush);
+	DeleteObject(bgRgn);
 }
 
+/// <summary>
+/// Clears a rectangular area by filling it with black (RGB 0,0,0).
+/// </summary>
+/// <param name="hdc">Device context handle</param>
+/// <param name="rectClient">Rectangle area to clear</param>
 void ClearImageArea(HDC hdc, const RECT& rectClient)
 {
 	FillImageArea(hdc, rectClient, 0, 0, 0);
 }
 
+/// <summary>
+/// Updates the slider controls to reflect current filter intensity and scale values.
+/// Forces immediate repaint of both sliders.
+/// </summary>
+/// <param name="hwnd">Handle to the parent dialog window</param>
 void UpdateSliders(HWND hwnd)
 {
 	HWND hSlider1 = GetDlgItem(hwnd, IDC_SLIDER1);
@@ -351,11 +389,21 @@ void UpdateSliders(HWND hwnd)
 	SendMessage(hSlider2, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)FilterScale);
 
 	// Force immediate repaint of sliders
-	RedrawWindow(hSlider1, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-	RedrawWindow(hSlider2, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+	// Note: RDW_ERASE is NOT used here to preserve tick marks on the trackbar controls
+	RedrawWindow(hSlider1, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+	RedrawWindow(hSlider2, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 }
 
-void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2) 
+/// <summary>
+/// Draws a gray line from point (x1, y1) to point (x2, y2).
+/// Used for visual separation in the preview grid.
+/// </summary>
+/// <param name="hdc">Device context handle</param>
+/// <param name="x1">X coordinate of start point</param>
+/// <param name="y1">Y coordinate of start point</param>
+/// <param name="x2">X coordinate of end point</param>
+/// <param name="y2">Y coordinate of end point</param>
+void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2)
 {
 	HPEN hPen = CreatePen(PS_SOLID, 1, RGB(128, 128, 128)); // Create a gray pen
 	HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
@@ -367,6 +415,13 @@ void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2)
 	DeleteObject(hPen);
 }
 
+/// <summary>
+/// Prepares the drawing area for visualization by clearing it and optionally drawing guide lines.
+/// Guide lines divide the preview area into thirds horizontally and vertically.
+/// </summary>
+/// <param name="hdc">Device context handle</param>
+/// <param name="rectClient">Rectangle area to prepare</param>
+/// <param name="drawLines">If true, draws guide lines; if false, only clears the area</param>
 void PrepareVisualization(HDC hdc, RECT rectClient, bool drawLines)
 {
 	ClearImageArea(hdc, rectClient);
@@ -382,9 +437,12 @@ void PrepareVisualization(HDC hdc, RECT rectClient, bool drawLines)
 }
 
 /// <summary>
-/// repaint the GUI
+/// Handles WM_PAINT messages to render the dialog GUI.
+/// In complete visualization mode, displays the original image and multiple processed variants
+/// with different intensity and grid scale settings arranged in a grid layout.
+/// In simple mode, displays only the processed image.
 /// </summary>
-/// <param name="hwnd"></param>
+/// <param name="hwnd">Handle to the dialog window</param>
 void HandlePaintMessage(HWND hwnd)
 {
 	RECT rectClient;
@@ -505,12 +563,21 @@ void HandlePaintMessage(HWND hwnd)
 	EndPaint(hwnd, &ps);
 
 	// Ensure child controls repaint (optional but useful)
+	// Note: RDW_ERASE is NOT used here to preserve control details like slider tick marks
 	EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
-		RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+		RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 		return TRUE;
 		}, 0);
 }
 
+/// <summary>
+/// Repositions a control relative to the right edge of the window.
+/// Used during window resize to maintain control positions.
+/// </summary>
+/// <param name="hwnd">Handle to the parent window</param>
+/// <param name="controlId">ID of the control to reposition</param>
+/// <param name="offset">Distance from the right edge of the window</param>
+/// <param name="windowWidth">Current width of the window</param>
 void RepositionControl(HWND hwnd, int controlId, int offset, int windowWidth)
 {
 	HWND OkButtonCtrl = GetDlgItem(hwnd, controlId);
@@ -521,9 +588,10 @@ void RepositionControl(HWND hwnd, int controlId, int offset, int windowWidth)
 }
 
 /// <summary>
-/// Check whether dark mode is enabled
+/// Checks whether Windows dark mode is enabled by reading the system registry.
+/// Queries the AppsUseLightTheme registry value to determine the current theme.
 /// </summary>
-/// <returns>true if dark mode, false otherwise</returns>
+/// <returns>true if dark mode is enabled, false if light mode or if registry read fails</returns>
 bool IsDarkModeEnabled() {
 	DWORD dwValue = 0;
 	DWORD dwSize = sizeof(dwValue);
@@ -576,7 +644,8 @@ void AdjustForDarkMode(HWND hwnd) {
 	delete gBackgroundBrush;
 	gBackgroundBrush = new ScopedBrush(bgColor);
 
-	RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+	// Note: RDW_ERASE is NOT used to preserve child control details like slider tick marks
+	RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 }
 
 char SetupIniFile[1024];
@@ -585,6 +654,16 @@ char SetupIniFile[1024];
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
+/// <summary>
+/// Dialog procedure that handles all messages for the AltaLux plugin dialog.
+/// Manages user interactions with sliders, buttons, mouse clicks for parameter adjustment,
+/// theme changes, and window resizing. Supports both light and dark themes.
+/// </summary>
+/// <param name="hwnd">Handle to the dialog window</param>
+/// <param name="msg">Message identifier</param>
+/// <param name="wparam">First message parameter</param>
+/// <param name="lparam">Second message parameter</param>
+/// <returns>TRUE if message was processed, FALSE otherwise</returns>
 BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	HBITMAP hBitmap;
@@ -660,7 +739,8 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 					// Repaint sliders fully
 					UpdateSliders(hwnd);
 					// Full repaint of the main dialog
-					InvalidateRect(hwnd, nullptr, TRUE);
+					// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
+					InvalidateRect(hwnd, nullptr, FALSE);
 					UpdateWindow(hwnd);
 				}
 			}
@@ -694,7 +774,8 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 					FilterScale = DEFAULT_HOR_REGIONS;
 					DoProcessing();
 					UpdateSliders(hwnd);        // redraw sliders after processing
-					InvalidateRect(hwnd, nullptr, TRUE);  // redraw dialog/image
+					// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
+					InvalidateRect(hwnd, nullptr, FALSE);  // redraw dialog/image
 					UpdateWindow(hwnd);
 					return TRUE;
 				}
@@ -735,8 +816,11 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		case TB_ENDTRACK:
 			DoProcessing();
 			UpdateSliders(hwnd); // redraw sliders fully
+			// Note: RDW_ERASE is NOT used because HandlePaintMessage already clears the background
+			// explicitly via PrepareVisualization, and RDW_ERASE with RDW_ALLCHILDREN would
+			// erase child controls' backgrounds, removing slider tick marks
 			RedrawWindow(hwnd, nullptr, nullptr,
-				RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+				RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 			break;
 		}
 		return TRUE;
@@ -764,9 +848,11 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_THEMECHANGED:
 	case WM_SETTINGCHANGE:
 		AdjustForDarkMode(hwnd);
-		InvalidateRect(hwnd, nullptr, TRUE);
+		// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
+		InvalidateRect(hwnd, nullptr, FALSE);
+		// Note: RDW_ERASE is NOT used to preserve control details like slider tick marks
 		EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
-			RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+			RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 			return TRUE;
 			}, 0);
 		break;
@@ -808,6 +894,12 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	return TRUE;
 }
 
+/// <summary>
+/// Calculates the buffer size required to store an RGB image with security padding.
+/// </summary>
+/// <param name="ImageWidth">Width of the image in pixels</param>
+/// <param name="ImageHeight">Height of the image in pixels</param>
+/// <returns>Total buffer size in bytes including security padding</returns>
 int GetRGBImageSize(int ImageWidth, int ImageHeight)
 {
 	const int SECURITY_PADDING = 4096;
@@ -815,9 +907,11 @@ int GetRGBImageSize(int ImageWidth, int ImageHeight)
 }
 
 /// <summary>
-/// Computes the optimal scaling factor for images in preview
+/// Computes the optimal scaling factor for downsampling images in preview mode.
+/// Ensures the scaled image width is a multiple of 8 for proper rendering.
+/// Target preview size is approximately 1000x800 pixels.
 /// </summary>
-/// <remarks>scaled image width must be a multiple of 8, if not a minor scaling factor is chosen</remarks>
+/// <remarks>Scaled image width must be a multiple of 8; if not, a smaller scaling factor is chosen</remarks>
 void ComputeScalingFactor()
 {
 	int HorScaling = ImageWidth / 1000;
@@ -850,12 +944,13 @@ void ComputeScalingFactor()
 }
 
 /// <summary>
-/// copy the image back into ImageBits
+/// Copies the processed image data back into the IrfanView bitmap buffer.
+/// Handles both cropped and full image cases, adjusting for bitmap stride.
 /// </summary>
-/// <param name="ImageBits"></param>
-/// <param name="ImageBitsStride"></param>
-/// <param name="SrcImage"></param>
-/// <param name="ClipRect"></param>
+/// <param name="ImageBits">Pointer to the IrfanView bitmap buffer</param>
+/// <param name="ImageBitsStride">Byte width of each bitmap row including padding</param>
+/// <param name="SrcImage">Pointer to the processed image data</param>
+/// <param name="ClipRect">Clipping rectangle for cropped images</param>
 void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* SrcImage, RECT ClipRect)
 {
 	if (!ImageBits || !SrcImage)
@@ -885,6 +980,12 @@ void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* Sr
 	}
 }
 
+/// <summary>
+/// Normalizes and aligns a clipping rectangle to 8-pixel boundaries.
+/// Converts from (left, top, width, height) format to (left, top, right, bottom) format.
+/// Updates global ImageWidth and ImageHeight to match the normalized rectangle.
+/// </summary>
+/// <param name="ClipRect">Rectangle to normalize (modified in place)</param>
 void NormalizeClipRect(RECT& ClipRect)
 {
 	ClipRect.bottom += ClipRect.top;
@@ -897,6 +998,14 @@ void NormalizeClipRect(RECT& ClipRect)
 	ImageHeight = ClipRect.bottom - ClipRect.top;
 }
 
+/// <summary>
+/// Copies image data from the IrfanView bitmap buffer to the internal processing buffer.
+/// Handles both cropped and full image cases, adjusting for bitmap stride.
+/// </summary>
+/// <param name="SrcImage">Destination buffer for image data</param>
+/// <param name="ClipRect">Clipping rectangle for cropped images</param>
+/// <param name="ImageBits">Pointer to the IrfanView bitmap buffer</param>
+/// <param name="ImageBitsStride">Byte width of each bitmap row including padding</param>
 void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits, DWORD ImageBitsStride)
 {
 	if (!ImageBits || !SrcImage)
@@ -928,6 +1037,12 @@ void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits
 	}
 }
 
+/// <summary>
+/// Determines whether the image is cropped or has non-standard dimensions.
+/// An image is considered cropped if the full size differs from the working size,
+/// or if dimensions are not multiples of 8.
+/// </summary>
+/// <returns>true if image is cropped or non-standard, false otherwise</returns>
 bool IsCroppedImage()
 {
 	if ((FullImageWidth > ImageWidth) || (FullImageHeight > ImageHeight))
@@ -941,10 +1056,11 @@ bool IsCroppedImage()
 }
 
 /// <summary>
-/// Verify if the image bit depth provided in the bitmap header is supported
+/// Verifies if the image bit depth provided in the bitmap header is supported by the plugin.
+/// Sets the global ImageBitDepth variable based on the bitmap's bit count.
 /// </summary>
-/// <param name="pbBmHdr">Pointer to the bitmap header which contains information about the bitmap image.</param>
-/// <returns>Returns true if the bit depth is supported (24 or 32 bits per pixel); otherwise, false.</returns>
+/// <param name="pbBmHdr">Reference to bitmap header wrapper containing image information</param>
+/// <returns>true if the bit depth is supported (24 or 32 bits per pixel), false otherwise</returns>
 bool isSupportedBitDepth(ScopedBitmapHeader& pbBmHdr)
 {
 	switch (pbBmHdr->biBitCount) {
@@ -961,19 +1077,20 @@ bool isSupportedBitDepth(ScopedBitmapHeader& pbBmHdr)
 }
 
 /// <summary>
-/// Processes the incoming bitmap with the AltaLux filter. Can directly process the image or open the GUI for
-/// letting the user choose the parameters.
+/// Processes the incoming bitmap with the AltaLux filter.
+/// Can directly process the image with specified parameters or open the GUI for user interaction.
+/// Handles both 24-bit and 32-bit RGB images, including cropped regions.
 /// </summary>
-/// <param name="hDib"></param>
-/// <param name="hwnd"></param>
-/// <param name="filter"></param>
-/// <param name="rect"></param>
-/// <param name="param1">if -1, open GUI</param>
-/// <param name="param2">if -1, open GUI</param>
-/// <param name="iniFile">file containing saved parameters</param>
-/// <param name="szAppName"></param>
-/// <param name="regID"></param>
-/// <returns></returns>
+/// <param name="hDib">Handle to the DIB (Device Independent Bitmap)</param>
+/// <param name="hwnd">Handle to parent window</param>
+/// <param name="filter">Filter type identifier (unused)</param>
+/// <param name="rect">Clipping rectangle (left, top, width, height format)</param>
+/// <param name="param1">Filter intensity [0-100]; if -1, opens GUI for user selection</param>
+/// <param name="param2">Filter scale [2-16]; if -1, opens GUI for user selection</param>
+/// <param name="iniFile">Path to INI file for saving/loading parameters</param>
+/// <param name="szAppName">Application name (unused)</param>
+/// <param name="regID">Registration ID (unused)</param>
+/// <returns>true if processing succeeded, false on error or unsupported format</returns>
 bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2, char* iniFile,
                            char* szAppName, int regID)
 {
@@ -1096,11 +1213,12 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 }
 
 /// <summary>
-/// General information about the plug-in
+/// Returns general information about the plugin.
+/// Called by IrfanView to retrieve version and description.
 /// </summary>
-/// <param name="versionString">output buffer for version number</param>
-/// <param name="fileFormats">output buffer for plug-in description</param>
-/// <returns></returns>
+/// <param name="versionString">Output buffer for version number string</param>
+/// <param name="fileFormats">Output buffer for plugin description</param>
+/// <returns>Always returns 0</returns>
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 {
 	sprintf(versionString, "1.10"); // your version-nr
@@ -1108,6 +1226,21 @@ int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 	return 0;
 }
 
+/// <summary>
+/// Main entry point for the AltaLux plugin effects processing.
+/// This is the exported function called by IrfanView to apply the filter.
+/// Delegates to StartEffects2 for actual processing.
+/// </summary>
+/// <param name="hDib">Handle to the DIB (Device Independent Bitmap)</param>
+/// <param name="hwnd">Handle to parent window</param>
+/// <param name="filter">Filter type identifier</param>
+/// <param name="rect">Clipping rectangle</param>
+/// <param name="param1">Filter intensity parameter</param>
+/// <param name="param2">Filter scale parameter</param>
+/// <param name="iniFile">Path to INI file for parameters</param>
+/// <param name="szAppName">Application name</param>
+/// <param name="regID">Registration ID</param>
+/// <returns>true if processing succeeded, false otherwise</returns>
 bool __cdecl AltaLux_Effects(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2, char* iniFile,
                              char* szAppName, int regID)
 {

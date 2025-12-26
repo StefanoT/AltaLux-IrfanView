@@ -580,12 +580,18 @@ inline unsigned int FloatToInt(float f)
 #endif
 }
 
+/// <summary>
+/// Performs clipping of the histogram and redistribution of bins
+/// </summary>
+/// <param name="pHistogram">Pointer to histogram array to be clipped (NUM_GRAY_LEVELS elements)</param>
+/// <param name="ClipLimit">Maximum allowed bin count</param>
+/// <remarks>
+/// The histogram is clipped and the number of excess pixels is counted. Afterwards
+/// the excess pixels are equally redistributed across the whole histogram (providing
+/// the bin count is smaller than the cliplimit). This prevents over-amplification
+/// of noise in uniform regions.
+/// </remarks>
 void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int ClipLimit)
-/* This function performs clipping of the histogram and redistribution of bins.
- * The histogram is clipped and the number of excess pixels is counted. Afterwards
- * the excess pixels are equally redistributed across the whole histogram (providing
- * the bin count is smaller than the cliplimit).
- */
 {
 	unsigned int *pulBinPointer, *pulEndPointer, *pulHisto;
 	unsigned int ulNrExcess, ulUpper, ulBinIncr, ulStepSize, i;
@@ -650,10 +656,15 @@ void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int Cl
 	}
 }
 
+/// <summary>
+/// Classifies the greylevels present in the image array into a greylevel histogram
+/// </summary>
+/// <param name="pImage">Pointer to top-left corner of image tile</param>
+/// <param name="pHistogram">Output histogram array (NUM_GRAY_LEVELS elements)</param>
+/// <remarks>
+/// Only processes RegionWidth × RegionHeight area starting from pImage pointer
+/// </remarks>
 void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogram)
-/* This function classifies the greylevels present in the array image into
- * a greylevel histogram.
- */
 {
 	/// clear histogram
 	memset(pHistogram, 0, sizeof(unsigned int) * NUM_GRAY_LEVELS);
@@ -667,10 +678,16 @@ void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogr
 	}
 }
 
+/// <summary>
+/// Calculates the equalized lookup table (mapping) by cumulating the input histogram
+/// </summary>
+/// <param name="pHistogram">Input/output histogram array (modified in-place, NUM_GRAY_LEVELS elements)</param>
+/// <param name="NumOfPixels">Total number of pixels in the tile</param>
+/// <remarks>
+/// The lookup table is rescaled to range [0..255]. Each bin becomes the cumulative
+/// sum up to that gray level, normalized to the output range.
+/// </remarks>
 void CBaseAltaLuxFilter::MapHistogram(unsigned int* pHistogram, unsigned int NumOfPixels)
-/* This function calculates the equalized lookup table (mapping) by
- * cumulating the input histogram. Lookup table is rescaled in range [0..255].
- */
 {
 	unsigned int HistoSum = 0;
 	const float Scale = ((float)MAX_GRAY_VALUE) / NumOfPixels;
@@ -683,18 +700,26 @@ void CBaseAltaLuxFilter::MapHistogram(unsigned int* pHistogram, unsigned int Num
 	}
 }
 
+/// <summary>
+/// Calculates new greylevel assignments for pixels within a submatrix using bilinear interpolation
+/// </summary>
+/// <param name="pImage">Pointer to input/output image region</param>
+/// <param name="pMapLeftUp">Mapping of greylevels from upper-left tile histogram</param>
+/// <param name="pMapRightUp">Mapping of greylevels from upper-right tile histogram</param>
+/// <param name="pMapLeftBottom">Mapping of greylevels from lower-left tile histogram</param>
+/// <param name="pMapRightBottom">Mapping of greylevels from lower-right tile histogram</param>
+/// <param name="MatrixWidth">Width of image submatrix to interpolate</param>
+/// <param name="MatrixHeight">Height of image submatrix to interpolate</param>
+/// <remarks>
+/// This function calculates the new greylevel assignments of pixels within a submatrix
+/// of the image with size MatrixWidth and MatrixHeight. This is done by a bilinear interpolation
+/// between four different mappings in order to eliminate boundary artifacts.
+/// Each pixel value is weighted by its distance to neighboring tiles.
+/// </remarks>
 void CBaseAltaLuxFilter::Interpolate(PixelType* pImage,
                                      unsigned int* pMapLeftUp, unsigned int* pMapRightUp,
                                      unsigned int* pMapLeftBottom, unsigned int* pMapRightBottom,
                                      unsigned int MatrixWidth, unsigned int MatrixHeight)
-/* pImage		- pointer to input/output image
- * pMap*		- mappings of greylevels from histograms
- * MatrixWidth  - MatrixWidth of image submatrix
- * MatrixHeight - MatrixHeight of image submatrix
- * This function calculates the new greylevel assignments of pixels within a submatrix
- * of the image with size MatrixWidth and MatrixHeight. This is done by a bilinear interpolation
- * between four different mappings in order to eliminate boundary artifacts.
- */
 {
 	const unsigned int PtrIncr = OriginalImageWidth - MatrixWidth; //< pointer increment after processing row
 	unsigned int MatrixArea = MatrixWidth * MatrixHeight; //< normalization factor
