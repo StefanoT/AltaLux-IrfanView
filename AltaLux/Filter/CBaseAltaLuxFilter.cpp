@@ -607,6 +607,7 @@ void CBaseAltaLuxFilter::ExtractYComponent(void* Image, int FirstFactor,
 /// <remarks>
 /// Uses multiplicative scaling to preserve color ratios (hue and saturation).
 /// R' = R × (Y_new / Y_old) preserves color perfectly.
+/// Lookup table eliminates per-pixel division.
 /// </remarks>
 void CBaseAltaLuxFilter::InjectYComponent(void* Image, void* ImageBuffer,
                                           int FirstFactor, int SecondFactor,
@@ -617,6 +618,31 @@ void CBaseAltaLuxFilter::InjectYComponent(void* Image, void* ImageBuffer,
 	const int numPixels = OriginalImageWidth * OriginalImageHeight;
 	const int roundingOffset = 1 << (SCALING_LOG - 1);
 
+	// Pre-compute scale lookup table: scaleLUT[oldY][newY] = (newY << 8) / oldY
+	// This eliminates expensive division operation for each pixel
+	// Memory cost: 256 × 256 × 4 bytes = 256 KB (one-time allocation)
+	static int scaleLUT[256][256];
+	static bool lutInitialized = false;
+
+	if (!lutInitialized)
+	{
+		// Populate lookup table for all possible Y value combinations
+		for (int oldY = 1; oldY < 256; oldY++)
+		{
+			for (int newY = 0; newY < 256; newY++)
+			{
+				scaleLUT[oldY][newY] = (newY << 8) / oldY;
+			}
+		}
+		// Handle oldY = 0 separately (division by zero case)
+		for (int newY = 0; newY < 256; newY++)
+		{
+			scaleLUT[0][newY] = 0;  // Won't be used (handled by if statement)
+		}
+		lutInitialized = true;
+	}
+
+	// Process all pixels
 	for (int i = 0; i < numPixels; i++)
 	{
 		unsigned char* pixel = ImagePtr + (i * PixelOffset);
@@ -639,9 +665,8 @@ void CBaseAltaLuxFilter::InjectYComponent(void* Image, void* ImageBuffer,
 		}
 		else
 		{
-			// Calculate scaling factor in fixed-point arithmetic
-			// scale = (NewY / OldY) × 256 for precision
-			int scale = (NewYValue << 8) / OldYValue;
+			// Lookup pre-computed scale factor (eliminates division)
+			int scale = scaleLUT[OldYValue][NewYValue];
 
 			// Apply multiplicative scaling to each channel
 			// This preserves color ratios (hue and saturation)
