@@ -45,7 +45,7 @@ All header files (`.h`) contain inline Doxygen-style documentation:
    - **Browser**: Use a Markdown viewer extension
 
 2. **Quick Links**:
-   - Questions? → README_DOCUMENTATION.md
+   - Questions? → README.md
    - API details? → API_REFERENCE.md
    - Code usage? → Check header files
 
@@ -102,7 +102,7 @@ open Documentation/html/index.html
 
 **Start Here:**
 ```
-1. README_DOCUMENTATION.md (Project Overview)
+1. README.md (Project Overview)
    ↓
 2. "Usage" section (How to use the plugin)
    ↓
@@ -115,7 +115,7 @@ open Documentation/html/index.html
 
 **Start Here:**
 ```
-1. README_DOCUMENTATION.md (Technical Details section)
+1. README.md (Technical Details section)
    ↓
 2. API_REFERENCE.md (Core Classes section)
    ↓
@@ -130,13 +130,13 @@ open Documentation/html/index.html
 
 **Start Here:**
 ```
-1. README_DOCUMENTATION.md (Development section)
+1. README.md (Development section)
    ↓
-2. DOCUMENTATION_SUMMARY.md (Documentation standards)
+2. API_REFERENCE.md (Complete API understanding)
    ↓
-3. API_REFERENCE.md (Complete API understanding)
+3. Study implementation in .cpp files
    ↓
-4. Study implementation in .cpp files
+4. Follow existing code documentation style
 ```
 
 ## Finding Information
@@ -144,13 +144,13 @@ open Documentation/html/index.html
 ### Common Questions
 
 **"How do I install the plugin?"**
-→ README_DOCUMENTATION.md → Installation section
+→ README.md → Installation section
 
 **"How do I use the GUI?"**
-→ README_DOCUMENTATION.md → Usage → GUI Mode section
+→ README.md → Usage → GUI Mode section
 
 **"What parameters should I use?"**
-→ README_DOCUMENTATION.md → Configuration section
+→ README.md → Configuration section
 
 **"How do I process an image programmatically?"**
 → API_REFERENCE.md → Complete Usage Example section
@@ -160,12 +160,12 @@ open Documentation/html/index.html
 → Or check the .h file directly
 
 **"Why is processing slow?"**
-→ README_DOCUMENTATION.md → Troubleshooting section
+→ README.md → Troubleshooting section
 → Or API_REFERENCE.md → Performance Tips section
 
 **"How do I create a custom filter?"**
 → API_REFERENCE.md → Filter Implementations section
-→ README_DOCUMENTATION.md → Development section
+→ README.md → Development section
 
 **"Is this thread-safe?"**
 → API_REFERENCE.md → Thread Safety section
@@ -348,10 +348,10 @@ Found an error or unclear section?
 
 ## Summary
 
-**Quick Reference**: Markdown files (*.md)  
-**Complete API**: Generate Doxygen HTML  
-**While Coding**: Read header files (*.h)  
-**Learning**: README_DOCUMENTATION.md  
+**Quick Reference**: Markdown files (*.md)
+**Complete API**: Generate Doxygen HTML
+**While Coding**: Read header files (*.h)
+**Learning**: README.md
 **API Details**: API_REFERENCE.md  
 
 ---

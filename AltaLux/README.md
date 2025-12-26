@@ -4,9 +4,9 @@
 
 AltaLux is a high-performance image enhancement plugin for IrfanView that implements CLAHE (Contrast Limited Adaptive Histogram Equalization). CLAHE is an advanced algorithm that dramatically improves local contrast while preventing over-amplification of noise, making it ideal for enhancing photos with uneven lighting or low contrast.
 
-**Author**: Stefano Tommesani  
-**Website**: http://www.tommesani.com  
-**Version**: 1.10  
+**Author**: Stefano Tommesani
+**Website**: http://www.tommesani.com
+**Version**: 1.9.1.92
 **License**: Microsoft Public License (MS-PL)
 
 ## Features
@@ -49,13 +49,13 @@ AltaLux is a high-performance image enhancement plugin for IrfanView that implem
      - Lower values: Faster processing, coarser enhancement
      - 8: Recommended default (8×8 grid)
      - Higher values: Finer detail, slower processing
-4. Preview variations:
-   - **Center**: Current settings
-   - **Top**: Weaker intensity
-   - **Bottom**: Stronger intensity
-   - **Left**: Coarser grid
-   - **Right**: Finer grid
-   - **Top-left corner**: Original image
+4. Preview variations (click on any to apply):
+   - **Top-left**: Original image (click to reset both sliders to minimum)
+   - **Top-middle**: Weaker intensity (-15 strength)
+   - **Top-right**: Stronger intensity (+15 strength)
+   - **Center**: Current settings (large preview)
+   - **Right-middle**: Coarser grid (-2 scale)
+   - **Bottom-right**: Finer grid (+2 scale)
 5. Click **OK** to apply or **Cancel** to discard
 
 ### Batch Mode (Automation)
@@ -363,6 +363,12 @@ protected:
 - Typical: ~ImageSize + (NumTiles × 256 × 4 bytes)
 - Example: 1920×1080, 8×8 tiles ≈ 6MB + 64KB = ~6.1MB
 
+### Memory Alignment Optimization
+- Internal buffers use 16-byte alignment (`_aligned_malloc`)
+- Improves cache performance and memory access patterns
+- Enables future SIMD optimizations (SSE2/AVX2)
+- Minimal overhead (~15 bytes per buffer)
+
 ## Algorithm References
 
 The CLAHE algorithm is based on:
@@ -399,10 +405,15 @@ Contributions welcome! Areas of interest:
 
 ## Changelog
 
-### Version 1.10 (Current)
+### Version 1.9.1.92 (Current)
 - Comprehensive documentation and code comments
-- Dark mode support for Windows 10/11
+- Dark mode support for Windows 10/11 with proper theme detection
 - Improved GUI with real-time preview
+- Clickable preview images to adjust parameters
+- Click original image to reset both sliders to minimum
+- Centered image captions with light gray color for better readability
+- Memory alignment optimization (16-byte alignment for future SIMD support)
+- Fixed all compiler warnings (C4244, C4101, C4996, C4018, C4267)
 - Resizable dialog window
 - Multiple preview variations
 - Performance optimizations
