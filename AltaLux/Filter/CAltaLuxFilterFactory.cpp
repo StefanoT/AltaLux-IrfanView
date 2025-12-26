@@ -88,12 +88,14 @@ CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateSpecificAltaLuxFilter(int Filte
 			break;
 		}
 	}
-	catch (std::exception& e)
+	catch (const std::exception& e)
 	{
 #ifdef ENABLE_LOGGING
 		LOG(ERROR) << "Exception running filter instance (114): " << e.what();
+#else
+		(void)e;  // Suppress unused variable warning
 #endif
 		NewFilterInstance = nullptr;
-}
+	}
 	return NewFilterInstance;
 }

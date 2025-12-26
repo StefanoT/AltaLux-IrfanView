@@ -65,7 +65,7 @@ CBaseAltaLuxFilter::~CBaseAltaLuxFilter()
 	{
 		try
 		{
-			delete[] ImageBuffer;
+			_aligned_free(ImageBuffer);
 		}
 		catch (...)
 		{
@@ -111,7 +111,7 @@ void CBaseAltaLuxFilter::SetStrength(int _Strength)
 		{
 			try
 			{
-				delete[] ImageBuffer;
+				_aligned_free(ImageBuffer);
 			}
 			catch (...)
 			{
@@ -123,10 +123,10 @@ void CBaseAltaLuxFilter::SetStrength(int _Strength)
 	{
 		if (ImageBuffer == nullptr)
 		{
-			/// allocate ImageBuffer
+			/// allocate ImageBuffer with 16-byte alignment for SIMD optimization
 			try
 			{
-				ImageBuffer = new unsigned char[IMAGE_BUFFER_SIZE];
+				ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 			}
 			catch (...)
 			{
@@ -165,7 +165,7 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 		/// if it still fails, return AL_OUT_OF_MEMORY
 		try
 		{
-			ImageBuffer = new unsigned char[IMAGE_BUFFER_SIZE];
+			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		}
 		catch (...)
 		{
@@ -288,7 +288,7 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 		/// if it still fails, return AL_OUT_OF_MEMORY
 		try
 		{
-			ImageBuffer = new unsigned char[IMAGE_BUFFER_SIZE];
+			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		}
 		catch (...)
 		{
@@ -451,7 +451,7 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 		/// if it still fails, return AL_OUT_OF_MEMORY
 		try
 		{
-			ImageBuffer = new unsigned char[IMAGE_BUFFER_SIZE];
+			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		}
 		catch (...)
 		{
@@ -793,7 +793,7 @@ void CBaseAltaLuxFilter::CalcGraylevelMappings(int uiY, unsigned int ulClipLimit
 
 	PixelType* SavedImPointer = pImPointer;
 
-	if (uiY < NumVertRegions)
+	if (static_cast<unsigned int>(uiY) < NumVertRegions)
 	{
 		/// calculate greylevel mappings for each contextual region
 		for (unsigned int uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth)

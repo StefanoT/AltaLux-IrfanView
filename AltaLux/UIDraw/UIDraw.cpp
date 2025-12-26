@@ -132,8 +132,8 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 			RectWidth(RectPosition), RectHeight(RectPosition), ImageToDraw, reinterpret_cast<BITMAPINFO *>(&ImageInfo), DIB_RGB_COLORS, SRCCOPY);
 
 		SetTextColor(hdc, RGB(255, 255, 255));  // white text
-		SetBkColor(hdc, RGB(0, 0, 0));          // black background		
-		TextOut(hdc, RectPosition.left, RectPosition.top, Title, wcslen(Title));
+		SetBkColor(hdc, RGB(0, 0, 0));          // black background
+		TextOut(hdc, RectPosition.left, RectPosition.top, Title, static_cast<int>(wcslen(Title)));
 	} else {
 		// draw full image with rescaling
 		float ScalingX = static_cast<float>(ImageWidth) / RectWidth(RectPosition);
@@ -158,8 +158,8 @@ void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int 
 		}
 
 		SetTextColor(hdc, RGB(255, 255, 255));  // white text
-		SetBkColor(hdc, RGB(0, 0, 0));          // black background		
-		TextOut(hdc, rectTo.left, rectTo.top, Title, wcslen(Title));
+		SetBkColor(hdc, RGB(0, 0, 0));          // black background
+		TextOut(hdc, rectTo.left, rectTo.top, Title, static_cast<int>(wcslen(Title)));
 	}
 }
 
@@ -192,12 +192,12 @@ void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int Imag
 	if (ScalingX > ScalingY)
 	{
 		char CopyMsg[256];
-		sprintf(CopyMsg, "AltaLux technology by Stefano Tommesani (www.tommesani.com)");
+		sprintf_s(CopyMsg, sizeof(CopyMsg), "AltaLux technology by Stefano Tommesani (www.tommesani.com)");
 		//set text background
 		SetTextColor(ps.hdc, RGB(128, 128, 128));
 		SetBkMode(ps.hdc, TRANSPARENT);
 		//paint text
-		DrawTextA(ps.hdc, CopyMsg, strlen(CopyMsg), &rectClient, DT_BOTTOM | DT_SINGLELINE | DT_CENTER);
+		DrawTextA(ps.hdc, CopyMsg, static_cast<int>(strlen(CopyMsg)), &rectClient, DT_BOTTOM | DT_SINGLELINE | DT_CENTER);
 	}
 	else
 	{

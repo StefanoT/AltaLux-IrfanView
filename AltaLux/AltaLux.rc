@@ -61,8 +61,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,9,0,92
- PRODUCTVERSION 1,9,0,92
+ FILEVERSION 1,9,1,92
+ PRODUCTVERSION 1,9,1,92
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -79,12 +79,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Stefano Tommesani"
             VALUE "FileDescription", "AltaLux Image Enhancement Filter"
-            VALUE "FileVersion", "1.9.0.92"
+            VALUE "FileVersion", "1.9.1.92"
             VALUE "InternalName", "AltaLux.dll"
-            VALUE "LegalCopyright", "Copyright Stefano Tommesani 2005/2024  All rights reserved."
+            VALUE "LegalCopyright", "Copyright Stefano Tommesani 2005/2025  All rights reserved."
             VALUE "OriginalFilename", "AltaLux.dll"
             VALUE "ProductName", "AltaLux Image Enhancement Filter"
-            VALUE "ProductVersion", "1.9.0.92"
+            VALUE "ProductVersion", "1.9.1.92"
         END
     END
     BLOCK "VarFileInfo"

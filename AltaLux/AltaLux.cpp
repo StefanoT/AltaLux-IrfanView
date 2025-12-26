@@ -151,11 +151,13 @@ std::unique_ptr<CBaseAltaLuxFilter> InstantiateFilter(bool& IsRescalingEnabled)
 		}
 		return std::unique_ptr<CBaseAltaLuxFilter>(rawFilter);
 	}
-	catch (std::exception& e)
+	catch (const std::exception& e)
 	{
 	#ifdef ENABLE_LOGGING
 		std::cerr << "Exception: " << e.what() << std::endl;
-	#endif	
+	#else
+		(void)e;  // Suppress unused variable warning
+	#endif
 		return nullptr;
 	}
 }
@@ -259,7 +261,9 @@ void DoProcessing()
 	catch (const std::exception& e) {
 	#ifdef ENABLE_LOGGING
 		std::cerr << "Exception: " << e.what() << std::endl;
-	#endif	
+	#else
+		(void)e;  // Suppress unused variable warning
+	#endif
 	}
 }
 
@@ -554,10 +558,12 @@ void HandlePaintMessage(HWND hwnd)
 			}
 		}
 	}
-	catch (std::exception& e)
+	catch (const std::exception& e)
 	{
 	#ifdef ENABLE_LOGGING
 		std::cerr << "Exception: " << e.what() << std::endl;
+	#else
+		(void)e;  // Suppress unused variable warning
 	#endif
 	}
 	EndPaint(hwnd, &ps);
@@ -663,18 +669,19 @@ char SetupIniFile[1024];
 /// <param name="msg">Message identifier</param>
 /// <param name="wparam">First message parameter</param>
 /// <param name="lparam">Second message parameter</param>
-/// <returns>TRUE if message was processed, FALSE otherwise</returns>
-BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+/// <returns>TRUE if message was processed, FALSE otherwise; for some messages returns a handle</returns>
+INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
-	HBITMAP hBitmap;
-
 	switch (msg)
 	{
 	case WM_INITDIALOG:
 		{
-			// enable dark mode for title bar
-			BOOL value = TRUE;
-			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &value, sizeof(value));
+			// Initialize theme based on current system setting
+			AdjustForDarkMode(hwnd);
+
+			// Set title bar to match system theme
+			BOOL useDarkMode = IsDarkModeEnabled();
+			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
 
 			HWND hwndBitmap = GetDlgItem(hwnd, IDC_SFONDO);
 			SetWindowPos(hwndBitmap, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
@@ -755,9 +762,9 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				{
 					char FilterString[256];
 					SkipProcessing = false;
-					sprintf(FilterString, "%d", FilterIntensity);
+					sprintf_s(FilterString, sizeof(FilterString), "%d", FilterIntensity);
 					WritePrivateProfileStringA("AltaLux", "Intensity", FilterString, SetupIniFile);
-					sprintf(FilterString, "%d", FilterScale);
+					sprintf_s(FilterString, sizeof(FilterString), "%d", FilterScale);
 					WritePrivateProfileStringA("AltaLux", "Scale", FilterString, SetupIniFile);
 					EndDialog(hwnd, wparam);
 					return TRUE;
@@ -797,7 +804,7 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_VSCROLL:
 	{
 		HWND hwndTrack = (HWND)lparam;
-		int dwPos = SendMessage(hwndTrack, TBM_GETPOS, 0, 0);
+		int dwPos = static_cast<int>(SendMessage(hwndTrack, TBM_GETPOS, 0, 0));
 
 		if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER1))
 			FilterIntensity = dwPos;
@@ -832,6 +839,7 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			return TRUE;
 		}
 
+	case WM_CTLCOLORDLG:
 	case WM_CTLCOLORSTATIC:
 	case WM_CTLCOLORBTN:
 	{
@@ -842,12 +850,19 @@ BOOL CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			? RGB(255, 255, 255)
 			: RGB(0, 0, 0));
 
-		return reinterpret_cast<INT_PTR>(gBackgroundBrush->get());	
+		return reinterpret_cast<INT_PTR>(gBackgroundBrush->get());
 	}
 
 	case WM_THEMECHANGED:
 	case WM_SETTINGCHANGE:
 		AdjustForDarkMode(hwnd);
+
+		// Update title bar to match new theme
+		{
+			BOOL useDarkMode = IsDarkModeEnabled();
+			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+		}
+
 		// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
 		InvalidateRect(hwnd, nullptr, FALSE);
 		// Note: RDW_ERASE is NOT used to preserve control details like slider tick marks
@@ -1139,7 +1154,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 	if ((param1 == -1) || (param2 == -1))
 	{
 		// show GUI
-		strcpy(SetupIniFile, iniFile);
+		strcpy_s(SetupIniFile, sizeof(SetupIniFile), iniFile);
 		FilterIntensity = GetPrivateProfileIntA("AltaLux", "Intensity", AL_DEFAULT_STRENGTH, SetupIniFile);
 		FilterScale = GetPrivateProfileIntA("AltaLux", "Scale", DEFAULT_HOR_REGIONS, SetupIniFile);
 
@@ -1169,7 +1184,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		auto ScaledProcImageIntensityP = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
 		ScaledProcImageIntensityPPtr = ScaledProcImageIntensityP;
 
-		int ret = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, (DLGPROC)DlgProc);
+		INT_PTR ret = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, (DLGPROC)DlgProc);
 
 		if (ret == -1)
 			return false;
@@ -1202,10 +1217,12 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 		DWORD ImageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * pbBmHdr->biBitCount));
 		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImage->data(), ClipRect);
 	}
-	catch (std::exception& e)
-	{		
+	catch (const std::exception& e)
+	{
 	#ifdef ENABLE_LOGGING
 		std::cerr << "Exception: " << e.what() << std::endl;
+	#else
+		(void)e;  // Suppress unused variable warning
 	#endif
 		return false;
 	}
@@ -1221,8 +1238,8 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int pa
 /// <returns>Always returns 0</returns>
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 {
-	sprintf(versionString, "1.10"); // your version-nr
-	sprintf(fileFormats, "AltaLux image enhancement filter"); // some infos
+	sprintf_s(versionString, 64, "1.10"); // your version-nr
+	sprintf_s(fileFormats, 256, "AltaLux image enhancement filter"); // some infos
 	return 0;
 }
 
