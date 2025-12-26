@@ -66,14 +66,8 @@ CBaseAltaLuxFilter::~CBaseAltaLuxFilter()
 {
 	if (ImageBuffer)
 	{
-		try
-		{
-			_aligned_free(ImageBuffer);
-		}
-		catch (...)
-		{
-			ImageBuffer = nullptr;
-		}
+		_aligned_free(ImageBuffer);
+		ImageBuffer = nullptr;
 	}
 }
 
@@ -136,13 +130,7 @@ void CBaseAltaLuxFilter::SetStrength(int _Strength)
 		/// free ImageBuffer, if allocated
 		if (ImageBuffer)
 		{
-			try
-			{
-				_aligned_free(ImageBuffer);
-			}
-			catch (...)
-			{
-			}
+			_aligned_free(ImageBuffer);
 			ImageBuffer = nullptr;
 		}
 	}
@@ -151,14 +139,9 @@ void CBaseAltaLuxFilter::SetStrength(int _Strength)
 		if (ImageBuffer == nullptr)
 		{
 			/// allocate ImageBuffer with 16-byte alignment for SIMD optimization
-			try
-			{
-				ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
-			}
-			catch (...)
-			{
-				ImageBuffer = nullptr;
-			}
+			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
+			// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+			// Caller should check ImageBuffer != nullptr before use
 		}
 	}
 
@@ -188,16 +171,9 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 
 	if (ImageBuffer == nullptr)
 	{
-		/// if ImageBuffer allocation failed in the constructor, try again
-		/// if it still fails, return AL_OUT_OF_MEMORY
-		try
-		{
-			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
-		}
-		catch (...)
-		{
-			ImageBuffer = nullptr;
-		}
+		/// if ImageBuffer allocation failed in SetStrength, try again
+		/// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
@@ -311,16 +287,9 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 
 	if (ImageBuffer == nullptr)
 	{
-		/// if ImageBuffer allocation failed in the constructor, try again
-		/// if it still fails, return AL_OUT_OF_MEMORY
-		try
-		{
-			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
-		}
-		catch (...)
-		{
-			ImageBuffer = nullptr;
-		}
+		/// if ImageBuffer allocation failed in SetStrength, try again
+		/// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
@@ -472,18 +441,16 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
+	// Early return if filter is disabled (Strength = 0)
+	// Avoids unnecessary processing and memory allocation
+	if (!IsEnabled())
+		return AL_OK;
+
 	if (ImageBuffer == nullptr)
 	{
-		/// if ImageBuffer allocation failed in the constructor, try again
-		/// if it still fails, return AL_OUT_OF_MEMORY
-		try
-		{
-			ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
-		}
-		catch (...)
-		{
-			ImageBuffer = nullptr;
-		}
+		/// if ImageBuffer allocation failed in SetStrength, try again
+		/// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
@@ -495,7 +462,7 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 	if (RunReturn != AL_OK)
 		return RunReturn;
 
-	InjectYComponent(Image, ImageBuffer, FirstFactor, SecondFactor, ThirdFactor, PixelOffset);
+	InjectYComponent(Image, FirstFactor, SecondFactor, ThirdFactor, PixelOffset);
 
 	return AL_OK;
 }
@@ -636,7 +603,7 @@ void CBaseAltaLuxFilter::ExtractYComponent(void* Image, int FirstFactor,
 /// R' = R × (Y_new / Y_old) preserves color perfectly.
 /// Lookup table eliminates per-pixel division.
 /// </remarks>
-void CBaseAltaLuxFilter::InjectYComponent(void* Image, void* ImageBuffer,
+void CBaseAltaLuxFilter::InjectYComponent(void* Image,
                                           int FirstFactor, int SecondFactor,
                                           int ThirdFactor, int PixelOffset)
 {

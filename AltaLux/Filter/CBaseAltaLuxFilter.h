@@ -524,7 +524,6 @@ protected:
 
 	/// @brief Injects processed Y component back into RGB image using multiplicative scaling
 	/// @param Image Pointer to RGB image data to modify (must not be null)
-	/// @param ImageBuffer Pointer to processed luminance buffer (enhanced Y values)
 	/// @param FirstFactor Scaling factor for first color component (same as ExtractYComponent)
 	/// @param SecondFactor Scaling factor for second color component
 	/// @param ThirdFactor Scaling factor for third color component
@@ -539,7 +538,7 @@ protected:
 	/// @note Called after CLAHE processing to apply enhancement to color image
 	/// @note Black pixels (Y=0) are handled specially to avoid division by zero
 	/// @note Lookup table initialized once on first call (one-time cost)
-	void InjectYComponent(void* Image, void* ImageBuffer, int FirstFactor, int SecondFactor, int ThirdFactor, int PixelOffset);
+	void InjectYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor, int PixelOffset);
 
 	/// @brief Initialize the ScaleLUT lookup table for color scaling
 	/// @details Pre-computes all 65,536 possible scale factors for InjectYComponent.
