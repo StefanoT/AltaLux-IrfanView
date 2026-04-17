@@ -393,12 +393,6 @@ protected:
 	/// Current processing strength (0-100)
 	int Strength;
 
-	/// Lookup table for multiplicative color scaling in InjectYComponent
-	/// Pre-computed scale factors: ScaleLUT[oldY][newY] = (newY << 8) / oldY
-	/// Eliminates per-pixel division (~1.8-2.5x speedup)
-	/// Memory cost: 256 × 256 × 4 bytes = 256 KB per instance
-	int ScaleLUT[256][256];
-
 	//-------------------------------------------------------------------------
 	// Tile Configuration
 	//-------------------------------------------------------------------------
@@ -502,7 +496,7 @@ protected:
 	/// @note Converts RGB to luminance (Y), processes Y, then adjusts RGB
 	/// @note Color ratios are preserved to avoid hue shifts
 	/// @par Luminance Calculation:
-	/// Y = 0.299*R + 0.587*G + 0.114*B (ITU-R BT.601 standard)
+	/// Y = 0.2126*R + 0.7152*G + 0.0722*B (ITU-R BT.709 / sRGB standard)
 	/// @par Color Preservation:
 	/// After processing Y to Y', each RGB component is adjusted:
 	/// R' = R + (Y' - Y), clamped to [0, 255]
@@ -511,12 +505,12 @@ protected:
 
 	/// @brief Extracts Y (luminance) component from RGB image into ImageBuffer
 	/// @param Image Pointer to source RGB image data (must not be null)
-	/// @param FirstFactor Scaling factor for first color component (0.299 * 32768 for R in RGB)
-	/// @param SecondFactor Scaling factor for second color component (0.587 * 32768 for G)
-	/// @param ThirdFactor Scaling factor for third color component (0.114 * 32768 for B)
+	/// @param FirstFactor Scaling factor for first color component (0.2126 * 32768 for R in RGB)
+	/// @param SecondFactor Scaling factor for second color component (0.7152 * 32768 for G)
+	/// @param ThirdFactor Scaling factor for third color component (0.0722 * 32768 for B)
 	/// @param PixelOffset Bytes per pixel (3 for RGB24, 4 for RGB32)
-	/// @details Converts RGB to luminance using ITU-R BT.601 formula:
-	///          Y = 0.299*R + 0.587*G + 0.114*B
+	/// @details Converts RGB to luminance using ITU-R BT.709 formula:
+	///          Y = 0.2126*R + 0.7152*G + 0.0722*B
 	///          Uses fixed-point arithmetic (scale by 2^15) for performance.
 	///          Result stored in ImageBuffer for CLAHE processing.
 	/// @note This method is optimized with SSE2 SIMD when available (2-4x faster)
@@ -539,12 +533,5 @@ protected:
 	/// @note Black pixels (Y=0) are handled specially to avoid division by zero
 	/// @note Lookup table initialized once on first call (one-time cost)
 	void InjectYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor, int PixelOffset);
-
-	/// @brief Initialize the ScaleLUT lookup table for color scaling
-	/// @details Pre-computes all 65,536 possible scale factors for InjectYComponent.
-	///          ScaleLUT[oldY][newY] = (newY << 8) / oldY for all Y values 0-255.
-	///          Called once during construction to avoid per-pixel division overhead.
-	/// @note This is a one-time cost (~65K divisions) that enables 1.8-2.5x speedup
-	void InitializeScaleLUT();
 
 };

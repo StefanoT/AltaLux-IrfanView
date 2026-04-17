@@ -4,884 +4,844 @@ Author: Stefano Tommesani
 Website: http://www.tommesani.com
 
 Microsoft Public License (MS-PL) [OSI Approved License]
-
-This license governs use of the accompanying software. If you use the software, you accept this license. If you do not accept the license, do not use the software.
-
-1. Definitions
-The terms "reproduce," "reproduction," "derivative works," and "distribution" have the same meaning here as under U.S. copyright law.
-A "contribution" is the original software, or any additions or changes to the software.
-A "contributor" is any person that distributes its contribution under this license.
-"Licensed patents" are a contributor's patent claims that read directly on its contribution.
-
-2. Grant of Rights
-(A) Copyright Grant- Subject to the terms of this license, including the license conditions and limitations in section 3, each contributor grants you a non-exclusive, worldwide, royalty-free copyright license to reproduce its contribution, prepare derivative works of its contribution, and distribute its contribution or any derivative works that you create.
-(B) Patent Grant- Subject to the terms of this license, including the license conditions and limitations in section 3, each contributor grants you a non-exclusive, worldwide, royalty-free license under its licensed patents to make, have made, use, sell, offer for sale, import, and/or otherwise dispose of its contribution in the software or derivative works of the contribution in the software.
-
-3. Conditions and Limitations
-(A) No Trademark License- This license does not grant you rights to use any contributors' name, logo, or trademarks.
-(B) If you bring a patent claim against any contributor over patents that you claim are infringed by the software, your patent license from such contributor to the software ends automatically.
-(C) If you distribute any portion of the software, you must retain all copyright, patent, trademark, and attribution notices that are present in the software.
-(D) If you distribute any portion of the software in source code form, you may do so only under this license by including a complete copy of this license with your distribution. If you distribute any portion of the software in compiled or object code form, you may only do so under a license that complies with this license.
-(E) The software is licensed "as-is." You bear the risk of using it. The contributors give no express warranties, guarantees or conditions. You may have additional consumer rights under your local laws which this license cannot change. To the extent permitted under your local laws, the contributors exclude the implied warranties of merchantability, fitness for a particular purpose and non-infringement.
 */
-
-// AltaLux.cpp : Defines the entry point for the DLL application.
-//
 
 #include "stdafx.h"
 #include "AltaLux.h"
 #include "resource.h"
 
-#include <cstdio>
-#include <cmath>
-#include <malloc.h>
 #include <Commctrl.h>
+#include <windowsx.h>
+#include <Uxtheme.h>
+#include <dwmapi.h>
+#include <vssym32.h>
 
+#include <algorithm>
+#include <array>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <cwchar>
 #include <memory>
 #include <vector>
 
-#include "Filter/CBaseAltaLuxFilter.h"
 #include "Filter/CAltaLuxFilterFactory.h"
-#include "UIDraw/UIDraw.h"
+#include "Filter/CBaseAltaLuxFilter.h"
 #include "ScopedBitmapHeader.h"
-#include <iostream>
+#include "AltaLuxCore.h"
+#include "UIDraw/UIDraw.h"
 
-#include <dwmapi.h>
 #pragma comment(lib, "Dwmapi.lib")
-
-#include <Uxtheme.h>
-#include <vssym32.h>
-
 #pragma comment(lib, "uxtheme.lib")
 
 using WeakImagePtr = std::weak_ptr<std::vector<unsigned char>>;
 using SharedImagePtr = std::shared_ptr<std::vector<unsigned char>>;
 
-const int RGB24_PIXEL_SIZE = 3;
-const int RGB32_PIXEL_SIZE = 4;
-
-HINSTANCE hDll;
-BITMAPINFOHEADER BmHdrCopy;
-int ImageWidth;
-int ImageHeight;
-int ImageBitDepth;
-int FullImageWidth;
-int FullImageHeight;
-bool CroppedImage;
-bool SkipProcessing;
-int ScaledImageWidth;
-int ScaledImageHeight;
-int ScalingFactor = 1;
-WeakImagePtr SrcImagePtr;				// source image
-WeakImagePtr ProcImagePtr;				// processed image
-WeakImagePtr ScaledSrcImagePtr;			// down-sampled source image
-WeakImagePtr ScaledProcImagePtr;		// processed image
-WeakImagePtr ScaledProcImageGridMPtr;	// processed image with lesser intensity
-WeakImagePtr ScaledProcImageGridPPtr;	// processed image with higher intensity
-WeakImagePtr ScaledProcImageIntensityMPtr;	// processed image with coarser grid
-WeakImagePtr ScaledProcImageIntensityPPtr;	// processed image with finer grid
-/// GUI
-int FilterIntensity = AL_DEFAULT_STRENGTH;
-int FilterScale = DEFAULT_HOR_REGIONS;
-bool CompleteVisualization = true;
-bool NoZoom = false;
-const int SMALL_PICTURE = 32;  // Scaling factor for preview images
-
-/// <summary>
-/// DLL entry point called by Windows when the DLL is loaded or unloaded.
-/// Stores the module handle for later use by the plugin.
-/// </summary>
-/// <param name="hModule">Handle to the DLL module</param>
-/// <param name="ul_reason_for_call">Reason for calling function (attach/detach)</param>
-/// <param name="lpReserved">Reserved parameter</param>
-/// <returns>TRUE if successful, FALSE otherwise</returns>
-BOOL APIENTRY DllMain(HANDLE hModule,
-                      DWORD ul_reason_for_call,
-                      LPVOID lpReserved
-)
+namespace
 {
-	switch (ul_reason_for_call)
+	const int SECURITY_PADDING = 4096;
+	const int PREVIEW_MARGIN = 16;
+	const int PANEL_GAP = 18;
+	const int PANEL_WIDTH = 240;
+	const int SPLIT_HIT_RADIUS = 8;
+	const int PRESET_TOLERANCE = 3;
+	const UINT_PTR PREVIEW_REFRESH_TIMER_ID = 1;
+	const UINT PREVIEW_REFRESH_DELAY_MS = 40;
+
+	const std::array<Preset, 3> Presets = { {
+		{ IDC_PRESET_NATURAL, L"Natural", 35, 10, 55 },
+		{ IDC_PRESET_BALANCED, L"Balanced", 45, 25, 25 },
+		{ IDC_PRESET_DETAIL, L"Detail", 55, 60, 10 }
+	} };
+
+	HINSTANCE hDll = nullptr;
+	BITMAPINFOHEADER BmHdrCopy = {};
+	int ImageWidth = 0;
+	int ImageHeight = 0;
+	int ImageBitDepth = 0;
+	int FullImageWidth = 0;
+	int FullImageHeight = 0;
+	int ScaledImageWidth = 0;
+	int ScaledImageHeight = 0;
+	int ScalingFactor = 1;
+	bool CroppedImage = false;
+	bool SkipProcessing = false;
+
+	WeakImagePtr ScaledSrcImagePtr;
+	WeakImagePtr ScaledProcImagePtr;
+
+	UiState gUiState = {
+		Constants::DefaultStrength,
+		Constants::DefaultDetail,
+		Constants::DefaultNatural,
+		false,
+		false,
+		false,
+		0
+	};
+
+	char SetupIniFile[1024] = {};
+
+	class ScopedBrush
 	{
-	case DLL_PROCESS_ATTACH:
+	public:
+		explicit ScopedBrush(COLORREF color) : brush_(CreateSolidBrush(color)) {}
+		~ScopedBrush()
 		{
-			hDll = (HINSTANCE)hModule;
-			break;
-		}
-	case DLL_THREAD_ATTACH:
-	case DLL_THREAD_DETACH:
-	case DLL_PROCESS_DETACH:
-		break;
-	}
-	return TRUE;
-}
-
-/// <summary>
-/// Copies the scaled source image data to the target buffer.
-/// Used to initialize preview buffers before processing.
-/// </summary>
-/// <param name="TargetImage">Destination buffer to receive the scaled source image data</param>
-void CopyScaledSrcImage(unsigned char* TargetImage)
-{
-	if (TargetImage == nullptr)
-		return;
-	auto ScaledSrcImage = ScaledSrcImagePtr.lock();
-	if (ScaledSrcImage == nullptr)
-		return;
-	memcpy(TargetImage, ScaledSrcImage.get()->data(), ScaledImageWidth * ScaledImageHeight * ImageBitDepth);
-}
-
-/// <summary>
-/// Creates and returns an instance of CBaseAltaLuxFilter based on image dimensions.
-/// The function determines whether to use a scaled or full-size image based on the availability of the scaled source image. 
-/// </summary>
-/// <param name="IsRescalingEnabled">A reference to a boolean that will be set to true if scaling is enabled (i.e., the scaled image was used to create the filter), or false if the full-size image was used.</param>
-/// <returns>A pointer to an instance of the AltaLux filter if successful, nullptr otherwise.</returns>
-std::unique_ptr<CBaseAltaLuxFilter> InstantiateFilter(bool& IsRescalingEnabled)
-{
-	try
-	{		
-		IsRescalingEnabled = ScaledSrcImagePtr.lock() != nullptr;
-		CBaseAltaLuxFilter* rawFilter = nullptr;
-		if (IsRescalingEnabled)		
-		{
-			rawFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ScaledImageWidth, ScaledImageHeight, FilterScale, FilterScale);			
-		}
-		else
-		{
-			rawFilter = CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, FilterScale, FilterScale);			
-		}
-		return std::unique_ptr<CBaseAltaLuxFilter>(rawFilter);
-	}
-	catch (const std::exception& e)
-	{
-	#ifdef ENABLE_LOGGING
-		std::cerr << "Exception: " << e.what() << std::endl;
-	#else
-		(void)e;  // Suppress unused variable warning
-	#endif
-		return nullptr;
-	}
-}
-
-/// <summary>
-/// Processes the current image with the AltaLux filter using current settings.
-/// Generates multiple preview variants with different intensity and grid scale values.
-/// If rescaling is enabled, processes the downsampled image; otherwise processes the full-size image.
-/// </summary>
-void DoProcessing()
-{
-	bool IsRescalingEnabled = false;
-	auto AltaLuxFilterPtr = InstantiateFilter(IsRescalingEnabled);
-	if (!AltaLuxFilterPtr)
-		return;
-
-	try
-	{
-		auto processImage = [&](const SharedImagePtr image) 
-		{
-			switch (ImageBitDepth) 
+			if (brush_ != nullptr)
 			{
-				case RGB24_PIXEL_SIZE:
-					AltaLuxFilterPtr->ProcessRGB24(static_cast<void*>(image.get()->data()));
-					break;
-				case RGB32_PIXEL_SIZE:
-					AltaLuxFilterPtr->ProcessRGB32(static_cast<void*>(image.get()->data()));
-					break;
-				default:
-					break;
-			}
-		};
-
-		if (IsRescalingEnabled)
-		{
-			// rescaling is enabled, so preview is computed on the smaller resampled image
-			auto ScaledProcImage = ScaledProcImagePtr.lock();
-			if (ScaledProcImage != nullptr)
-			{
-				CopyScaledSrcImage(ScaledProcImage.get()->data());
-				AltaLuxFilterPtr->SetStrength(FilterIntensity);
-				processImage(ScaledProcImage);
-			}
-			// preview intensity changes
-			const int STRENGTH_DELTA = 15;
-
-			// preview with lesser intensity
-			auto ScaledProcImageIntensityM = ScaledProcImageIntensityMPtr.lock();
-			if (ScaledProcImageIntensityM != nullptr)
-			{
-				CopyScaledSrcImage(ScaledProcImageIntensityM.get()->data());
-				AltaLuxFilterPtr->SetStrength(max(FilterIntensity - STRENGTH_DELTA, AL_MIN_STRENGTH));
-				processImage(ScaledProcImageIntensityM);
-			}
-
-			// preview with higher intensity
-			auto ScaledProcImageIntensityP = ScaledProcImageIntensityPPtr.lock();
-			if (ScaledProcImageIntensityP != nullptr)
-			{
-				CopyScaledSrcImage(ScaledProcImageIntensityP.get()->data());
-				AltaLuxFilterPtr->SetStrength(min(FilterIntensity + STRENGTH_DELTA, AL_MAX_STRENGTH));
-				processImage(ScaledProcImageIntensityP);
-			}
-
-			// preview with grid changes
-			const int SLICE_DELTA = 2;
-
-			// preview with coarser grid
-			auto ScaledProcImageGridM = ScaledProcImageGridMPtr.lock();
-			if (ScaledProcImageGridM != nullptr)
-			{
-				CopyScaledSrcImage(ScaledProcImageGridM.get()->data());
-				AltaLuxFilterPtr->SetSlices(
-					max(FilterScale - SLICE_DELTA, MIN_HOR_REGIONS), max(FilterScale - SLICE_DELTA, MIN_VERT_REGIONS));
-				processImage(ScaledProcImageGridM);
-			}
-
-			// preview with finer grid
-			auto ScaledProcImageGridP = ScaledProcImageGridPPtr.lock();
-			if (ScaledProcImageGridP != nullptr)
-			{
-				CopyScaledSrcImage(ScaledProcImageGridP.get()->data());
-				AltaLuxFilterPtr->SetSlices(
-					min(FilterScale + SLICE_DELTA, MAX_HOR_REGIONS), min(FilterScale + SLICE_DELTA, MAX_VERT_REGIONS));
-				processImage(ScaledProcImageGridP);
+				DeleteObject(brush_);
 			}
 		}
-		else
+
+		HBRUSH get() const
 		{
-			// full-scale view only
-			auto SrcImage = SrcImagePtr.lock();
-			auto ProcImage = ProcImagePtr.lock();
-			if ((SrcImage != nullptr) && (ProcImage != nullptr))
-			{
-				memcpy(ProcImage.get()->data(), SrcImage.get()->data(), ImageWidth * ImageHeight * ImageBitDepth);
-				AltaLuxFilterPtr->SetStrength(FilterIntensity);
-				processImage(ProcImage);
-			}
+			return brush_;
 		}
-	}
-	catch (const std::exception& e) {
-	#ifdef ENABLE_LOGGING
-		std::cerr << "Exception: " << e.what() << std::endl;
-	#else
-		(void)e;  // Suppress unused variable warning
-	#endif
-	}
-}
 
-/// <summary>
-/// Modifies the provided rectangle, scaling its width and height by the provided scaling factor, expressed as a percentage. 
-/// The scaled rectangle is repositioned to start at the origin(0, 0).
-/// </summary>
-/// <param name="RectToScale">The RECT structure representing the rectangle to be scaled</param>
-/// <param name=" ScalingFactor">The scaling factor, expressed as a percentage. A factor of 100 means no scaling (100%), 50 means the rectangle is reduced to half its original size, and 200 doubles the size.</param>
-void ScaleRect(RECT& RectToScale, int ScalingFactor)
-{
-	int originalWidth = RectToScale.right - RectToScale.left;
-	int originalHeight = RectToScale.bottom - RectToScale.top;
-	RectToScale.left = 0;
-	RectToScale.top = 0;
-	RectToScale.right = (originalWidth * ScalingFactor) / 100;
-	RectToScale.bottom = (originalHeight * ScalingFactor) / 100;
-}
+	private:
+		HBRUSH brush_;
+	};
 
-/// <summary>
-/// Down-samples the source image into the destination image using simple averaging.
-/// Supports only 24-bit or 32-bit RGB images.
-/// </summary>
-/// <param name="src">Pointer to source image data</param>
-/// <param name="srcWidth">Width of the source image</param>
-/// <param name="srcHeight">Height of the source image</param>
-/// <param name="dest">Pointer to destination image data</param>
-/// <param name="scalingFactor">Factor by which to scale down (integer >= 1)</param>
-/// <param name="bitDepth">Bytes per pixel (3 or 4)</param>
-/// <remarks>Downsampling is computed with simple averaging as it is used only for previews</remarks>
-void ScaleDownImage(unsigned char* SrcImage, const int SrcImageWidth, const int SrcImageHeight, unsigned char* DestImage, const int ScalingFactor, const int BitDepth)
-{
-	if (!SrcImage || !DestImage || ScalingFactor <= 0 || (BitDepth != 3 && BitDepth != 4))
-		return;
+	enum class ThemeMode { Light, Dark };
 
-	if (ScalingFactor == 1)
+	ThemeMode gCurrentTheme = ThemeMode::Light;
+	std::unique_ptr<ScopedBrush> gBackgroundBrush = std::make_unique<ScopedBrush>(RGB(255, 255, 255));
+
+	HHOOK gKeyboardHook = nullptr;
+	HWND gHookDlg = nullptr;
+
+	int GetImageByteCount(int width, int height)
 	{
-		/// no rescaling
-		memcpy(DestImage, SrcImage, SrcImageWidth * SrcImageHeight * BitDepth);
-		return;
+		return width * height * ImageBitDepth;
 	}
 
-	auto DestImagePtr = static_cast<unsigned char *>(DestImage);
-	auto SrcImagePtr = static_cast<unsigned char *>(SrcImage);
-	const int SrcImageStride = SrcImageWidth * BitDepth;
-	const int DestImageWidth = SrcImageWidth / ScalingFactor;
-	const int DestImageHeight = SrcImageHeight / ScalingFactor;
-	unsigned char* DestPixelPtr = DestImagePtr;
-	const int ScalingArea = ScalingFactor * ScalingFactor;
-
-	for (int y = 0; y < DestImageHeight; y++)
+	int GetRGBImageSize(int width, int height)
 	{
-		unsigned char* SrcPixelPtr = &SrcImagePtr[((y * ScalingFactor) * SrcImageWidth) * BitDepth];
-		for (int x = 0; x < DestImageWidth; x++)
+		return GetImageByteCount(width, height) + SECURITY_PADDING;
+	}
+
+	RECT GetPreviewRect(HWND hwnd)
+	{
+		RECT clientRect = {};
+		GetClientRect(hwnd, &clientRect);
+
+		RECT previewRect = {};
+		previewRect.left = PREVIEW_MARGIN;
+		previewRect.top = PREVIEW_MARGIN;
+		const int minimumPreviewRight = previewRect.left + 320;
+		const int preferredPreviewRight = clientRect.right - PANEL_WIDTH - PANEL_GAP - PREVIEW_MARGIN;
+		previewRect.right = preferredPreviewRight > minimumPreviewRight ? preferredPreviewRight : minimumPreviewRight;
+		previewRect.bottom = clientRect.bottom - PREVIEW_MARGIN;
+		return previewRect;
+	}
+
+	RECT GetActiveImageRect(HWND hwnd)
+	{
+		return GetPreviewImageRect(ScaledImageWidth, ScaledImageHeight, GetPreviewRect(hwnd), gUiState.zoomToSelection);
+	}
+
+	void CenterSplitInPreview(HWND hwnd)
+	{
+		const RECT imageRect = GetActiveImageRect(hwnd);
+		gUiState.splitX = imageRect.left + (RectWidth(imageRect) / 2);
+	}
+
+	void ClampSplitToPreview(HWND hwnd)
+	{
+		const RECT imageRect = GetActiveImageRect(hwnd);
+		if (imageRect.right <= imageRect.left)
 		{
-			unsigned int RAcc = 0;
-			unsigned int GAcc = 0;
-			unsigned int BAcc = 0;
-			for (int iy = 0; iy < ScalingFactor; iy++)
+			return;
+		}
+
+		// Initialize the split to the middle only when it has never been placed;
+		// otherwise clamp to the edges so a drag beyond the image sticks there
+		// instead of snapping back to center on every WM_MOUSEMOVE.
+		if (gUiState.splitX <= 0)
+		{
+			CenterSplitInPreview(hwnd);
+			return;
+		}
+
+		gUiState.splitX = ClampInt(gUiState.splitX, imageRect.left, imageRect.right);
+	}
+
+	void InvalidatePreview(HWND hwnd)
+	{
+		const RECT previewRect = GetPreviewRect(hwnd);
+		InvalidateRect(hwnd, &previewRect, FALSE);
+	}
+
+	bool IsDarkModeEnabled()
+	{
+		DWORD value = 0;
+		DWORD valueSize = sizeof(value);
+		const LSTATUS status = RegGetValueW(
+			HKEY_CURRENT_USER,
+			L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+			L"AppsUseLightTheme",
+			RRF_RT_DWORD,
+			nullptr,
+			&value,
+			&valueSize);
+		return status == ERROR_SUCCESS && value == 0;
+	}
+
+	void AdjustForDarkMode(HWND hwnd)
+	{
+		const bool darkMode = IsDarkModeEnabled();
+		const ThemeMode targetTheme = darkMode ? ThemeMode::Dark : ThemeMode::Light;
+		if (targetTheme == gCurrentTheme)
+		{
+			return;
+		}
+
+		gCurrentTheme = targetTheme;
+		gBackgroundBrush = std::make_unique<ScopedBrush>(darkMode ? RGB(32, 32, 32) : RGB(255, 255, 255));
+		RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+	}
+
+	void CopyScaledSrcImage(unsigned char* targetImage)
+	{
+		auto scaledSrc = ScaledSrcImagePtr.lock();
+		if (targetImage == nullptr || scaledSrc == nullptr)
+		{
+			return;
+		}
+
+		memcpy(targetImage, scaledSrc->data(), GetImageByteCount(ScaledImageWidth, ScaledImageHeight));
+	}
+
+	void DoPreviewProcessingV2()
+	{
+		auto scaledSrc = ScaledSrcImagePtr.lock();
+		auto scaledProc = ScaledProcImagePtr.lock();
+		if (scaledSrc == nullptr || scaledProc == nullptr)
+		{
+			return;
+		}
+
+		ProcessMultiscaleImage(scaledSrc->data(), scaledProc->data(), ScaledImageWidth, ScaledImageHeight, ImageBitDepth, gUiState);
+	}
+
+	void ApplyPreset(const Preset& preset)
+	{
+		ApplyPreset(gUiState, preset);
+	}
+
+	bool IsPresetActive(const Preset& preset)
+	{
+		return IsPresetActive(gUiState, preset, PRESET_TOLERANCE);
+	}
+
+	void SetButtonText(HWND hwnd, int controlId, const wchar_t* text)
+	{
+		SetWindowTextW(GetDlgItem(hwnd, controlId), text);
+	}
+
+	void UpdatePresetButtons(HWND hwnd)
+	{
+		for (const auto& preset : Presets)
+		{
+			if (IsPresetActive(preset))
 			{
-				int SrcPixelIndex = iy * SrcImageStride;
-				for (int ix = 0; ix < ScalingFactor; ix++)
-				{
-					RAcc += static_cast<unsigned int>(SrcPixelPtr[SrcPixelIndex]);
-					GAcc += static_cast<unsigned int>(SrcPixelPtr[SrcPixelIndex + 1]);
-					BAcc += static_cast<unsigned int>(SrcPixelPtr[SrcPixelIndex + 2]);
-					SrcPixelIndex += BitDepth;
-				}
-			}
-			if ((ScalingFactor == 2) || (ScalingFactor == 4))
-			{
-				DestPixelPtr[0] = static_cast<unsigned char>(RAcc >> ScalingFactor);
-				DestPixelPtr[1] = static_cast<unsigned char>(GAcc >> ScalingFactor);
-				DestPixelPtr[2] = static_cast<unsigned char>(BAcc >> ScalingFactor);
+				wchar_t activeLabel[32] = {};
+				swprintf_s(activeLabel, L"[%s]", preset.name);
+				SetButtonText(hwnd, preset.buttonId, activeLabel);
 			}
 			else
 			{
-				DestPixelPtr[0] = static_cast<unsigned char>(RAcc / ScalingArea);
-				DestPixelPtr[1] = static_cast<unsigned char>(GAcc / ScalingArea);
-				DestPixelPtr[2] = static_cast<unsigned char>(BAcc / ScalingArea);
+				SetButtonText(hwnd, preset.buttonId, preset.name);
 			}
-			SrcPixelPtr += ScalingFactor * BitDepth;
-			DestPixelPtr += BitDepth;
 		}
 	}
-}
 
-/// <summary>
-/// Fills a rectangular area with a solid color.
-/// </summary>
-/// <param name="hdc">Device context handle</param>
-/// <param name="rectClient">Rectangle area to fill</param>
-/// <param name="R">Red component (0-255)</param>
-/// <param name="G">Green component (0-255)</param>
-/// <param name="B">Blue component (0-255)</param>
-void FillImageArea(HDC hdc, const RECT& rectClient, BYTE R, BYTE G, BYTE B)
-{
-	HRGN bgRgn = CreateRectRgnIndirect(&rectClient);
-	HBRUSH hBrush = CreateSolidBrush(RGB(R, G, B));
-	FillRgn(hdc, bgRgn, hBrush);
-	DeleteObject(hBrush);
-	DeleteObject(bgRgn);
-}
-
-/// <summary>
-/// Clears a rectangular area by filling it with black (RGB 0,0,0).
-/// </summary>
-/// <param name="hdc">Device context handle</param>
-/// <param name="rectClient">Rectangle area to clear</param>
-void ClearImageArea(HDC hdc, const RECT& rectClient)
-{
-	FillImageArea(hdc, rectClient, 0, 0, 0);
-}
-
-/// <summary>
-/// Updates the slider controls to reflect current filter intensity and scale values.
-/// Forces immediate repaint of both sliders.
-/// </summary>
-/// <param name="hwnd">Handle to the parent dialog window</param>
-void UpdateSliders(HWND hwnd)
-{
-	HWND hSlider1 = GetDlgItem(hwnd, IDC_SLIDER1);
-	HWND hSlider2 = GetDlgItem(hwnd, IDC_SLIDER2);
-
-	// Set the slider positions
-	SendMessage(hSlider1, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)FilterIntensity);
-	SendMessage(hSlider2, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)FilterScale);
-
-	// Force immediate repaint of sliders
-	// Note: RDW_ERASE is NOT used here to preserve tick marks on the trackbar controls
-	RedrawWindow(hSlider1, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-	RedrawWindow(hSlider2, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-}
-
-/// <summary>
-/// Draws a gray line from point (x1, y1) to point (x2, y2).
-/// Used for visual separation in the preview grid.
-/// </summary>
-/// <param name="hdc">Device context handle</param>
-/// <param name="x1">X coordinate of start point</param>
-/// <param name="y1">Y coordinate of start point</param>
-/// <param name="x2">X coordinate of end point</param>
-/// <param name="y2">Y coordinate of end point</param>
-void DrawGrayLine(HDC hdc, int x1, int y1, int x2, int y2)
-{
-	HPEN hPen = CreatePen(PS_SOLID, 1, RGB(128, 128, 128)); // Create a gray pen
-	HPEN oldPen = (HPEN)SelectObject(hdc, hPen);
-
-	MoveToEx(hdc, x1, y1, NULL); // Move to the start point
-	LineTo(hdc, x2, y2);         // Draw to the end point
-
-	SelectObject(hdc, oldPen);
-	DeleteObject(hPen);
-}
-
-/// <summary>
-/// Prepares the drawing area for visualization by clearing it and optionally drawing guide lines.
-/// Guide lines divide the preview area into thirds horizontally and vertically.
-/// </summary>
-/// <param name="hdc">Device context handle</param>
-/// <param name="rectClient">Rectangle area to prepare</param>
-/// <param name="drawLines">If true, draws guide lines; if false, only clears the area</param>
-void PrepareVisualization(HDC hdc, RECT rectClient, bool drawLines)
-{
-	ClearImageArea(hdc, rectClient);
-
-	if (drawLines)
+	void UpdateCommandLabels(HWND hwnd)
 	{
-		auto rectWidth = RectWidth(rectClient);
-		auto rectHeight = RectHeight(rectClient);
-		DrawGrayLine(hdc, rectClient.left, rectClient.top + rectHeight / 3, rectClient.right, rectClient.top + rectHeight / 3);
-		DrawGrayLine(hdc, rectClient.left + rectWidth / 3, rectClient.top, rectClient.left + rectWidth / 3, rectClient.top + rectHeight / 3);
-		DrawGrayLine(hdc, rectClient.right - rectWidth / 3, rectClient.top + rectHeight / 3, rectClient.right - rectWidth / 3, rectClient.bottom);
+		SetButtonText(hwnd, IDC_TOGGLEZOOM, gUiState.zoomToSelection ? L"Zoom: 1:1" : L"Zoom: Fit");
 	}
-}
 
-/// <summary>
-/// Handles WM_PAINT messages to render the dialog GUI.
-/// In complete visualization mode, displays the original image and multiple processed variants
-/// with different intensity and grid scale settings arranged in a grid layout.
-/// In simple mode, displays only the processed image.
-/// </summary>
-/// <param name="hwnd">Handle to the dialog window</param>
-void HandlePaintMessage(HWND hwnd)
-{
-	RECT rectClient;
-	GetClientRect(hwnd, &rectClient);
-	rectClient.right -= 100;
-
-	PAINTSTRUCT ps;
-	HDC hdc = BeginPaint(hwnd, &ps);
-
-	try
+	void UpdateSliders(HWND hwnd)
 	{
-		PrepareVisualization(hdc, rectClient, CompleteVisualization);
+		SendMessage(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), TBM_SETPOS, TRUE, gUiState.strength);
+		SendMessage(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), TBM_SETPOS, TRUE, gUiState.detail);
+		SendMessage(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), TBM_SETPOS, TRUE, gUiState.naturalLook);
+		UpdatePresetButtons(hwnd);
+		UpdateCommandLabels(hwnd);
+	}
 
-		if (CompleteVisualization)
+	void SetSliderRanges(HWND hwnd)
+	{
+		const int sliderIds[] = { IDC_STRENGTH_SLIDER, IDC_DETAIL_SLIDER, IDC_NATURALLOOK_SLIDER };
+		for (const int sliderId : sliderIds)
 		{
-			const BYTE LESS_INTENSE = 5;
-			const BYTE MORE_INTENSE = 15;
-			const BYTE CURR_INTENSE = 10;
-
-			// draw original image
-			auto ScaledSrcImage = ScaledSrcImagePtr.lock();
-			if (ScaledSrcImage != nullptr)
-			{
-				RECT OriginalImageRect = rectClient;
-				ScaleRect(OriginalImageRect, SMALL_PICTURE);
-				// draw in top-left corner
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledSrcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, OriginalImageRect, false,
-					FilterScale, NoZoom, L"Original image");
-			}
-
-			// draw processed image with lesser intensity
-			auto ScaledProcImageIntensityM = ScaledProcImageIntensityMPtr.lock();
-			if (ScaledProcImageIntensityM != nullptr)
-			{
-				RECT IntensityMImageRect = rectClient;
-				ScaleRect(IntensityMImageRect, SMALL_PICTURE);
-				// draw in top-mid position
-				OffsetRect(&IntensityMImageRect, (RectWidth(rectClient) - RectWidth(IntensityMImageRect)) / 2, 0);
-				FillImageArea(hdc, IntensityMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityM.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityMImageRect,
-					false, FilterScale, NoZoom, L"Weaker (- Intensity)");
-			}
-
-			// draw processed image with higher intensity
-			auto ScaledProcImageIntensityP = ScaledProcImageIntensityPPtr.lock();
-			if (ScaledProcImageIntensityP != nullptr)
-			{
-				RECT IntensityPImageRect = rectClient;
-				ScaleRect(IntensityPImageRect, SMALL_PICTURE);
-				// draw in top-right corner
-				OffsetRect(&IntensityPImageRect, (RectWidth(rectClient) - RectWidth(IntensityPImageRect)), 0);
-				FillImageArea(hdc, IntensityPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageIntensityP.get()->data(), ScaledImageWidth, ScaledImageHeight, IntensityPImageRect,
-					false, FilterScale, NoZoom, L"Stronger (+ Intensity)");
-			}
-
-			// draw processed image with coarser grid
-			auto ScaledProcImageGridM = ScaledProcImageGridMPtr.lock();
-			if (ScaledProcImageGridM != nullptr)
-			{
-				RECT GridMImageRect = rectClient;
-				ScaleRect(GridMImageRect, SMALL_PICTURE);
-				// draw in right-mid position
-				OffsetRect(&GridMImageRect, RectWidth(rectClient) - RectWidth(GridMImageRect), (RectHeight(rectClient) - RectHeight(GridMImageRect)) / 2);
-				FillImageArea(hdc, GridMImageRect, LESS_INTENSE, LESS_INTENSE, LESS_INTENSE);
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridM.get()->data(), ScaledImageWidth, ScaledImageHeight, GridMImageRect, true,
-					max(FilterScale - 2, MIN_HOR_REGIONS), NoZoom, L"Coarser grid (- Scale)");
-			}
-
-			// draw processed image with finer grid
-			auto ScaledProcImageGridP = ScaledProcImageGridPPtr.lock();
-			if (ScaledProcImageGridP != nullptr)
-			{
-				RECT GridPImageRect = rectClient;
-				ScaleRect(GridPImageRect, SMALL_PICTURE);
-				// draw in bottom-right corner
-				OffsetRect(&GridPImageRect, (RectWidth(rectClient) - RectWidth(GridPImageRect)), RectHeight(rectClient) - RectHeight(GridPImageRect));
-				FillImageArea(hdc, GridPImageRect, MORE_INTENSE, MORE_INTENSE, MORE_INTENSE);
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImageGridP.get()->data(), ScaledImageWidth, ScaledImageHeight, GridPImageRect, true,
-					min(FilterScale + 2, MAX_HOR_REGIONS), NoZoom, L"Finer grid (+ Scale)");
-			}
-
-			// draw processed image
-			auto ScaledProcImage = ScaledProcImagePtr.lock();
-			if (ScaledProcImage != nullptr)
-			{
-				RECT CentralImageRect = rectClient;
-				RECT SmallImageRect = rectClient;
-				ScaleRect(SmallImageRect, SMALL_PICTURE);
-				// draw in bottom-left corner
-				CentralImageRect.left = 0;
-				CentralImageRect.top = (RectHeight(rectClient) - RectHeight(SmallImageRect)) / 2;
-				CentralImageRect.right = ((RectWidth(rectClient) - RectWidth(SmallImageRect)) / 2) + RectWidth(SmallImageRect);
-				FillImageArea(hdc, CentralImageRect, CURR_INTENSE, CURR_INTENSE, CURR_INTENSE);
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, CentralImageRect, false,
-					FilterScale, NoZoom, L"Processed image");
-			}
-		}
-		else
-		{
-			auto ScaledProcImage = ScaledProcImagePtr.lock();
-			if (ScaledProcImage != nullptr)
-			{
-				// draw processed image only
-				DrawSingleImage(hdc, &BmHdrCopy, ScaledProcImage.get()->data(), ScaledImageWidth, ScaledImageHeight, rectClient, false,
-					FilterScale, NoZoom, L"Processed image");
-			}
+			HWND slider = GetDlgItem(hwnd, sliderId);
+			SendMessage(slider, TBM_SETRANGE, TRUE, MAKELONG(0, 100));
+			SendMessage(slider, TBM_SETTICFREQ, 10, 0);
+			SendMessage(slider, TBM_SETPAGESIZE, 0, 10);
+			SendMessage(slider, TBM_SETLINESIZE, 0, 1);
 		}
 	}
-	catch (const std::exception& e)
+
+	void LayoutControlsV2(HWND hwnd)
 	{
-	#ifdef ENABLE_LOGGING
-		std::cerr << "Exception: " << e.what() << std::endl;
-	#else
-		(void)e;  // Suppress unused variable warning
-	#endif
-	}
-	EndPaint(hwnd, &ps);
+		const RECT previewRect = GetPreviewRect(hwnd);
+		RECT clientRect = {};
+		GetClientRect(hwnd, &clientRect);
 
-	// Ensure child controls repaint (optional but useful)
-	// Note: RDW_ERASE is NOT used here to preserve control details like slider tick marks
-	EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
-		RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-		return TRUE;
-		}, 0);
-}
+		const int panelLeft = previewRect.right + PANEL_GAP;
+		const int panelWidth = clientRect.right - panelLeft - PREVIEW_MARGIN;
+		const int labelHeight = 12;
+		const int helperHeight = 12;
+		const int sliderHeight = 28;
+		const int buttonHeight = 20;
+		const int rowGap = 12;
+		const int top = PREVIEW_MARGIN + 2;
+		const int strengthTop = top + 34;
+		const int detailTop = top + 112;
+		const int naturalTop = top + 204;
 
-/// <summary>
-/// Repositions a control relative to the right edge of the window.
-/// Used during window resize to maintain control positions.
-/// </summary>
-/// <param name="hwnd">Handle to the parent window</param>
-/// <param name="controlId">ID of the control to reposition</param>
-/// <param name="offset">Distance from the right edge of the window</param>
-/// <param name="windowWidth">Current width of the window</param>
-void RepositionControl(HWND hwnd, int controlId, int offset, int windowWidth)
-{
-	HWND OkButtonCtrl = GetDlgItem(hwnd, controlId);
-	RECT rect;
-	GetWindowRect(OkButtonCtrl, &rect);
-	MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&rect, 2);
-	SetWindowPos(OkButtonCtrl, NULL, windowWidth - offset, rect.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
-}
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, strengthTop, panelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), panelLeft, strengthTop + 14, panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_STATIC), panelLeft, detailTop, panelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), panelLeft, detailTop + 14, panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_HELP_STATIC), panelLeft, detailTop + 46, panelWidth, helperHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_STATIC), panelLeft, naturalTop, panelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), panelLeft, naturalTop + 14, panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, naturalTop + 46, panelWidth, helperHeight, TRUE);
 
-/// <summary>
-/// Checks whether Windows dark mode is enabled by reading the system registry.
-/// Queries the AppsUseLightTheme registry value to determine the current theme.
-/// </summary>
-/// <returns>true if dark mode is enabled, false if light mode or if registry read fails</returns>
-bool IsDarkModeEnabled() {
-	DWORD dwValue = 0;
-	DWORD dwSize = sizeof(dwValue);
+		const int presetWidth = (panelWidth - (2 * rowGap)) / 3;
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + 304, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + 304, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + 304, presetWidth, buttonHeight, TRUE);
 
-	// Open the registry key where the theme setting is stored
-	LSTATUS status = RegGetValueW(
-		HKEY_CURRENT_USER,
-		L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-		L"AppsUseLightTheme",
-		RRF_RT_DWORD,
-		NULL,
-		&dwValue,
-		&dwSize
-	);
+		MoveWindow(GetDlgItem(hwnd, IDC_TOGGLEZOOM), panelLeft + presetWidth + rowGap, top + 344, presetWidth, buttonHeight, TRUE);
 
-	if (status == ERROR_SUCCESS) {
-		return dwValue == 0;  // 0 means dark mode is enabled, 1 means light mode is enabled
+		const int actionWidth = presetWidth;
+		const int actionTop = clientRect.bottom - PREVIEW_MARGIN - buttonHeight;
+		MoveWindow(GetDlgItem(hwnd, IDOK), panelLeft + panelWidth - (2 * actionWidth) - rowGap, actionTop, actionWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDCANCEL), panelLeft + panelWidth - actionWidth, actionTop, actionWidth, buttonHeight, TRUE);
+
+		ClampSplitToPreview(hwnd);
 	}
 
-	return false;  // Default to false (light mode) if the registry value can't be read
+	void RefreshPreview(HWND hwnd)
+	{
+		DoPreviewProcessingV2();
+		UpdatePresetButtons(hwnd);
+		UpdateCommandLabels(hwnd);
+		InvalidatePreview(hwnd);
+		UpdateWindow(hwnd);
+	}
+
+	void SchedulePreviewRefresh(HWND hwnd)
+	{
+		SetTimer(hwnd, PREVIEW_REFRESH_TIMER_ID, PREVIEW_REFRESH_DELAY_MS, nullptr);
+	}
+
+	void FillImageArea(HDC hdc, const RECT& rect, BYTE r, BYTE g, BYTE b)
+	{
+		const HBRUSH brush = CreateSolidBrush(RGB(r, g, b));
+		FillRect(hdc, &rect, brush);
+		DeleteObject(brush);
+	}
+
+	void HandlePaintMessage(HWND hwnd)
+	{
+		PAINTSTRUCT ps = {};
+		HDC hdc = BeginPaint(hwnd, &ps);
+
+		RECT clientRect = {};
+		GetClientRect(hwnd, &clientRect);
+		const RECT previewRect = GetPreviewRect(hwnd);
+		const bool darkMode = gCurrentTheme == ThemeMode::Dark;
+
+		// Render into an off-screen buffer so the user never sees intermediate
+		// state (background fill → image blit → split handle). Without this, the
+		// split-drag paint flickers badly because each step updates the screen.
+		HDC paintDc = nullptr;
+		HPAINTBUFFER paintBuffer = BeginBufferedPaint(hdc, &ps.rcPaint, BPBF_COMPATIBLEBITMAP, nullptr, &paintDc);
+		if (paintBuffer == nullptr)
+		{
+			paintDc = hdc;
+		}
+
+		FillRect(paintDc, &clientRect, gBackgroundBrush->get());
+		FillImageArea(paintDc, previewRect, darkMode ? 18 : 24, darkMode ? 18 : 24, darkMode ? 18 : 28);
+		FrameRect(paintDc, &previewRect, static_cast<HBRUSH>(GetStockObject(darkMode ? DKGRAY_BRUSH : GRAY_BRUSH)));
+
+		auto scaledSrc = ScaledSrcImagePtr.lock();
+		auto scaledProc = ScaledProcImagePtr.lock();
+		if (scaledSrc != nullptr && scaledProc != nullptr)
+		{
+			DrawMainPreviewComparison(paintDc, &BmHdrCopy, scaledSrc->data(), scaledProc->data(),
+			                          ScaledImageWidth, ScaledImageHeight, previewRect, gUiState.splitX,
+			                          gUiState.compareHoldOriginal, gUiState.zoomToSelection, darkMode);
+		}
+
+		if (paintBuffer != nullptr)
+		{
+			EndBufferedPaint(paintBuffer, TRUE);
+		}
+
+		EndPaint(hwnd, &ps);
+	}
+
+	void LoadUiStateFromSettings()
+	{
+		gUiState.strength = GetPrivateProfileIntA("AltaLux", "Strength", -1, SetupIniFile);
+		if (gUiState.strength < 0)
+		{
+			gUiState.strength = GetPrivateProfileIntA("AltaLux", "Intensity", Constants::DefaultStrength, SetupIniFile);
+		}
+
+		gUiState.detail = GetPrivateProfileIntA("AltaLux", "Detail", Constants::DefaultDetail, SetupIniFile);
+		gUiState.naturalLook = GetPrivateProfileIntA("AltaLux", "NaturalLook", Constants::DefaultNatural, SetupIniFile);
+		gUiState.zoomToSelection = GetPrivateProfileIntA("AltaLux", "Zoom", 0, SetupIniFile) != 0;
+		gUiState.compareHoldOriginal = false;
+		gUiState.draggingSplit = false;
+		gUiState.splitX = 0;
+
+		gUiState.strength = ClampInt(gUiState.strength, 0, 100);
+		gUiState.detail = ClampInt(gUiState.detail, 0, 100);
+		gUiState.naturalLook = ClampInt(gUiState.naturalLook, 0, 100);
+	}
+
+	void SaveUiStateToSettings()
+	{
+		char valueBuffer[32] = {};
+		sprintf_s(valueBuffer, "%d", gUiState.strength);
+		WritePrivateProfileStringA("AltaLux", "Strength", valueBuffer, SetupIniFile);
+		sprintf_s(valueBuffer, "%d", gUiState.detail);
+		WritePrivateProfileStringA("AltaLux", "Detail", valueBuffer, SetupIniFile);
+		sprintf_s(valueBuffer, "%d", gUiState.naturalLook);
+		WritePrivateProfileStringA("AltaLux", "NaturalLook", valueBuffer, SetupIniFile);
+		sprintf_s(valueBuffer, "%d", gUiState.zoomToSelection ? 1 : 0);
+		WritePrivateProfileStringA("AltaLux", "Zoom", valueBuffer, SetupIniFile);
+	}
+
+	void ScaleDownImage(unsigned char* sourceImage, int sourceWidth, int sourceHeight, unsigned char* targetImage,
+	                    int scaleFactor, int bitDepth)
+	{
+		if (sourceImage == nullptr || targetImage == nullptr || scaleFactor <= 0 ||
+			(bitDepth != Constants::Rgb24PixelSize && bitDepth != Constants::Rgb32PixelSize))
+		{
+			return;
+		}
+
+		if (scaleFactor == 1)
+		{
+			memcpy(targetImage, sourceImage, sourceWidth * sourceHeight * bitDepth);
+			return;
+		}
+
+		const int sourceStride = sourceWidth * bitDepth;
+		const int targetWidth = sourceWidth / scaleFactor;
+		const int targetHeight = sourceHeight / scaleFactor;
+		const int scaleArea = scaleFactor * scaleFactor;
+
+		unsigned char* dst = targetImage;
+		for (int y = 0; y < targetHeight; ++y)
+		{
+			unsigned char* srcRow = sourceImage + ((y * scaleFactor) * sourceStride);
+			for (int x = 0; x < targetWidth; ++x)
+			{
+				unsigned int channelSum[4] = {};
+				for (int iy = 0; iy < scaleFactor; ++iy)
+				{
+					int sourceIndex = iy * sourceStride;
+					for (int ix = 0; ix < scaleFactor; ++ix)
+					{
+						channelSum[0] += srcRow[sourceIndex];
+						channelSum[1] += srcRow[sourceIndex + 1];
+						channelSum[2] += srcRow[sourceIndex + 2];
+						if (bitDepth == Constants::Rgb32PixelSize)
+						{
+							channelSum[3] += srcRow[sourceIndex + 3];
+						}
+						sourceIndex += bitDepth;
+					}
+				}
+
+				dst[0] = static_cast<unsigned char>(channelSum[0] / scaleArea);
+				dst[1] = static_cast<unsigned char>(channelSum[1] / scaleArea);
+				dst[2] = static_cast<unsigned char>(channelSum[2] / scaleArea);
+				if (bitDepth == Constants::Rgb32PixelSize)
+				{
+					dst[3] = static_cast<unsigned char>(channelSum[3] / scaleArea);
+				}
+
+				srcRow += scaleFactor * bitDepth;
+				dst += bitDepth;
+			}
+		}
+	}
+
+	void ComputeScalingFactor()
+	{
+		int horizontalScale = ImageWidth / 1000;
+		int verticalScale = ImageHeight / 800;
+		ScalingFactor = (std::min)(horizontalScale, verticalScale);
+		if (ScalingFactor < 1)
+		{
+			ScalingFactor = 1;
+		}
+
+		while (ScalingFactor > 1)
+		{
+			ScaledImageWidth = ImageWidth / ScalingFactor;
+			ScaledImageHeight = ImageHeight / ScalingFactor;
+			if ((ScaledImageWidth & 0x07) != 0)
+			{
+				--ScalingFactor;
+			}
+			else
+			{
+				break;
+			}
+		}
+
+		if (ScalingFactor <= 1)
+		{
+			ScalingFactor = 1;
+			ScaledImageWidth = ImageWidth;
+			ScaledImageHeight = ImageHeight;
+		}
+	}
+
+	void NormalizeClipRect(RECT& clipRect)
+	{
+		clipRect.bottom += clipRect.top;
+		clipRect.right += clipRect.left;
+		clipRect.right &= ~7;
+		clipRect.left &= ~7;
+		clipRect.bottom &= ~7;
+		clipRect.top &= ~7;
+		ImageWidth = clipRect.right - clipRect.left;
+		ImageHeight = clipRect.bottom - clipRect.top;
+	}
+
+	bool IsCroppedImage()
+	{
+		if ((FullImageWidth > ImageWidth) || (FullImageHeight > ImageHeight))
+		{
+			return true;
+		}
+
+		return ((FullImageWidth & 7) != 0) || ((FullImageHeight & 7) != 0);
+	}
+
+	void CopyFromSourceImage(unsigned char* targetImage, RECT clipRect, BYTE* imageBits, DWORD imageBitsStride)
+	{
+		if (targetImage == nullptr || imageBits == nullptr)
+		{
+			return;
+		}
+
+		unsigned char* dst = targetImage;
+		unsigned char* src = imageBits;
+		if (CroppedImage)
+		{
+			src += clipRect.left * ImageBitDepth;
+			src += imageBitsStride * clipRect.top;
+			for (int y = clipRect.top; y < clipRect.bottom; ++y)
+			{
+				memcpy(dst, src, ImageWidth * ImageBitDepth);
+				dst += ImageWidth * ImageBitDepth;
+				src += imageBitsStride;
+			}
+			return;
+		}
+
+		for (int y = 0; y < FullImageHeight; ++y)
+		{
+			memcpy(dst, src, ImageWidth * ImageBitDepth);
+			dst += ImageWidth * ImageBitDepth;
+			src += imageBitsStride;
+		}
+	}
+
+	void CopyToSourceImage(BYTE* imageBits, DWORD imageBitsStride, unsigned char* sourceImage, RECT clipRect)
+	{
+		if (imageBits == nullptr || sourceImage == nullptr)
+		{
+			return;
+		}
+
+		unsigned char* src = sourceImage;
+		unsigned char* dst = imageBits;
+		if (CroppedImage)
+		{
+			dst += clipRect.left * ImageBitDepth;
+			dst += imageBitsStride * clipRect.top;
+			for (int y = clipRect.top; y < clipRect.bottom; ++y)
+			{
+				memcpy(dst, src, ImageWidth * ImageBitDepth);
+				src += ImageWidth * ImageBitDepth;
+				dst += imageBitsStride;
+			}
+			return;
+		}
+
+		for (int y = 0; y < FullImageHeight; ++y)
+		{
+			memcpy(dst, src, ImageWidth * ImageBitDepth);
+			src += ImageWidth * ImageBitDepth;
+			dst += imageBitsStride;
+		}
+	}
+
+	bool IsSupportedBitDepth(ScopedBitmapHeader& bitmapHeader)
+	{
+		switch (bitmapHeader->biBitCount)
+		{
+		case 24:
+			ImageBitDepth = Constants::Rgb24PixelSize;
+			return true;
+		case 32:
+			ImageBitDepth = Constants::Rgb32PixelSize;
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	bool IsPointNearSplit(HWND hwnd, int x, int y)
+	{
+		const RECT imageRect = GetActiveImageRect(hwnd);
+		if (!PtInRect(&imageRect, POINT{ x, y }))
+		{
+			return false;
+		}
+
+		return abs(x - gUiState.splitX) <= SPLIT_HIT_RADIUS;
+	}
+
+	LRESULT CALLBACK CompareHoldHookProc(int code, WPARAM wparam, LPARAM lparam)
+	{
+		if (code == HC_ACTION && wparam == PM_REMOVE && gHookDlg != nullptr)
+		{
+			MSG* msg = reinterpret_cast<MSG*>(lparam);
+			if (msg->wParam == VK_SPACE &&
+				(msg->message == WM_KEYDOWN || msg->message == WM_KEYUP) &&
+				(msg->hwnd == gHookDlg || IsChild(gHookDlg, msg->hwnd)))
+			{
+				if (msg->message == WM_KEYDOWN && !gUiState.compareHoldOriginal)
+				{
+					gUiState.compareHoldOriginal = true;
+					InvalidatePreview(gHookDlg);
+				}
+				else if (msg->message == WM_KEYUP && gUiState.compareHoldOriginal)
+				{
+					gUiState.compareHoldOriginal = false;
+					InvalidatePreview(gHookDlg);
+				}
+				msg->message = WM_NULL;
+			}
+		}
+		return CallNextHookEx(nullptr, code, wparam, lparam);
+	}
+
 }
-
-// Helper RAII wrapper for HBRUSH
-class ScopedBrush {
-public:
-	explicit ScopedBrush(COLORREF color) : brush_(CreateSolidBrush(color)) {}
-	~ScopedBrush() { if (brush_) DeleteObject(brush_); }
-	HBRUSH get() const { return brush_; }
-private:
-	HBRUSH brush_;
-};
-
-// Global RAII-managed brush`
-static ScopedBrush* gBackgroundBrush = new ScopedBrush(RGB(255, 255, 255));  // default light color
-
-// Enum to track current mode
-enum class ThemeMode { Light, Dark };
-static ThemeMode gCurrentTheme = ThemeMode::Light;
-
-// Updates window and controls for dark mode/light mode
-void AdjustForDarkMode(HWND hwnd) {
-	bool darkMode = IsDarkModeEnabled();
-	ThemeMode desiredTheme = darkMode ? ThemeMode::Dark : ThemeMode::Light;
-
-	if (desiredTheme == gCurrentTheme) return;
-	gCurrentTheme = desiredTheme;
-
-	COLORREF bgColor = darkMode ? RGB(45, 45, 48) : RGB(255, 255, 255);
-
-	delete gBackgroundBrush;
-	gBackgroundBrush = new ScopedBrush(bgColor);
-
-	// Note: RDW_ERASE is NOT used to preserve child control details like slider tick marks
-	RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-}
-
-char SetupIniFile[1024];
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
-/// <summary>
-/// Dialog procedure that handles all messages for the AltaLux plugin dialog.
-/// Manages user interactions with sliders, buttons, mouse clicks for parameter adjustment,
-/// theme changes, and window resizing. Supports both light and dark themes.
-/// </summary>
-/// <param name="hwnd">Handle to the dialog window</param>
-/// <param name="msg">Message identifier</param>
-/// <param name="wparam">First message parameter</param>
-/// <param name="lparam">Second message parameter</param>
-/// <returns>TRUE if message was processed, FALSE otherwise; for some messages returns a handle</returns>
+BOOL APIENTRY DllMain(HANDLE hModule, DWORD ul_reason_for_call, LPVOID)
+{
+	if (ul_reason_for_call == DLL_PROCESS_ATTACH)
+	{
+		hDll = static_cast<HINSTANCE>(hModule);
+	}
+	return TRUE;
+}
+
 INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	switch (msg)
 	{
 	case WM_INITDIALOG:
+	{
+		BufferedPaintInit();
+		SetClassLongPtr(hwnd, GCL_STYLE, GetClassLongPtr(hwnd, GCL_STYLE) | CS_DBLCLKS);
+		AdjustForDarkMode(hwnd);
+		BOOL useDarkMode = IsDarkModeEnabled();
+		DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+		SetSliderRanges(hwnd);
+		LayoutControlsV2(hwnd);
+		CenterSplitInPreview(hwnd);
+		UpdateSliders(hwnd);
+		DoPreviewProcessingV2();
+		gHookDlg = hwnd;
+		gKeyboardHook = SetWindowsHookExW(WH_GETMESSAGE, CompareHoldHookProc, nullptr, GetCurrentThreadId());
+		return TRUE;
+	}
+
+	case WM_DESTROY:
+		KillTimer(hwnd, PREVIEW_REFRESH_TIMER_ID);
+		if (gKeyboardHook != nullptr)
 		{
-			// Initialize theme based on current system setting
-			AdjustForDarkMode(hwnd);
-
-			// Set title bar to match system theme
-			BOOL useDarkMode = IsDarkModeEnabled();
-			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
-
-			HWND hwndBitmap = GetDlgItem(hwnd, IDC_SFONDO);
-			SetWindowPos(hwndBitmap, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
-
-			HWND hwndTrack = GetDlgItem(hwnd, IDC_SLIDER1);
-			SendMessage(hwndTrack, TBM_SETRANGE,
-			            (WPARAM)TRUE, // redraw flag 
-			            (LPARAM)MAKELONG(AL_MIN_STRENGTH, AL_MAX_STRENGTH)); // min. & max. positions 
-			SendMessage(hwndTrack, TBM_SETPOS,
-			            (WPARAM)TRUE, // redraw flag 
-			            (LPARAM)FilterIntensity);
-
-			hwndTrack = GetDlgItem(hwnd, IDC_SLIDER2);
-			SendMessage(hwndTrack, TBM_SETRANGE,
-			            (WPARAM)TRUE, // redraw flag 
-			            (LPARAM)MAKELONG(MIN_HOR_REGIONS, MAX_HOR_REGIONS)); // min. & max. positions 
-			SendMessage(hwndTrack, TBM_SETPOS,
-			            (WPARAM)TRUE, // redraw flag 
-			            (LPARAM)FilterScale);
-			return TRUE;
+			UnhookWindowsHookEx(gKeyboardHook);
+			gKeyboardHook = nullptr;
 		}
-
-	case WM_LBUTTONDOWN:
-		{
-			int MouseXPos = LOWORD(lparam);
-			int MouseYPos = HIWORD(lparam);
-
-			RECT rectClient;
-			GetClientRect(hwnd, &rectClient);
-			rectClient.right -= 100;
-
-			if ((CompleteVisualization) && (MouseXPos < rectClient.right))
-			{
-				// Calculate small image dimensions (matching SMALL_PICTURE scaling)
-				RECT smallImageRect = rectClient;
-				ScaleRect(smallImageRect, SMALL_PICTURE);
-				const int SmallWidth = RectWidth(smallImageRect);
-				const int SmallHeight = RectHeight(smallImageRect);
-
-				auto ChangedSettings = false;
-
-				// Top-left: Original image (reset both sliders to minimum)
-				RECT OriginalImageRect;
-				OriginalImageRect.left = 0;
-				OriginalImageRect.top = 0;
-				OriginalImageRect.right = SmallWidth;
-				OriginalImageRect.bottom = SmallHeight;
-				if (PtInRect(&OriginalImageRect, POINT{MouseXPos, MouseYPos}))
-				{
-					FilterIntensity = AL_MIN_STRENGTH;  // 0 - disables filter
-					FilterScale = MIN_HOR_REGIONS;      // 2 - minimum grid size
-					ChangedSettings = true;
-				}
-
-				// Top-middle: Weaker (- Intensity)
-				RECT IntensityMRect;
-				IntensityMRect.left = (RectWidth(rectClient) - SmallWidth) / 2;
-				IntensityMRect.top = 0;
-				IntensityMRect.right = IntensityMRect.left + SmallWidth;
-				IntensityMRect.bottom = SmallHeight;
-				if (PtInRect(&IntensityMRect, POINT{MouseXPos, MouseYPos}))
-				{
-					FilterIntensity = max(FilterIntensity - 15, AL_MIN_STRENGTH);
-					ChangedSettings = true;
-				}
-
-				// Top-right: Stronger (+ Intensity)
-				RECT IntensityPRect;
-				IntensityPRect.left = RectWidth(rectClient) - SmallWidth;
-				IntensityPRect.top = 0;
-				IntensityPRect.right = RectWidth(rectClient);
-				IntensityPRect.bottom = SmallHeight;
-				if (PtInRect(&IntensityPRect, POINT{MouseXPos, MouseYPos}))
-				{
-					FilterIntensity = min(FilterIntensity + 15, AL_MAX_STRENGTH);
-					ChangedSettings = true;
-				}
-
-				// Right-middle: Coarser grid (- Scale)
-				RECT GridMRect;
-				GridMRect.left = RectWidth(rectClient) - SmallWidth;
-				GridMRect.top = (RectHeight(rectClient) - SmallHeight) / 2;
-				GridMRect.right = RectWidth(rectClient);
-				GridMRect.bottom = GridMRect.top + SmallHeight;
-				if (PtInRect(&GridMRect, POINT{MouseXPos, MouseYPos}))
-				{
-					FilterScale = max(FilterScale - 2, MIN_HOR_REGIONS);
-					ChangedSettings = true;
-				}
-
-				// Bottom-right: Finer grid (+ Scale)
-				RECT GridPRect;
-				GridPRect.left = RectWidth(rectClient) - SmallWidth;
-				GridPRect.top = RectHeight(rectClient) - SmallHeight;
-				GridPRect.right = RectWidth(rectClient);
-				GridPRect.bottom = RectHeight(rectClient);
-				if (PtInRect(&GridPRect, POINT{MouseXPos, MouseYPos}))
-				{
-					FilterScale = min(FilterScale + 2, MAX_HOR_REGIONS);
-					ChangedSettings = true;
-				}
-
-				if (ChangedSettings)
-				{
-					// Recompute filtered images
-					DoProcessing();
-					// Repaint sliders fully
-					UpdateSliders(hwnd);
-					// Full repaint of the main dialog
-					// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
-					InvalidateRect(hwnd, nullptr, FALSE);
-					UpdateWindow(hwnd);
-				}
-			}
-			return TRUE;
-		}
+		gHookDlg = nullptr;
+		BufferedPaintUnInit();
+		return TRUE;
 
 	case WM_COMMAND:
+		switch (LOWORD(wparam))
 		{
-			switch (LOWORD(wparam))
-			{
-			case IDOK:
-				{
-					char FilterString[256];
-					SkipProcessing = false;
-					sprintf_s(FilterString, sizeof(FilterString), "%d", FilterIntensity);
-					WritePrivateProfileStringA("AltaLux", "Intensity", FilterString, SetupIniFile);
-					sprintf_s(FilterString, sizeof(FilterString), "%d", FilterScale);
-					WritePrivateProfileStringA("AltaLux", "Scale", FilterString, SetupIniFile);
-					EndDialog(hwnd, wparam);
-					return TRUE;
-				} // Check the rest of your dialog box controls here            
-			case IDCANCEL:
-				{
-					SkipProcessing = true;
-					EndDialog(hwnd, wparam);
-					return TRUE;
-				}
-			case ID_DEFAULT:
-				{
-					FilterIntensity = AL_DEFAULT_STRENGTH;
-					FilterScale = DEFAULT_HOR_REGIONS;
-					DoProcessing();
-					UpdateSliders(hwnd);        // redraw sliders after processing
-					// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
-					InvalidateRect(hwnd, nullptr, FALSE);  // redraw dialog/image
-					UpdateWindow(hwnd);
-					return TRUE;
-				}
-			case IDC_TOGGLEVISUALIZATION:
-				{
-					CompleteVisualization = !CompleteVisualization;
-					RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-					return TRUE;
-				}
-			case IDC_TOGGLEZOOM:
-				{
-					NoZoom = !NoZoom;
-					RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-					return TRUE;
-				}
-			}
+		case IDOK:
+			SkipProcessing = false;
+			SaveUiStateToSettings();
+			EndDialog(hwnd, IDOK);
+			return TRUE;
+
+		case IDCANCEL:
+			SkipProcessing = true;
+			EndDialog(hwnd, IDCANCEL);
+			return TRUE;
+
+		case IDC_PRESET_NATURAL:
+			ApplyPreset(Presets[0]);
+			UpdateSliders(hwnd);
+			RefreshPreview(hwnd);
+			return TRUE;
+
+		case IDC_PRESET_BALANCED:
+			ApplyPreset(Presets[1]);
+			UpdateSliders(hwnd);
+			RefreshPreview(hwnd);
+			return TRUE;
+
+		case IDC_PRESET_DETAIL:
+			ApplyPreset(Presets[2]);
+			UpdateSliders(hwnd);
+			RefreshPreview(hwnd);
+			return TRUE;
+
+		case IDC_TOGGLEZOOM:
+			gUiState.zoomToSelection = !gUiState.zoomToSelection;
+			UpdateCommandLabels(hwnd);
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
+		break;
+
+	case WM_HSCROLL:
+	{
+		HWND slider = reinterpret_cast<HWND>(lparam);
+		if (slider == nullptr)
+		{
+			return FALSE;
 		}
 
-	case WM_VSCROLL:
-	{
-		HWND hwndTrack = (HWND)lparam;
-		int dwPos = static_cast<int>(SendMessage(hwndTrack, TBM_GETPOS, 0, 0));
-
-		if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER1))
-			FilterIntensity = dwPos;
-		if (hwndTrack == GetDlgItem(hwnd, IDC_SLIDER2))
-			FilterScale = dwPos;
+		const int value = static_cast<int>(SendMessage(slider, TBM_GETPOS, 0, 0));
+		if (slider == GetDlgItem(hwnd, IDC_STRENGTH_SLIDER))
+		{
+			gUiState.strength = value;
+		}
+		else if (slider == GetDlgItem(hwnd, IDC_DETAIL_SLIDER))
+		{
+			gUiState.detail = value;
+		}
+		else if (slider == GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER))
+		{
+			gUiState.naturalLook = value;
+		}
 
 		switch (LOWORD(wparam))
 		{
-		case TB_THUMBTRACK:
-		case TB_THUMBPOSITION:
-			// Optional live preview
-			// DoProcessing();
-			// InvalidateRect(hwnd, nullptr, TRUE);
-			break;
-
 		case TB_ENDTRACK:
-			DoProcessing();
-			UpdateSliders(hwnd); // redraw sliders fully
-			// Note: RDW_ERASE is NOT used because HandlePaintMessage already clears the background
-			// explicitly via PrepareVisualization, and RDW_ERASE with RDW_ALLCHILDREN would
-			// erase child controls' backgrounds, removing slider tick marks
-			RedrawWindow(hwnd, nullptr, nullptr,
-				RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+		case TB_THUMBPOSITION:
+			KillTimer(hwnd, PREVIEW_REFRESH_TIMER_ID);
+			RefreshPreview(hwnd);
+			break;
+		default:
+			UpdatePresetButtons(hwnd);
+			SchedulePreviewRefresh(hwnd);
 			break;
 		}
 		return TRUE;
 	}
 
-	case WM_PAINT:
+	case WM_TIMER:
+		if (wparam == PREVIEW_REFRESH_TIMER_ID)
 		{
-			HandlePaintMessage(hwnd);
+			KillTimer(hwnd, PREVIEW_REFRESH_TIMER_ID);
+			RefreshPreview(hwnd);
 			return TRUE;
 		}
+		break;
+
+	case WM_LBUTTONDOWN:
+	{
+		const int x = GET_X_LPARAM(lparam);
+		const int y = GET_Y_LPARAM(lparam);
+		SetFocus(hwnd);
+
+		if (IsPointNearSplit(hwnd, x, y))
+		{
+			gUiState.draggingSplit = true;
+			SetCapture(hwnd);
+			gUiState.splitX = x;
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
+		break;
+	}
+
+	case WM_MOUSEMOVE:
+		if (gUiState.draggingSplit)
+		{
+			gUiState.splitX = GET_X_LPARAM(lparam);
+			ClampSplitToPreview(hwnd);
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
+		break;
+
+	case WM_LBUTTONUP:
+		if (gUiState.draggingSplit)
+		{
+			gUiState.draggingSplit = false;
+			ReleaseCapture();
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
+		break;
+
+	case WM_LBUTTONDBLCLK:
+		if (IsPointNearSplit(hwnd, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)))
+		{
+			CenterSplitInPreview(hwnd);
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
+		break;
+
+	case WM_CAPTURECHANGED:
+		gUiState.draggingSplit = false;
+		break;
+
+	case WM_SETCURSOR:
+	{
+		POINT cursor = {};
+		GetCursorPos(&cursor);
+		ScreenToClient(hwnd, &cursor);
+		if (IsPointNearSplit(hwnd, cursor.x, cursor.y))
+		{
+			SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+			return TRUE;
+		}
+		break;
+	}
+
+	case WM_PAINT:
+		HandlePaintMessage(hwnd);
+		return TRUE;
 
 	case WM_CTLCOLORDLG:
 	case WM_CTLCOLORSTATIC:
@@ -889,419 +849,155 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	{
 		HDC hdc = reinterpret_cast<HDC>(wparam);
 		SetBkMode(hdc, TRANSPARENT);
-
-		SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark
-			? RGB(255, 255, 255)
-			: RGB(0, 0, 0));
-
+		SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark ? RGB(245, 245, 245) : RGB(24, 24, 24));
 		return reinterpret_cast<INT_PTR>(gBackgroundBrush->get());
 	}
 
 	case WM_THEMECHANGED:
-	case WM_SETTINGCHANGE:
+	{
 		AdjustForDarkMode(hwnd);
-
-		// Update title bar to match new theme
-		{
-			BOOL useDarkMode = IsDarkModeEnabled();
-			DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
-		}
-
-		// Note: Use FALSE to avoid erasing child control backgrounds (slider tick marks)
+		BOOL useDarkMode = IsDarkModeEnabled();
+		DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
 		InvalidateRect(hwnd, nullptr, FALSE);
-		// Note: RDW_ERASE is NOT used to preserve control details like slider tick marks
-		EnumChildWindows(hwnd, [](HWND child, LPARAM) -> BOOL {
-			RedrawWindow(child, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-			return TRUE;
-			}, 0);
-		break;
+		return TRUE;
+	}
+
+	case WM_SETTINGCHANGE:
+	{
+		if (lparam == 0)
+			break;
+		const bool isImmersive = IsWindowUnicode(hwnd)
+			? (wcscmp(reinterpret_cast<const wchar_t*>(lparam), L"ImmersiveColorSet") == 0)
+			: (strcmp(reinterpret_cast<const char*>(lparam), "ImmersiveColorSet") == 0);
+		if (!isImmersive)
+			break;
+		AdjustForDarkMode(hwnd);
+		BOOL useDarkMode = IsDarkModeEnabled();
+		DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return TRUE;
+	}
 
 	case WM_SIZE:
-		{
-			int width = LOWORD(lparam);  // New width of the window
-			int height = HIWORD(lparam); // New height of the window
-			// Reposition or resize controls based on the new width and height
-			// x=572 in the dialog definition in the RC file maps to an offset of 88
-			const int DEF_OFFSET = 88;
-			RepositionControl(hwnd, IDOK, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDCANCEL, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_INTENSITY_SLIDER, DEF_OFFSET - 32, width);
-			RepositionControl(hwnd, IDC_SCALE_SLIDER, DEF_OFFSET - 32, width);		
-			RepositionControl(hwnd, IDC_INTENSITY_STATIC, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_SCALE_STATIC, DEF_OFFSET, width);
-			RepositionControl(hwnd, ID_DEFAULT, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_TOGGLEVISUALIZATION, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_TOGGLEZOOM, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_BITMAP_GRID_LARGE_STATIC, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_BITMAP_GRID_SMALL_STATIC, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_BITMAP_INTENSITY_LOW_STATIC, DEF_OFFSET, width);
-			RepositionControl(hwnd, IDC_BITMAP_INTENSITY_HIGH_STATIC, DEF_OFFSET, width);
-			InvalidateRgn(hwnd, nullptr, true);
+		if (wparam == SIZE_MINIMIZED)
 			return TRUE;
-		}
+		LayoutControlsV2(hwnd);
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return TRUE;
 
 	case WM_GETMINMAXINFO:
-		{
-			MINMAXINFO* pMMI = (MINMAXINFO*)lparam;
-			pMMI->ptMinTrackSize.x = 800;  // Minimum width of the window
-			pMMI->ptMinTrackSize.y = 650;  // Minimum height of the window
-			return TRUE;
-		}
-
-	default: return FALSE;
-	}
-	return TRUE;
-}
-
-/// <summary>
-/// Calculates the buffer size required to store an RGB image with security padding.
-/// </summary>
-/// <param name="ImageWidth">Width of the image in pixels</param>
-/// <param name="ImageHeight">Height of the image in pixels</param>
-/// <returns>Total buffer size in bytes including security padding</returns>
-int GetRGBImageSize(int ImageWidth, int ImageHeight)
-{
-	const int SECURITY_PADDING = 4096;
-	return (ImageWidth * ImageHeight * ImageBitDepth) + SECURITY_PADDING;
-}
-
-/// <summary>
-/// Computes the optimal scaling factor for downsampling images in preview mode.
-/// Ensures the scaled image width is a multiple of 8 for proper rendering.
-/// Target preview size is approximately 1000x800 pixels.
-/// </summary>
-/// <remarks>Scaled image width must be a multiple of 8; if not, a smaller scaling factor is chosen</remarks>
-void ComputeScalingFactor()
-{
-	int HorScaling = ImageWidth / 1000;
-	int VerScaling = ImageHeight / 800;
-	ScalingFactor = min(HorScaling, VerScaling);
-	if (ScalingFactor < 1)
-		ScalingFactor = 1;
-	while (ScalingFactor > 1)
 	{
-		ScaledImageWidth = ImageWidth / ScalingFactor;
-		ScaledImageHeight = ImageHeight / ScalingFactor;
-		if ((ScaledImageWidth & 0x07) != 0)
-		{
-			// fix for non-standard, multiple of 4 rescaled images that may not be drawn correctly
-			ScalingFactor--;
-		}
-		else
-			break;
+		MINMAXINFO* minMaxInfo = reinterpret_cast<MINMAXINFO*>(lparam);
+		minMaxInfo->ptMinTrackSize.x = 960;
+		minMaxInfo->ptMinTrackSize.y = 680;
+		return TRUE;
 	}
-	if (ScalingFactor > 1)
-	{
-		ScaledImageWidth = ImageWidth / ScalingFactor;
-		ScaledImageHeight = ImageHeight / ScalingFactor;
 	}
-	else
-	{
-		ScaledImageWidth = ImageWidth;
-		ScaledImageHeight = ImageHeight;
-	}
+
+	return FALSE;
 }
 
-/// <summary>
-/// Copies the processed image data back into the IrfanView bitmap buffer.
-/// Handles both cropped and full image cases, adjusting for bitmap stride.
-/// </summary>
-/// <param name="ImageBits">Pointer to the IrfanView bitmap buffer</param>
-/// <param name="ImageBitsStride">Byte width of each bitmap row including padding</param>
-/// <param name="SrcImage">Pointer to the processed image data</param>
-/// <param name="ClipRect">Clipping rectangle for cropped images</param>
-void CopyToSourceImage(BYTE* ImageBits, DWORD ImageBitsStride, unsigned char* SrcImage, RECT ClipRect)
-{
-	if (!ImageBits || !SrcImage)
-		return;
-
-	unsigned char* SrcImagePtr = SrcImage;
-	unsigned char* ImageBitsPtr = ImageBits;
-	if (CroppedImage)
-	{
-		ImageBitsPtr += ClipRect.left * ImageBitDepth;
-		ImageBitsPtr += ImageBitsStride * ClipRect.top;
-		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
-		{
-			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * ImageBitDepth);
-			SrcImagePtr += ImageWidth * ImageBitDepth;
-			ImageBitsPtr += ImageBitsStride;
-		}
-	}
-	else
-	{
-		for (int y = 0; y < FullImageHeight; y++)
-		{
-			memcpy(ImageBitsPtr, SrcImagePtr, ImageWidth * ImageBitDepth);
-			SrcImagePtr += ImageWidth * ImageBitDepth;
-			ImageBitsPtr += ImageBitsStride;
-		}
-	}
-}
-
-/// <summary>
-/// Normalizes and aligns a clipping rectangle to 8-pixel boundaries.
-/// Converts from (left, top, width, height) format to (left, top, right, bottom) format.
-/// Updates global ImageWidth and ImageHeight to match the normalized rectangle.
-/// </summary>
-/// <param name="ClipRect">Rectangle to normalize (modified in place)</param>
-void NormalizeClipRect(RECT& ClipRect)
-{
-	ClipRect.bottom += ClipRect.top;
-	ClipRect.right += ClipRect.left;
-	ClipRect.right = ClipRect.right & ~7;
-	ClipRect.left = ClipRect.left & ~7;
-	ClipRect.bottom = ClipRect.bottom & ~7;
-	ClipRect.top = ClipRect.top & ~7;
-	ImageWidth = ClipRect.right - ClipRect.left;
-	ImageHeight = ClipRect.bottom - ClipRect.top;
-}
-
-/// <summary>
-/// Copies image data from the IrfanView bitmap buffer to the internal processing buffer.
-/// Handles both cropped and full image cases, adjusting for bitmap stride.
-/// </summary>
-/// <param name="SrcImage">Destination buffer for image data</param>
-/// <param name="ClipRect">Clipping rectangle for cropped images</param>
-/// <param name="ImageBits">Pointer to the IrfanView bitmap buffer</param>
-/// <param name="ImageBitsStride">Byte width of each bitmap row including padding</param>
-void CopyFromSourceImage(unsigned char* SrcImage, RECT ClipRect, BYTE* ImageBits, DWORD ImageBitsStride)
-{
-	if (!ImageBits || !SrcImage)
-		return;
-
-	unsigned char* SrcImagePtr = SrcImage;
-	unsigned char* ImageBitsPtr = ImageBits;
-	if (CroppedImage)
-	{
-		// copy only part of source image
-		ImageBitsPtr += ClipRect.left * ImageBitDepth;
-		ImageBitsPtr += ImageBitsStride * ClipRect.top;
-		for (int y = ClipRect.top; y < ClipRect.bottom; y++)
-		{
-			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * ImageBitDepth);
-			SrcImagePtr += ImageWidth * ImageBitDepth;
-			ImageBitsPtr += ImageBitsStride;
-		}
-	}
-	else
-	{
-		// copy whole source image
-		for (int y = 0; y < FullImageHeight; y++)
-		{
-			memcpy(SrcImagePtr, ImageBitsPtr, ImageWidth * ImageBitDepth);
-			SrcImagePtr += ImageWidth * ImageBitDepth;
-			ImageBitsPtr += ImageBitsStride;
-		}
-	}
-}
-
-/// <summary>
-/// Determines whether the image is cropped or has non-standard dimensions.
-/// An image is considered cropped if the full size differs from the working size,
-/// or if dimensions are not multiples of 8.
-/// </summary>
-/// <returns>true if image is cropped or non-standard, false otherwise</returns>
-bool IsCroppedImage()
-{
-	if ((FullImageWidth > ImageWidth) || (FullImageHeight > ImageHeight))
-		return true;
-	/// crop on non-standard size images
-	if ((FullImageWidth & 7) != 0)
-		return true;
-	if ((FullImageHeight & 7) != 0)
-		return true;
-	return false;
-}
-
-/// <summary>
-/// Verifies if the image bit depth provided in the bitmap header is supported by the plugin.
-/// Sets the global ImageBitDepth variable based on the bitmap's bit count.
-/// </summary>
-/// <param name="pbBmHdr">Reference to bitmap header wrapper containing image information</param>
-/// <returns>true if the bit depth is supported (24 or 32 bits per pixel), false otherwise</returns>
-bool isSupportedBitDepth(ScopedBitmapHeader& pbBmHdr)
-{
-	switch (pbBmHdr->biBitCount) {
-	case 24:
-		ImageBitDepth = RGB24_PIXEL_SIZE;  // Typically 3 bytes
-		break;
-	case 32:
-		ImageBitDepth = RGB32_PIXEL_SIZE;  // Typically 4 bytes
-		break;
-	default:
-		return false;  // Unsupported bit depth
-	}
-	return true;
-}
-
-/// <summary>
-/// Processes the incoming bitmap with the AltaLux filter.
-/// Can directly process the image with specified parameters or open the GUI for user interaction.
-/// Handles both 24-bit and 32-bit RGB images, including cropped regions.
-/// </summary>
-/// <param name="hDib">Handle to the DIB (Device Independent Bitmap)</param>
-/// <param name="hwnd">Handle to parent window</param>
-/// <param name="filter">Filter type identifier (unused)</param>
-/// <param name="rect">Clipping rectangle (left, top, width, height format)</param>
-/// <param name="param1">Filter intensity [0-100]; if -1, opens GUI for user selection</param>
-/// <param name="param2">Filter scale [2-16]; if -1, opens GUI for user selection</param>
-/// <param name="iniFile">Path to INI file for saving/loading parameters</param>
-/// <param name="szAppName">Application name (unused)</param>
-/// <param name="regID">Registration ID (unused)</param>
-/// <returns>true if processing succeeded, false on error or unsupported format</returns>
-bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2, char* iniFile,
-                           char* szAppName, int regID)
+bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, int param2, char* iniFile, char*, int)
 {
 #define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
 
-	const int SECURITY_PADDING = 4096;
-	SharedImagePtr SrcImage;
-	RECT ClipRect = rect;
+	SharedImagePtr srcImage;
+	RECT clipRect = rect;
+
 	{
-		ScopedBitmapHeader pbBmHdr(hDib);
-		memcpy(&BmHdrCopy, &(*pbBmHdr), sizeof(BITMAPINFOHEADER));
-
-		if (pbBmHdr->biPlanes != 1 || !isSupportedBitDepth(pbBmHdr))
+		ScopedBitmapHeader bitmapHeader(hDib);
+		if (!bitmapHeader.IsValid())
+		{
 			return false;
+		}
+		memcpy(&BmHdrCopy, &(*bitmapHeader), sizeof(BITMAPINFOHEADER));
 
-		FullImageWidth = abs(pbBmHdr->biWidth);
-		FullImageHeight = abs(pbBmHdr->biHeight);
-		/// ClipRect is actually (left, top, width, height) !
-		ImageWidth = ClipRect.right;
-		ImageHeight = ClipRect.bottom;
+		if (bitmapHeader->biPlanes != 1 || !IsSupportedBitDepth(bitmapHeader))
+		{
+			return false;
+		}
+
+		FullImageWidth = abs(bitmapHeader->biWidth);
+		FullImageHeight = abs(bitmapHeader->biHeight);
+		ImageWidth = clipRect.right;
+		ImageHeight = clipRect.bottom;
 
 		CroppedImage = IsCroppedImage();
 		if (CroppedImage)
 		{
-			NormalizeClipRect(ClipRect);
+			NormalizeClipRect(clipRect);
 			BmHdrCopy.biWidth = ImageWidth;
 			BmHdrCopy.biHeight = ImageHeight;
 		}
 
-		BYTE* ImageBits = pbBmHdr.GetImageBits();
-		DWORD ImageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * pbBmHdr->biBitCount));
-		/// SrcImage
-		SrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));		
-		SrcImagePtr = SrcImage;
-
-		// copy from ImageBits into SrcImage
-		CopyFromSourceImage(SrcImage.get()->data(), ClipRect, ImageBits, ImageBitsStride);
+		BYTE* imageBits = bitmapHeader.GetImageBits();
+		DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
+		srcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));
+		CopyFromSourceImage(srcImage->data(), clipRect, imageBits, imageBitsStride);
 	}
 
-	/// ProcImage
-	auto ProcImage = std::make_shared<std::vector<unsigned char>>(*SrcImage.get());
-	ProcImagePtr = ProcImage;
-
-	/// param1 : [0..100], default 25
-	/// param2 : [2..16], default 8
 	if ((param1 == -1) || (param2 == -1))
 	{
-		// show GUI
 		strcpy_s(SetupIniFile, sizeof(SetupIniFile), iniFile);
-		FilterIntensity = GetPrivateProfileIntA("AltaLux", "Intensity", AL_DEFAULT_STRENGTH, SetupIniFile);
-		FilterScale = GetPrivateProfileIntA("AltaLux", "Scale", DEFAULT_HOR_REGIONS, SetupIniFile);
+		LoadUiStateFromSettings();
 
 		ComputeScalingFactor();
+		auto scaledSrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
+		auto scaledProcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
+		ScaledSrcImagePtr = scaledSrcImage;
+		ScaledProcImagePtr = scaledProcImage;
 
-		auto ScaledSrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
-		ScaledSrcImagePtr = ScaledSrcImage;
+		ScaleDownImage(srcImage->data(), ImageWidth, ImageHeight, scaledSrcImage->data(), ScalingFactor, ImageBitDepth);
+		CopyScaledSrcImage(scaledProcImage->data());
 
-		ScaleDownImage(SrcImage->data(), ImageWidth, ImageHeight, ScaledSrcImage->data(), ScalingFactor, ImageBitDepth);
-
-		auto ScaledProcImage = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		ScaledProcImagePtr = ScaledProcImage;
-
-		// allocate buffer for processed image with coarser grid
-		auto ScaledProcImageGridM = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		ScaledProcImageGridMPtr = ScaledProcImageGridM;
-
-		// allocate buffer for processed image with finer grid
-		auto ScaledProcImageGridP = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		ScaledProcImageGridPPtr = ScaledProcImageGridP;
-
-		// allocate buffer for processed image with lesser intensity
-		auto ScaledProcImageIntensityM = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		ScaledProcImageIntensityMPtr = ScaledProcImageIntensityM;
-
-		// allocate buffer for processed image with higher intensity
-		auto ScaledProcImageIntensityP = std::make_shared<std::vector<unsigned char>>(*ScaledSrcImage.get());
-		ScaledProcImageIntensityPPtr = ScaledProcImageIntensityP;
-
-		INT_PTR ret = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, (DLGPROC)DlgProc);
-
-		if (ret == -1)
+		const INT_PTR dialogResult = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, DlgProc);
+		if (dialogResult == -1)
+		{
 			return false;
+		}
 
 		if (SkipProcessing)
+		{
 			return true;
-
-		param1 = FilterIntensity;
-		param2 = FilterScale;
+		}
+	}
+	else
+	{
+		gUiState.strength = ClampInt(param1, 0, 100);
+		gUiState.detail = Constants::DefaultDetail;
+		gUiState.naturalLook = Constants::DefaultNatural;
+		gUiState.zoomToSelection = false;
+		gUiState.compareHoldOriginal = false;
+		gUiState.draggingSplit = false;
+		gUiState.splitX = 0;
 	}
 
-	// if the filter parameters are unspecified, revert to default ones
-	if (param1 < 0)
-		param1 = AL_DEFAULT_STRENGTH;
-	if (param2 < 0)
-		param2 = DEFAULT_HOR_REGIONS;
-
-	try
+	if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
 	{
-		std::unique_ptr<CBaseAltaLuxFilter> AltaLuxFilter(
-			CAltaLuxFilterFactory::CreateAltaLuxFilter(ImageWidth, ImageHeight, param2, param2));
-		AltaLuxFilter->SetStrength(param1);
-		if (ImageBitDepth == RGB32_PIXEL_SIZE)
-			AltaLuxFilter->ProcessRGB32(static_cast<void*>(SrcImage->data()));
-		else
-			AltaLuxFilter->ProcessRGB24(static_cast<void *>(SrcImage->data()));
-		
-		ScopedBitmapHeader pbBmHdr(hDib);
-		BYTE* ImageBits = pbBmHdr.GetImageBits();
-		DWORD ImageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * pbBmHdr->biBitCount));
-		CopyToSourceImage(ImageBits, ImageBitsStride, SrcImage->data(), ClipRect);
-	}
-	catch (const std::exception& e)
-	{
-	#ifdef ENABLE_LOGGING
-		std::cerr << "Exception: " << e.what() << std::endl;
-	#else
-		(void)e;  // Suppress unused variable warning
-	#endif
 		return false;
 	}
+
+	{
+		ScopedBitmapHeader bitmapHeader(hDib);
+		if (!bitmapHeader.IsValid())
+		{
+			return false;
+		}
+		BYTE* imageBits = bitmapHeader.GetImageBits();
+		DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
+		CopyToSourceImage(imageBits, imageBitsStride, srcImage->data(), clipRect);
+	}
+
 	return true;
 }
 
-/// <summary>
-/// Returns general information about the plugin.
-/// Called by IrfanView to retrieve version and description.
-/// </summary>
-/// <param name="versionString">Output buffer for version number string</param>
-/// <param name="fileFormats">Output buffer for plugin description</param>
-/// <returns>Always returns 0</returns>
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 {
-	sprintf_s(versionString, 64, "1.10"); // your version-nr
-	sprintf_s(fileFormats, 256, "AltaLux image enhancement filter"); // some infos
+	sprintf_s(versionString, 64, "2.00");
+	sprintf_s(fileFormats, 256, "AltaLux image enhancement filter");
 	return 0;
 }
 
-/// <summary>
-/// Main entry point for the AltaLux plugin effects processing.
-/// This is the exported function called by IrfanView to apply the filter.
-/// Delegates to StartEffects2 for actual processing.
-/// </summary>
-/// <param name="hDib">Handle to the DIB (Device Independent Bitmap)</param>
-/// <param name="hwnd">Handle to parent window</param>
-/// <param name="filter">Filter type identifier</param>
-/// <param name="rect">Clipping rectangle</param>
-/// <param name="param1">Filter intensity parameter</param>
-/// <param name="param2">Filter scale parameter</param>
-/// <param name="iniFile">Path to INI file for parameters</param>
-/// <param name="szAppName">Application name</param>
-/// <param name="regID">Registration ID</param>
-/// <returns>true if processing succeeded, false otherwise</returns>
 bool __cdecl AltaLux_Effects(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2, char* iniFile,
                              char* szAppName, int regID)
 {

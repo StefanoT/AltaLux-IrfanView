@@ -20,14 +20,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>false</UseOfMfc>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>false</UseOfMfc>
@@ -84,6 +84,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\AltaLux\AltaLuxCore.h" />
     <ClInclude Include="..\AltaLux\Filter\CAltaLuxFilterFactory.h" />
     <ClInclude Include="..\AltaLux\Filter\CBaseAltaLuxFilter.h" />
     <ClInclude Include="..\AltaLux\Filter\CParallelActiveWaitAltaLuxFilter.h" />
@@ -95,6 +96,7 @@
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\AltaLux\AltaLuxCore.cpp" />
     <ClCompile Include="..\AltaLux\Filter\CAltaLuxFilterFactory.cpp" />
     <ClCompile Include="..\AltaLux\Filter\CBaseAltaLuxFilter.cpp" />
     <ClCompile Include="..\AltaLux\Filter\CParallelActiveWaitAltaLuxFilter.cpp" />

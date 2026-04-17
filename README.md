@@ -1,441 +1,356 @@
-# AltaLux - Advanced Image Enhancement Plugin for IrfanView
+# AltaLux - Image Enhancement Plugin for IrfanView
 
-## Overview
+AltaLux is a native IrfanView effects plugin that enhances local contrast using CLAHE
+(Contrast Limited Adaptive Histogram Equalization). The current implementation uses a
+fixed three-layer multiscale pipeline and a modern compare-first dialog with three
+high-level controls.
 
-AltaLux is a high-performance image enhancement plugin for IrfanView that implements CLAHE (Contrast Limited Adaptive Histogram Equalization). CLAHE is an advanced algorithm that dramatically improves local contrast while preventing over-amplification of noise, making it ideal for enhancing photos with uneven lighting or low contrast.
+Author: Stefano Tommesani  
+Website: http://www.tommesani.com  
+Version: 2.0.0.0  
+License: Microsoft Public License (MS-PL)
 
-**Author**: Stefano Tommesani
-**Website**: http://www.tommesani.com
-**Version**: 1.9.1.92
-**License**: Microsoft Public License (MS-PL)
+## Current User Experience
 
-## Features
+The v2 dialog is built around a large before/after preview and three primary sliders:
 
-### Core Capabilities
-- ✨ **Advanced Enhancement**: State-of-the-art CLAHE algorithm for superior local contrast
-- 🚀 **High Performance**: Multi-threaded processing utilizing modern multi-core CPUs (4× speedup on quad-core)
-- 🎨 **Format Support**: RGB24, RGB32, BGR24, BGR32, and multiple YUV formats
-- ⚙️ **Configurable**: Adjustable strength (0-100) and tile grid size (2×2 to 16×16)
-- 👁️ **Interactive Preview**: Real-time preview with multiple parameter variations
-- 🌙 **Dark Mode**: Native Windows dark mode support
-- 🎯 **Selection Support**: Process entire image or selected region only
+- **Strength**: overall enhancement amount.
+- **Detail**: shifts the blend toward the fine-detail layer.
+- **Natural look**: shifts the blend toward the smoother, more natural layer.
 
-### Image Quality
-- **Local Contrast**: Enhances detail in shadows and highlights independently
-- **Noise Control**: Histogram clipping prevents amplification of sensor noise
-- **Color Preservation**: Processes luminance while maintaining color balance
-- **Artifact-Free**: Bilinear interpolation eliminates tile boundary artifacts
+The UI also includes:
+
+- A draggable vertical split preview.
+- Spacebar hold-to-compare, including when child controls have focus.
+- Double-click on the split divider to recenter it.
+- A `Zoom` toggle for fit-to-preview vs. 1:1 crop preview.
+- Three presets: `Natural`, `Balanced`, and `Detail`.
+- Short helper text under `Detail` and `Natural look`.
+
+The old v1 `Intensity` + `Scale` UI and preview-variation grid are no longer the
+primary interface.
+
+## Presets
+
+| Preset | Strength | Detail | Natural look |
+|--------|----------|--------|--------------|
+| Natural | 35 | 10 | 55 |
+| Balanced | 45 | 25 | 25 |
+| Detail | 55 | 60 | 10 |
+
+The default startup state is the `Balanced` preset unless saved settings override it.
+
+## How The Multiscale Pipeline Works
+
+AltaLux v2 processes each image through three fixed CLAHE passes, then blends the
+three outputs and mixes the blended result back with the original image.
+
+Important terminology: the constants are region counts, not pixel tile sizes.
+More regions means smaller CLAHE tiles and more local/detail-sensitive behavior.
+
+| Layer | Constant | Region grid | Visual role |
+|-------|----------|-------------|-------------|
+| Fine | `Constants::FineRegions` | 16 x 16 | Small tiles, more local detail and texture |
+| Balanced | `Constants::BalancedRegions` | 8 x 8 | Main enhancement backbone |
+| Smooth | `Constants::SmoothRegions` | 4 x 4 | Large tiles, smoother/natural rendering |
+
+The processing order in `ProcessMultiscaleImage()` is:
+
+1. Create the fine, balanced, and smooth CLAHE layer outputs.
+2. Compute blend weights from `Detail` and `Natural look`.
+3. Accumulate the weighted RGB/BGR channels into an integer accumulator.
+4. Blend the accumulated enhancement back toward the original using `Strength`.
+5. Preserve alpha for RGB32/BGRA images.
+
+Current implementation detail: `Strength` directly controls the final blend amount.
+The CLAHE strength used inside the three layer passes is derived from `Strength`
+with a conservative non-linear curve, so high slider values do not drive the
+internal CLAHE pass all the way to `100`.
+
+Representative internal layer-strength mapping:
+
+| Strength | Layer CLAHE strength |
+|----------|----------------------|
+| 0 | 0 |
+| 10 | 11 |
+| 25 | 15 |
+| 45 | 20 |
+| 60 | 26 |
+| 75 | 31 |
+| 90 | 38 |
+| 100 | 42 |
+
+## Blend Weights
+
+`ComputeBlendWeights()` derives layer weights from the two shaping sliders:
+
+- Base weights: fine `0.15`, balanced `0.60`, smooth `0.25`.
+- `Detail` can shift up to `0.35` toward fine.
+- `Natural look` can shift up to `0.35` toward smooth.
+- Balanced is floored at `0.20`.
+- Weights are normalized internally.
+
+`Detail` and `Natural look` are independent. They are not opposites, and both can be
+raised at the same time.
+
+## Color Processing
+
+Windows DIB data is handled as BGR/BGRA in the plugin path. The multiscale pipeline
+routes layer processing through the BGR filter variants so luminance coefficients
+match the actual byte order.
+
+The CLAHE filter:
+
+1. Extracts luminance using BT.709 coefficients:
+   `Y = 0.2126 R + 0.7152 G + 0.0722 B`.
+2. Applies CLAHE to the luminance buffer.
+3. Reinjects luminance through multiplicative color scaling.
+4. Uses a Q16 reciprocal lookup table to avoid per-pixel division.
+5. Caps the scale factor to avoid channel overflow and hue drift in highlights.
+
+This is not the old additive `R/G/B + deltaY` model.
+
+## Performance
+
+The default single-scale CLAHE implementation is `CParallelSplitLoopAltaLuxFilter`.
+The v2 pipeline runs three CLAHE passes, so it is more expensive than v1.
+
+Additional v2 optimizations currently implemented:
+
+- SIMD accumulation and final blend paths.
+- Sequential layer processing for small images to avoid unnecessary task and memory overhead.
+- Parallel layer processing for images at or above `1,000,000` pixels using
+  `concurrency::parallel_invoke`.
+- Blocked parallel accumulation/blending for larger buffers.
+
+The thresholded layer strategy means:
+
+- Preview-sized images usually use the memory-efficient sequential layer path.
+- Large final images can process fine, balanced, and smooth layers concurrently.
+- Three separate layer buffers are allocated only for the large-image parallel path.
+
+Performance can still be memory-bandwidth limited because each layer is a full image
+buffer and the CLAHE filters are internally parallel too.
+
+## Memory Use
+
+For RGB24/RGB32 multiscale processing, the core allocations are:
+
+- An accumulator with three `uint32` values per pixel.
+- A scratch layer buffer for the sequential path.
+- Three layer buffers for the large-image parallel path.
+- CLAHE internal luminance buffers and histogram mapping arrays.
+
+For large images, the parallel layer path intentionally trades memory for wall-clock
+latency.
 
 ## Installation
 
-1. Download the latest release (`AltaLux.dll`)
-2. Copy `AltaLux.dll` to IrfanView's `Plugins` folder:
-   - Default location: `C:\Program Files\IrfanView\Plugins\`
-3. Restart IrfanView
-4. Access via: `Image → Effects → AltaLux`
+1. Build or download `AltaLux.dll`.
+2. Copy it to the IrfanView `Plugins` folder.
+   - 64-bit default: `C:\Program Files\IrfanView\Plugins\`
+   - 32-bit default: `C:\Program Files (x86)\IrfanView\Plugins\`
+3. Restart IrfanView.
+4. Open from IrfanView's image effects menu.
 
-## Usage
+Use a DLL build that matches the IrfanView architecture.
 
-### GUI Mode (Interactive)
+## Interactive Usage
 
-1. Open an image in IrfanView
-2. Select `Image → Effects → AltaLux`
-3. Adjust parameters:
-   - **Intensity Slider** (0-100): Enhancement strength
-     - 0: No effect (pass-through)
-     - 25: Recommended default
-     - 100: Maximum enhancement
-   - **Scale Slider** (2-16): Tile grid size
-     - Lower values: Faster processing, coarser enhancement
-     - 8: Recommended default (8×8 grid)
-     - Higher values: Finer detail, slower processing
-4. Preview variations (click on any to apply):
-   - **Top-left**: Original image (click to reset both sliders to minimum)
-   - **Top-middle**: Weaker intensity (-15 strength)
-   - **Top-right**: Stronger intensity (+15 strength)
-   - **Center**: Current settings (large preview)
-   - **Right-middle**: Coarser grid (-2 scale)
-   - **Bottom-right**: Finer grid (+2 scale)
-5. Click **OK** to apply or **Cancel** to discard
+1. Open an image in IrfanView.
+2. Launch AltaLux from the effects menu.
+3. Adjust `Strength`, `Detail`, and `Natural look`.
+4. Drag the preview split divider to compare original vs. processed.
+5. Hold `Space` to temporarily show the original.
+6. Use `Natural`, `Balanced`, or `Detail` presets as starting points.
+7. Use `Zoom` to switch between fit preview and 1:1 crop preview.
+8. Press `OK` to apply or `Cancel` to discard.
 
-### Batch Mode (Automation)
+If an IrfanView selection is active, AltaLux processes only the selected/cropped area.
 
-For batch processing or scripting:
+## Direct Invocation / Batch Parameters
 
-```
-i_view32.exe /effect=(AltaLux,25,8) input.jpg
-```
+The current direct/non-dialog path is intentionally simplified for v2. It no longer
+preserves the old v1 `(Intensity, Scale)` parameter model.
 
-Parameters: `(PluginName, Intensity, Scale)`
+When AltaLux is invoked with parameters instead of opening the dialog:
 
-### Selection Processing
+- `param1` initializes `Strength`.
+- `Detail` uses the default value `25`.
+- `Natural look` uses the default value `25`.
+- `param2` is not used as a scale/tile parameter.
 
-1. Select a region using IrfanView's selection tool
-2. Apply AltaLux as usual
-3. Only the selected region will be enhanced
+This is a breaking change from v1 and is intentional for the current implementation.
 
-## Technical Details
+## Settings
 
-### CLAHE Algorithm
-
-CLAHE enhances images through the following steps:
-
-1. **Tile Division**: Image divided into NxN tiles (contextual regions)
-2. **Histogram Calculation**: Compute gray-level histogram for each tile
-3. **Histogram Clipping**: Clip bins exceeding threshold to prevent noise amplification
-4. **Mapping Generation**: Create cumulative distribution function (equalization mapping)
-5. **Interpolation**: Apply bilinear interpolation between tiles to eliminate artifacts
-
-### Color Processing
-
-AltaLux preserves color while enhancing contrast:
-
-1. Convert RGB to luminance: `Y = 0.299*R + 0.587*G + 0.114*B`
-2. Apply CLAHE to luminance channel
-3. Calculate luminance difference: `ΔY = Y_enhanced - Y_original`
-4. Adjust RGB channels: `R' = R + ΔY`, `G' = G + ΔY`, `B' = B + ΔY`
-5. Clamp values to valid range [0, 255]
-
-This approach maintains color ratios and prevents hue shifts.
-
-### Performance Characteristics
-
-#### Typical Processing Times (1920×1080 image, 8×8 tiles)
-
-| Implementation           | Time    | Speedup | CPU Usage |
-|--------------------------|---------|---------|-----------|
-| Serial (single-threaded) | 1.2s    | 1.0×    | 1 core    |
-| Parallel Split Loop      | 0.3s    | 4.0×    | All cores |
-| Parallel Event           | 0.35s   | 3.4×    | All cores |
-| Parallel Active Wait     | 0.3s    | 4.0×    | All cores |
-
-**Default**: Parallel Split Loop (best balance of performance and simplicity)
-
-#### Scalability
-- Good scaling up to 8 CPU cores
-- Diminishing returns beyond 8 cores (memory bandwidth becomes bottleneck)
-- Preview mode uses downsampled image for real-time responsiveness
-
-### Architecture
-
-#### Class Hierarchy
-
-```
-CBaseAltaLuxFilter (abstract base)
-├── CSerialAltaLuxFilter (reference implementation)
-├── CParallelSplitLoopAltaLuxFilter (default, recommended)
-├── CParallelErrorAltaLuxFilter (experimental)
-├── CParallelEventAltaLuxFilter (synchronization study)
-└── CParallelActiveWaitAltaLuxFilter (low-latency)
-```
-
-#### Key Components
-
-- **CBaseAltaLuxFilter**: Abstract base defining CLAHE interface
-- **CAltaLuxFilterFactory**: Factory for creating filter instances
-- **ScopedBitmapHeader**: RAII wrapper for Windows DIB memory management
-- **UIDraw**: GUI rendering and preview generation
-- **AltaLux.cpp**: IrfanView plugin interface implementation
-
-### Parallelization Strategy
-
-#### Split-Loop Approach (Default)
-
-The algorithm is divided into two phases with implicit synchronization:
-
-**Phase 1: Histogram Calculation** (Embarrassingly Parallel)
-```cpp
-parallel_for(each_tile_row) {
-    for (each_tile_in_row) {
-        MakeHistogram(tile)
-        ClipHistogram(tile)
-        MapHistogram(tile)
-    }
-}
-// Implicit barrier - all threads complete Phase 1
-```
-
-**Phase 2: Interpolation** (Embarrassingly Parallel)
-```cpp
-parallel_for(each_interpolation_row) {
-    for (each_region_in_row) {
-        Interpolate(region, neighboring_histograms)
-    }
-}
-```
-
-**Advantages**:
-- No explicit synchronization code
-- Near-linear scalability
-- Good cache locality
-- Simple to understand and maintain
-
-## Configuration
-
-### INI File Settings
-
-Settings are stored in IrfanView's INI file under `[AltaLux]` section:
+Settings are stored under the `[AltaLux]` section:
 
 ```ini
 [AltaLux]
-Intensity=25    ; Enhancement strength (0-100)
-Scale=8         ; Tile grid size (2-16)
+Strength=45
+Detail=25
+NaturalLook=25
+Zoom=0
 ```
 
-Location: `%APPDATA%\IrfanView\i_view32.ini` or installation directory
+The old `Intensity` key is read as a fallback only when `Strength` is absent.
+The old `Scale` setting is not surfaced in the v2 UI or parameter model.
 
-### Parameter Guidelines
+## Project Structure
 
-#### Intensity (Strength)
-- **0**: Disabled (pass-through mode, saves memory)
-- **1-10**: Subtle enhancement (good for already well-exposed images)
-- **15-25**: Moderate enhancement (recommended for most photos)
-- **30-50**: Strong enhancement (for very dark or flat images)
-- **60-100**: Extreme enhancement (may amplify noise, use carefully)
-
-#### Scale (Tile Grid Size)
-- **2×2**: Fastest, very coarse (global enhancement)
-- **4×4**: Fast, coarse (good for large images)
-- **8×8**: **Recommended** (best balance)
-- **12×12**: Finer detail, slower
-- **16×16**: Finest detail, slowest (use for small images or specific needs)
-
-**Rule of Thumb**: More tiles = finer local detail but slower processing and more memory
-
-### Image Size Considerations
-
-| Image Resolution | Recommended Grid | Notes                           |
-|------------------|------------------|---------------------------------|
-| ≤ 1280×720       | 4×4 to 8×8       | Small images need fewer tiles   |
-| 1920×1080        | 8×8              | Sweet spot for Full HD          |
-| 2560×1440        | 8×8 to 12×12     | Can use finer grid              |
-| 3840×2160 (4K)   | 12×12 to 16×16   | Benefit from finer detail       |
-
-## Use Cases
-
-### Recommended Applications
-✅ **Excellent for:**
-- Backlit photos (subjects in shadow)
-- Night photography (reveal shadow detail)
-- Scanned documents (improve readability)
-- Medical imaging (enhance tissue detail)
-- Surveillance footage (improve visibility)
-- Low-contrast images (bring out hidden detail)
-- HDR-like enhancement (single image)
-
-❌ **Not recommended for:**
-- Images with high sensor noise (will amplify noise)
-- Already well-exposed photos (may look unnatural)
-- Artistic photos with intentional lighting (may ruin the mood)
-
-### Comparison with Other Techniques
-
-| Technique                  | Global/Local | Noise Amplification | Speed      |
-|----------------------------|--------------|---------------------|------------|
-| Brightness/Contrast        | Global       | Low                 | Very Fast  |
-| Curves/Levels              | Global       | Low                 | Very Fast  |
-| Unsharp Mask               | Local        | High                | Fast       |
-| Standard Histogram Eq.     | Global       | Very High           | Fast       |
-| **CLAHE (AltaLux)**        | **Local**    | **Controlled**      | **Medium** |
-| True HDR (multi-exposure)  | Local        | Very Low            | Slow       |
-
-## Development
-
-### Building from Source
-
-#### Requirements
-- Visual Studio 2017 or later
-- Windows SDK
-- C++14 or later
-
-#### Build Steps
-1. Open `AltaLux.sln` in Visual Studio
-2. Select configuration:
-   - **Release** for production use (optimized)
-   - **Debug** for development (with symbols)
-3. Select platform:
-   - **x86** for 32-bit IrfanView
-   - **x64** for 64-bit IrfanView
-4. Build → Build Solution (F7)
-5. Output: `Release\AltaLux.dll` or `x64\Release\AltaLux.dll`
-
-### Project Structure
-
-```
+```text
 AltaLux/
-├── AltaLux.cpp              # Plugin interface, main entry points
-├── AltaLux.h                # Public API declarations
-├── Filter/
-│   ├── CBaseAltaLuxFilter.cpp        # Base class implementation
-│   ├── CBaseAltaLuxFilter.h          # Base class interface
-│   ├── CAltaLuxFilterFactory.cpp     # Factory implementation
-│   ├── CAltaLuxFilterFactory.h       # Factory interface
-│   ├── CSerialAltaLuxFilter.cpp      # Single-threaded reference
-│   ├── CSerialAltaLuxFilter.h
-│   ├── CParallelSplitLoopAltaLuxFilter.cpp  # Default parallel (recommended)
-│   ├── CParallelSplitLoopAltaLuxFilter.h
-│   ├── CParallelEventAltaLuxFilter.cpp      # Event-based parallel
-│   ├── CParallelEventAltaLuxFilter.h
-│   ├── CParallelActiveWaitAltaLuxFilter.cpp # Active-wait parallel
-│   └── CParallelActiveWaitAltaLuxFilter.h
-├── UIDraw/
-│   ├── UIDraw.cpp           # GUI rendering and preview
-│   └── UIDraw.h
-├── ScopedBitmapHeader.h     # RAII memory management
-└── resource.h               # Windows resource definitions
+  AltaLux.cpp                 IrfanView plugin entry points and Win32 dialog
+  AltaLuxCore.cpp/.h          v2 state, weights, geometry, multiscale processing
+  ScopedBitmapHeader.h        RAII wrapper around DIB GlobalLock/GlobalUnlock
+  UIDraw/
+    UIDraw.cpp/.h             preview rendering and split comparison drawing
+  Filter/
+    CBaseAltaLuxFilter.*      shared CLAHE implementation
+    CAltaLuxFilterFactory.*   filter factory
+    CSerialAltaLuxFilter.*    serial reference implementation
+    CParallelSplitLoop*       default parallel implementation
+    CParallelEvent*           event-based implementation
+    CParallelActiveWait*      active-wait implementation
+AltaLuxUnitTest/
+  TestStrategies.cpp          Microsoft C++ unit tests
+AltaLuxBench/
+  legacy benchmark project
 ```
 
-### Adding New Parallelization Strategies
+## Building
 
-To implement a new parallelization approach:
+Requirements:
 
-1. Create new class inheriting from `CBaseAltaLuxFilter`
-2. Implement `Run()` method with your strategy
-3. Add constant to `CAltaLuxFilterFactory.h`
-4. Update factory in `CAltaLuxFilterFactory.cpp`
-5. Benchmark against existing implementations
+- Visual Studio with MSVC toolset `v143` or newer.
+- Windows SDK 10.
+- Microsoft C++ Unit Test framework for the test project.
 
-Example:
-```cpp
-// MyCustomFilter.h
-class CMyCustomFilter : public CBaseAltaLuxFilter {
-public:
-    CMyCustomFilter(int w, int h, int hs, int vs)
-        : CBaseAltaLuxFilter(w, h, hs, vs) {}
-protected:
-    int Run() override {
-        // Your custom parallelization strategy
-    }
-};
+The project files still contain legacy output paths targeting IrfanView plugin
+folders. For local development it is safer to override `OutDir` and `IntDir`.
+
+Example x64 plugin build:
+
+```powershell
+New-Item -ItemType Directory -Force .build-out,.build-out\obj | Out-Null
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  AltaLux\AltaLux.vcxproj `
+  /p:Configuration=Debug `
+  /p:Platform=x64 `
+  /p:OutDir="$PWD\.build-out\" `
+  /p:IntDir="$PWD\.build-out\obj\" `
+  /p:TargetName=AltaLux
 ```
+
+Example unit test build:
+
+```powershell
+New-Item -ItemType Directory -Force .test-out,.test-out\obj | Out-Null
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  AltaLuxUnitTest\AltaLuxUnitTest.vcxproj `
+  /p:Configuration=Debug `
+  /p:Platform=Win32 `
+  /p:OutDir="$PWD\.test-out\" `
+  /p:IntDir="$PWD\.test-out\obj\"
+```
+
+Run tests with:
+
+```powershell
+& "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Extensions\TestPlatform\vstest.console.exe" `
+  ".test-out\AltaLuxUnitTest.dll"
+```
+
+## Tests
+
+The current unit test suite covers:
+
+- Serial vs. parallel CLAHE strategy equivalence.
+- Presets and preset tolerance.
+- Blend-weight normalization and balanced floor.
+- Conservative non-linear layer-strength mapping.
+- Independent `Detail` and `Natural look` behavior.
+- Safe layer region clamping.
+- Fine/balanced/smooth region ordering.
+- Preview rectangle fitting.
+- Zero-strength no-op behavior.
+- RGB32 alpha preservation.
+- RGB24/RGB32 consistency for identical RGB content.
+- `Detail` sensitivity on checkerboard input.
+- `Natural look` sensitivity on gradient input.
+- A `1024 x 1024` image path that exercises the parallel-layer threshold.
+
+At the time of this update, the test suite contains 20 tests.
 
 ## Troubleshooting
 
-### Common Issues
+**Plugin does not appear in IrfanView**
 
-**Problem**: Plugin doesn't appear in IrfanView menu  
-**Solution**: 
-- Verify DLL is in correct Plugins folder
-- Check that DLL matches IrfanView architecture (32-bit vs 64-bit)
-- Restart IrfanView completely
+- Confirm the DLL is in the correct IrfanView `Plugins` folder.
+- Confirm DLL architecture matches IrfanView architecture.
+- Restart IrfanView after copying the DLL.
 
-**Problem**: Image looks noisy after enhancement  
-**Solution**:
-- Reduce Intensity slider value
-- Input image may have high sensor noise
-- Consider noise reduction before applying AltaLux
+**The result looks noisy**
 
-**Problem**: Processing is slow  
-**Solution**:
-- Reduce Scale (fewer tiles = faster)
-- Close other applications to free CPU
-- Ensure using Release build (not Debug)
+- Lower `Strength`.
+- Lower `Detail`.
+- Use the `Natural` preset as a starting point.
+- Apply noise reduction before AltaLux for high-ISO images.
 
-**Problem**: Colors look wrong  
-**Solution**:
-- AltaLux preserves color ratios; unusual results may indicate:
-  - Image was already heavily processed
-  - Extreme enhancement settings
-  - Try reducing Intensity
+**The result looks too flat or too smooth**
 
-**Problem**: Preview looks different from result  
-**Solution**:
-- Preview uses downsampled image for speed
-- Final result processes full resolution
-- This is normal and expected behavior
+- Increase `Detail`.
+- Lower `Natural look`.
+- Increase `Strength` moderately.
 
-## Performance Tuning
+**Processing is slow**
 
-### For Maximum Speed
-- Use 4×4 or 6×6 grid (fewer tiles)
-- Process at lower resolution first, then upscale
-- Close other applications
-- Use Parallel Split Loop (default)
+- Use a Release build for normal use.
+- Large images run three CLAHE passes.
+- The large-image path parallelizes the three layer passes, but performance can still be limited by memory bandwidth.
 
-### For Maximum Quality
-- Use 12×12 or 16×16 grid (more tiles)
-- Process at full resolution
-- Adjust Intensity conservatively
-- Compare with original frequently
+**Preview and final output differ slightly**
 
-### Memory Usage
-- Intensity=0: Minimal (no processing buffer)
-- Typical: ~ImageSize + (NumTiles × 256 × 4 bytes)
-- Example: 1920×1080, 8×8 tiles ≈ 6MB + 64KB = ~6.1MB
+- Preview processing uses a scaled working image.
+- Final apply processes the selected/full-resolution region.
 
-### Memory Alignment Optimization
-- Internal buffers use 16-byte alignment (`_aligned_malloc`)
-- Improves cache performance and memory access patterns
-- Enables future SIMD optimizations (SSE2/AVX2)
-- Minimal overhead (~15 bytes per buffer)
+## Changelog
 
-## Algorithm References
+### Version 2.0.0.0
 
-The CLAHE algorithm is based on:
+- Replaced v1 `Intensity` + `Scale` UI with `Strength`, `Detail`, and `Natural look`.
+- Removed the preview-variation grid from the primary workflow.
+- Added large before/after split preview with draggable divider.
+- Added spacebar hold-to-compare and split double-click recenter.
+- Added Natural/Balanced/Detail presets.
+- Added fixed three-layer multiscale pipeline.
+- Added conservative non-linear internal CLAHE strength mapping.
+- Corrected layer semantics: fine = 16 regions, balanced = 8 regions, smooth = 4 regions.
+- Added BT.709 luminance extraction and BGR/BGRA routing for Windows DIB data.
+- Added SIMD accumulation/blending.
+- Added thresholded parallel processing for the three independent CLAHE layer passes.
+- Added Microsoft C++ unit coverage for core v2 behavior and parallel-layer threshold.
 
-- Karel Zuiderveld, "Contrast Limited Adaptive Histogram Equalization," 
-  Graphics Gems IV, Academic Press, 1994, pp. 474-485.
+### Version 1.9.1.92
 
+- v1 CLAHE dialog with intensity and scale controls.
+- Preview variation grid.
+- Dark mode support.
+- Multiple parallel CLAHE strategies.
+
+### Version 1.0
+
+- Initial IrfanView plugin integration.
+- CLAHE implementation.
+
+## References
+
+- Karel Zuiderveld, "Contrast Limited Adaptive Histogram Equalization,"
+  Graphics Gems IV, Academic Press, 1994.
 - Pizer, S. M., et al., "Adaptive histogram equalization and its variations,"
   Computer Vision, Graphics, and Image Processing, 1987.
 
 ## License
 
-Microsoft Public License (MS-PL)
-
-This is an OSI-approved open source license. Key points:
-- ✅ Commercial use allowed
-- ✅ Modification allowed
-- ✅ Distribution allowed
-- ✅ Private use allowed
-- ⚠️ Must include license text
-- ⚠️ Patent claims end if you sue over patents
-
-Full license text in source files.
-
-## Contributing
-
-Contributions welcome! Areas of interest:
-- SIMD optimizations (AVX2, SSE)
-- ARM/NEON support
-- Additional parallelization strategies
-- GPU acceleration (CUDA/OpenCL)
-- Algorithm improvements
-- Documentation improvements
-
-## Changelog
-
-### Version 1.9.1.92 (Current)
-- Comprehensive documentation and code comments
-- Dark mode support for Windows 10/11 with proper theme detection
-- Improved GUI with real-time preview
-- Clickable preview images to adjust parameters
-- Click original image to reset both sliders to minimum
-- Centered image captions with light gray color for better readability
-- Memory alignment optimization (16-byte alignment for future SIMD support)
-- Fixed all compiler warnings (C4244, C4101, C4996, C4018, C4267)
-- Resizable dialog window
-- Multiple preview variations
-- Performance optimizations
-
-### Version 1.00 (Initial)
-- Initial release
-- CLAHE implementation
-- Multiple parallelization strategies
-- IrfanView plugin interface
-
-## Contact
-
-**Author**: Stefano Tommesani  
-**Website**: http://www.tommesani.com  
-**Email**: [Contact via website]
-
-## Acknowledgments
-
-- IrfanView by Irfan Skiljan for the excellent image viewer
-- Karel Zuiderveld for the original CLAHE algorithm
-- Contributors and testers
-
----
-
-**Made with ❤️ for the IrfanView community**
+Microsoft Public License (MS-PL). See source headers for license text.

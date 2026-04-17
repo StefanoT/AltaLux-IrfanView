@@ -48,6 +48,9 @@
     <ClInclude Include="..\AltaLux\Filter\CParallelSplitLoopAltaLuxFilter.h">
       <Filter>Header Files\Filter</Filter>
     </ClInclude>
+    <ClInclude Include="..\AltaLux\AltaLuxCore.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -76,6 +79,9 @@
     </ClCompile>
     <ClCompile Include="..\AltaLux\Filter\CSerialAltaLuxFilter.cpp">
       <Filter>Source Files\Filter</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\AltaLuxCore.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

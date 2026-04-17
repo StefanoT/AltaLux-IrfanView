@@ -28,13 +28,14 @@ A "contributor" is any person that distributes its contribution under this licen
 #pragma once
 
 #include <Windows.h>
+#include "..\AltaLuxCore.h"
 
-void DrawScaleQuad(HDC hdc, RECT QuadRect);
-void DrawScaleGrid(HDC hdc, RECT rectTo, int FilterScale);
-void DrawSingleImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
-                     RECT RectPosition, bool ShowGrid, int FilterScale, bool NoRescaling, LPCWSTR Title);
-void DrawImage(HWND hwnd, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
-               int FilterScale);
+void DrawPreviewImage(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* ImageToDraw, int ImageWidth, int ImageHeight,
+                      const RECT& RectPosition, bool NoRescaling);
+void DrawSplitHandle(HDC hdc, const RECT& PreviewRect, int SplitX, bool DarkMode);
+void DrawMainPreviewComparison(HDC hdc, LPBITMAPINFOHEADER pBmHdr, void* OriginalImage, void* ProcessedImage,
+                               int ImageWidth, int ImageHeight, const RECT& PreviewRect, int SplitX,
+                               bool CompareHoldOriginal, bool NoRescaling, bool DarkMode);
 
-int RectWidth(RECT& RectToMeasure);
-int RectHeight(RECT& RectToMeasure);
+int RectWidth(const RECT& RectToMeasure);
+int RectHeight(const RECT& RectToMeasure);

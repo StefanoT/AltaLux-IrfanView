@@ -121,6 +121,12 @@ public:
 		return pbBmHdr;
 	}
 
+	/// @brief Did GlobalLock succeed?
+	/// @return true when the handle is locked and all accessors are safe to use
+	bool IsValid() const {
+		return pbBmHdr != nullptr;
+	}
+
 	/// @brief Get copy of bitmap header structure
 	/// @return Copy of BITMAPINFOHEADER structure
 	/// @note Returns value copy, not reference

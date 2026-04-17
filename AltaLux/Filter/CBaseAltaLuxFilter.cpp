@@ -35,6 +35,31 @@ A "contributor" is any person that distributes its contribution under this licen
 #include <ppl.h>
 #include <immintrin.h> // For SSE2 if available
 
+namespace
+{
+	/// Pre-computed reciprocal table for multiplicative color scaling in InjectYComponent.
+	/// table[oldY] = (1 << 16) / oldY in Q16 fixed-point; index 0 is unused
+	/// (InjectYComponent branches on OldYValue == 0 to avoid division-by-zero).
+	/// This 1 KiB 1D table replaces a 64 KiB 2D scale table: the per-pixel scale factor
+	/// (newY << 8) / oldY is reconstructed on the fly with one multiply plus a shift,
+	/// fits easily in L1, and is friendlier to vectorization (gather index has half the bits).
+	/// Dynamic initialization of a namespace-scope const runs exactly once at DLL
+	/// load, before any filter constructor can execute: no guards, no per-instance cost.
+	struct RecipLUTTable
+	{
+		int table[256];
+	};
+
+	const RecipLUTTable g_RecipLUT = []() {
+		RecipLUTTable lut{};
+		for (int oldY = 1; oldY < 256; ++oldY)
+		{
+			lut.table[oldY] = (1 << 16) / oldY;
+		}
+		return lut;
+	}();
+}
+
 #ifdef ENABLE_LOGGING
 	#include "..\Log\easylogging++.h"
 #endif // ENABLE_LOGGING
@@ -46,9 +71,6 @@ CBaseAltaLuxFilter::CBaseAltaLuxFilter(int Width, int Height, int HorSlices, int
 
 	/// delay allocation of ImageBuffer into SetStrength
 	ImageBuffer = nullptr;
-
-	// Initialize scale lookup table for color preservation
-	InitializeScaleLUT();
 
 	NumHorRegions = HorSlices;
 	NumVertRegions = VerSlices;
@@ -68,30 +90,6 @@ CBaseAltaLuxFilter::~CBaseAltaLuxFilter()
 	{
 		_aligned_free(ImageBuffer);
 		ImageBuffer = nullptr;
-	}
-}
-
-/// <summary>
-/// Initialize the scale lookup table for multiplicative color scaling
-/// </summary>
-/// <remarks>
-/// Pre-computes all 65,536 possible scale factors to eliminate per-pixel division.
-/// Called once during construction.
-/// </remarks>
-void CBaseAltaLuxFilter::InitializeScaleLUT()
-{
-	// Populate lookup table for all possible Y value combinations
-	for (int oldY = 1; oldY < 256; oldY++)
-	{
-		for (int newY = 0; newY < 256; newY++)
-		{
-			ScaleLUT[oldY][newY] = (newY << 8) / oldY;
-		}
-	}
-	// Handle oldY = 0 case (division by zero)
-	for (int newY = 0; newY < 256; newY++)
-	{
-		ScaleLUT[0][newY] = 0;  // Won't be used (handled by if statement)
 	}
 }
 
@@ -119,7 +117,7 @@ void CBaseAltaLuxFilter::SetSlices(int HorSlices, int VerSlices)
 
 void CBaseAltaLuxFilter::SetStrength(int _Strength)
 {
-	Strength = _Strength + 4;
+	Strength = _Strength;
 	if (Strength < AL_MIN_STRENGTH)
 		Strength = AL_MIN_STRENGTH;
 	if (Strength > AL_MAX_STRENGTH)
@@ -160,9 +158,6 @@ bool CBaseAltaLuxFilter::IsEnabled() const
 
 int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 {
-#ifdef _WIN64
-
-#else
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
@@ -178,96 +173,51 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 			return AL_OUT_OF_MEMORY;
 	}
 
-	/// copy luma from UYVY Image into ImageBuffer
 	auto ImagePtr = static_cast<unsigned char *>(Image);
 	auto ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
+	const int ImageSize = ImageWidth * ImageHeight;
+	const int vectorizedPixels = ImageSize & ~15;
 
-	//	ImagePtr++;
-	//	for (int i = (ImageWidth * ImageHeight); i > 0; i--)
-	//	{
-	//		*ImageBufferPtr = *ImagePtr;
-	//		ImagePtr += 2;
-	//		ImageBufferPtr++;
-	//	}
-
-	int ImageSize = ImageWidth * ImageHeight;
-
-	__asm
+	/// copy luma from UYVY into ImageBuffer
+	/// UYVY: luma is the high byte of each 16-bit word
+	for (int i = 0; i < vectorizedPixels; i += 16)
 	{
-		mov EAX,ImagePtr
-		mov EDX,ImageBufferPtr
-		mov ECX,ImageSize
-		shr ECX,3
-
-		ALIGN 16
-		CopyIntoImageBufferLoop:
-		movq mm0,[EAX]
-		movq mm1,[EAX+8]
-		add EAX,16
-		psrlw mm0,8
-		psrlw mm1,8
-		packuswb mm0,mm1
-		movq [EDX],mm0
-		add EDX,8
-		sub ECX,1
-		jnz CopyIntoImageBufferLoop
-
-		emms
+		__m128i chunk0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
+		__m128i chunk1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
+		chunk0 = _mm_srli_epi16(chunk0, 8);
+		chunk1 = _mm_srli_epi16(chunk1, 8);
+		const __m128i luma = _mm_packus_epi16(chunk0, chunk1);
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImageBufferPtr + i), luma);
 	}
+	for (int i = vectorizedPixels; i < ImageSize; ++i)
+		ImageBufferPtr[i] = ImagePtr[i * 2 + 1];
+
 	/// perform processing on ImageBuffer
-	auto RunReturn = Run();
+	const int RunReturn = Run();
 	if (RunReturn != AL_OK)
 		return RunReturn;
 
-	/// copy processed luma back into UYVY Image
-	ImagePtr = static_cast<unsigned char *>(Image);
-	ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
-
-	// ImagePtr++;
-	// for (int j = (ImageWidth * ImageHeight); j > 0; j--)
-	// {
-	// 	*ImagePtr = *ImageBufferPtr;
-	// 	ImagePtr += 2;
-	// 	ImageBufferPtr++;
-	// }
-
-#define CHROMA_MASK	mm6
-
-	__asm
+	/// copy processed luma back into UYVY, preserving chroma
+	/// chroma (U/V) lives in the low byte of each 16-bit word
+	const __m128i chromaMask = _mm_set1_epi16(0x00FF);
+	const __m128i zero = _mm_setzero_si128();
+	for (int i = 0; i < vectorizedPixels; i += 16)
 	{
-		mov EAX,ImagePtr
-		mov EDX,ImageBufferPtr
-		mov ECX,ImageSize
-		shr ECX,3
-		pcmpeqb CHROMA_MASK,CHROMA_MASK
-		psrlw CHROMA_MASK,8
-
-		ALIGN 16
-		CopyIntoImageLoop:
-		movq mm0,[EDX]
-		add EDX,8
-		movq mm3,[EAX]
-		movq mm4,[EAX+8]
-		pxor mm1,mm1
-		pxor mm2,mm2
-		punpcklbw mm1,mm0
-		punpckhbw mm2,mm0
-		pand mm3,CHROMA_MASK
-		pand mm4,CHROMA_MASK
-		por mm1,mm3
-		por mm2,mm4
-		movq [EAX],mm1
-		movq [EAX+8],mm2
-		add EAX,16
-		sub ECX,1
-		jnz CopyIntoImageLoop
-
-		emms
+		const __m128i luma = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImageBufferPtr + i));
+		__m128i img0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
+		__m128i img1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
+		// widen luma so Y lands in the high byte of each word (matches UYVY layout)
+		const __m128i lumaLo = _mm_unpacklo_epi8(zero, luma);
+		const __m128i lumaHi = _mm_unpackhi_epi8(zero, luma);
+		img0 = _mm_and_si128(img0, chromaMask);
+		img1 = _mm_and_si128(img1, chromaMask);
+		img0 = _mm_or_si128(img0, lumaLo);
+		img1 = _mm_or_si128(img1, lumaHi);
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2), img0);
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2 + 16), img1);
 	}
-
-#undef CHROMA_MASK
-
-#endif // _WIN64
+	for (int i = vectorizedPixels; i < ImageSize; ++i)
+		ImagePtr[i * 2 + 1] = ImageBufferPtr[i];
 
 	return AL_OK;
 }
@@ -279,9 +229,6 @@ int CBaseAltaLuxFilter::ProcessVYUY(void* Image)
 
 int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 {
-#ifdef _WIN64
-
-#else
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
@@ -294,99 +241,53 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 			return AL_OUT_OF_MEMORY;
 	}
 
-	/// copy luma from YUYV Image into ImageBuffer
 	auto ImagePtr = static_cast<unsigned char *>(Image);
 	auto ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
+	const int ImageSize = ImageWidth * ImageHeight;
+	const int vectorizedPixels = ImageSize & ~15;
 
-	//	for (int i = (ImageWidth * ImageHeight); i > 0; i--)
-	//	{
-	//		*ImageBufferPtr = *ImagePtr;
-	//		ImagePtr += 2;
-	//		ImageBufferPtr++;
-	//	}
-
-	int ImageSize = ImageWidth * ImageHeight;
-
-#define LUMA_MASK	mm6
-	__asm
+	/// copy luma from YUYV into ImageBuffer
+	/// YUYV: luma is the low byte of each 16-bit word
+	const __m128i lumaMask = _mm_set1_epi16(0x00FF);
+	for (int i = 0; i < vectorizedPixels; i += 16)
 	{
-		mov EAX,ImagePtr
-		mov EDX,ImageBufferPtr
-		mov ECX,ImageSize
-		shr ECX,3
-		pcmpeqb LUMA_MASK,LUMA_MASK
-		psrlw LUMA_MASK,8
-
-		ALIGN 16
-		CopyIntoImageBufferLoop:
-		movq mm0,[EAX]
-		movq mm1,[EAX+8]
-		add EAX,16
-		pand mm0,LUMA_MASK
-		pand mm1,LUMA_MASK
-		packuswb mm0,mm1
-		movq [EDX],mm0
-		add EDX,8
-		sub ECX,1
-		jnz CopyIntoImageBufferLoop
-
-		emms
+		__m128i chunk0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
+		__m128i chunk1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
+		chunk0 = _mm_and_si128(chunk0, lumaMask);
+		chunk1 = _mm_and_si128(chunk1, lumaMask);
+		const __m128i luma = _mm_packus_epi16(chunk0, chunk1);
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImageBufferPtr + i), luma);
 	}
-#undef LUMA_MASK
+	for (int i = vectorizedPixels; i < ImageSize; ++i)
+		ImageBufferPtr[i] = ImagePtr[i * 2];
 
 	/// perform processing on ImageBuffer
-	int RunReturn = Run();
+	const int RunReturn = Run();
 	if (RunReturn != AL_OK)
 		return RunReturn;
 
-	/// copy processed luma back into YUYV Image
-	ImagePtr = (unsigned char *)Image;
-	ImageBufferPtr = (unsigned char *)ImageBuffer;
-
-	//	for (int j = (ImageWidth * ImageHeight); j > 0; j--)
-	//	{
-	//		*ImagePtr = *ImageBufferPtr;
-	//		ImagePtr += 2;
-	//		ImageBufferPtr++;
-	//	}
-
-#define CHROMA_MASK	mm6
-
-	__asm
+	/// copy processed luma back into YUYV, preserving chroma
+	/// chroma (U/V) lives in the high byte of each 16-bit word
+	const __m128i chromaMask = _mm_set1_epi16(static_cast<short>(0xFF00));
+	const __m128i zero = _mm_setzero_si128();
+	for (int i = 0; i < vectorizedPixels; i += 16)
 	{
-		mov EAX,ImagePtr
-		mov EDX,ImageBufferPtr
-		mov ECX,ImageSize
-		shr ECX,3
-		pcmpeqb CHROMA_MASK,CHROMA_MASK
-		psllw CHROMA_MASK,8
-
-		ALIGN 16
-		CopyIntoImageLoop:
-		movq mm1,[EDX]
-		pxor mm0,mm0
-		movq mm2,mm1
-		add EDX,8
-		movq mm3,[EAX]
-		movq mm4,[EAX+8]
-		punpcklbw mm1,mm0
-		punpckhbw mm2,mm0
-		pand mm3,CHROMA_MASK
-		pand mm4,CHROMA_MASK
-		por mm1,mm3
-		por mm2,mm4
-		movq [EAX],mm1
-		movq [EAX+8],mm2
-		add EAX,16
-		sub ECX,1
-		jnz CopyIntoImageLoop
-
-		emms
+		const __m128i luma = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImageBufferPtr + i));
+		__m128i img0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
+		__m128i img1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
+		// widen luma so Y lands in the low byte of each word (matches YUYV layout)
+		const __m128i lumaLo = _mm_unpacklo_epi8(luma, zero);
+		const __m128i lumaHi = _mm_unpackhi_epi8(luma, zero);
+		img0 = _mm_and_si128(img0, chromaMask);
+		img1 = _mm_and_si128(img1, chromaMask);
+		img0 = _mm_or_si128(img0, lumaLo);
+		img1 = _mm_or_si128(img1, lumaHi);
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2), img0);
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2 + 16), img1);
 	}
+	for (int i = vectorizedPixels; i < ImageSize; ++i)
+		ImagePtr[i * 2] = ImageBufferPtr[i];
 
-#undef CHROMA_MASK
-
-#endif // _WIN64
 	return AL_OK;
 }
 
@@ -405,26 +306,32 @@ int CBaseAltaLuxFilter::ProcessGray(void* Image)
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
-	// as the input buffer is already in the gray 8bpp pixel format, do not copy data to ImageBuffer and use the provided buffer directly
-	unsigned char* SavedImageBuffer = ImageBuffer;
+	// The input buffer is already 8bpp grayscale; point ImageBuffer at the caller's
+	// buffer for the duration of Run(). The RAII guard restores ImageBuffer on every
+	// exit path, so the destructor never accidentally _aligned_free()s caller memory.
+	unsigned char* const SavedImageBuffer = ImageBuffer;
 	ImageBuffer = static_cast<unsigned char *>(Image);
+	struct RestoreGuard
+	{
+		unsigned char** slot;
+		unsigned char* restore;
+		~RestoreGuard() { *slot = restore; }
+	} guard{ &ImageBuffer, SavedImageBuffer };
 
-	const int RunReturn = Run();
-	// restore ImageBuffer
-	ImageBuffer = SavedImageBuffer;
-	if (RunReturn != AL_OK)
-		return RunReturn;
-	return AL_OK;
+	return Run();
 }
 
 #include <mmintrin.h>
 
-/// Ey = 0.299*Er + 0.587*Eg + 0.114*Eb
+/// ITU-R BT.709 luma (also matches sRGB / Display P3 primaries):
+///   Ey = 0.2126*Er + 0.7152*Eg + 0.0722*Eb
+/// Modern JPEG/HEIF stills and HD/4K video from phones and cameras are authored
+/// in this space. BT.601 (0.299 / 0.587 / 0.114) is retained only for legacy SD video.
 const int SCALING_LOG = 15;
 const int SCALING_FACTOR = (1 << SCALING_LOG);
-const int Y_RED_SCALE = static_cast<int>(0.299 * SCALING_FACTOR);
-const int Y_GREEN_SCALE = static_cast<int>(0.587 * SCALING_FACTOR);
-const int Y_BLUE_SCALE = static_cast<int>(0.114 * SCALING_FACTOR);
+const int Y_RED_SCALE = static_cast<int>(0.2126 * SCALING_FACTOR);
+const int Y_GREEN_SCALE = static_cast<int>(0.7152 * SCALING_FACTOR);
+const int Y_BLUE_SCALE = static_cast<int>(0.0722 * SCALING_FACTOR);
 
 /// <summary>
 /// process an input image with a generic format
@@ -612,7 +519,7 @@ void CBaseAltaLuxFilter::InjectYComponent(void* Image,
 	const int numPixels = OriginalImageWidth * OriginalImageHeight;
 	const int roundingOffset = 1 << (SCALING_LOG - 1);
 
-	// Process all pixels (using pre-initialized ScaleLUT from constructor)
+	// Process all pixels (using the statically initialized g_RecipLUT)
 	for (int i = 0; i < numPixels; i++)
 	{
 		unsigned char* pixel = ImagePtr + (i * PixelOffset);
@@ -625,30 +532,36 @@ void CBaseAltaLuxFilter::InjectYComponent(void* Image,
 		OldYValue = min(OldYValue, 255);
 
 		// Get enhanced luminance from processed buffer
-		int NewYValue = ImageBufferPtr[i];
+		const int NewYValue = ImageBufferPtr[i];
 
-		// Special case: avoid division by zero for black pixels
-		if (OldYValue == 0)
+		// scale ≈ (NewY << 8) / OldY, derived from the Q16 reciprocal table (no division).
+		// g_RecipLUT.table[0] is zero by value-initialization, so OldY == 0 pixels naturally
+		// produce scale == 0 → (0,0,0) output. Preserving pure black is the correct behavior
+		// for a hue-preserving scaler when there is no hue signal to preserve.
+		int scale = (NewYValue * g_RecipLUT.table[OldYValue] + (1 << 7)) >> 8;
+
+		// Cap scale so that no channel exceeds 255. Without this cap, a single saturated
+		// channel in a bright pixel clamps while the others keep climbing, which drifts
+		// the hue (e.g. orange → yellow in highlights). Capping undershoots the target
+		// luma slightly but preserves R:G:B ratios — the whole point of this pipeline.
+		const int maxChannel = max(pixel[0], max(pixel[1], pixel[2]));
+		if (maxChannel > 0)
 		{
-			// Pure black pixel - set to new luminance as grayscale
-			pixel[0] = pixel[1] = pixel[2] = static_cast<unsigned char>(NewYValue);
+			const int scaleCap = (255 << 8) / maxChannel;
+			if (scale > scaleCap) scale = scaleCap;
 		}
-		else
-		{
-			// Lookup pre-computed scale factor (eliminates division)
-			int scale = ScaleLUT[OldYValue][NewYValue];
 
-			// Apply multiplicative scaling to each channel
-			// This preserves color ratios (hue and saturation)
-			int newR = (pixel[0] * scale) >> 8;
-			int newG = (pixel[1] * scale) >> 8;
-			int newB = (pixel[2] * scale) >> 8;
+		// Apply multiplicative scaling to each channel (preserves hue and saturation).
+		// Rounding (+128) matches the rounding used when computing scale above — removes
+		// a ~½-LSB darkening bias that used to come from truncating here.
+		const int newR = (pixel[0] * scale + (1 << 7)) >> 8;
+		const int newG = (pixel[1] * scale + (1 << 7)) >> 8;
+		const int newB = (pixel[2] * scale + (1 << 7)) >> 8;
 
-			// Clamp to valid range [0, 255]
-			pixel[0] = static_cast<unsigned char>(min(newR, 255));
-			pixel[1] = static_cast<unsigned char>(min(newG, 255));
-			pixel[2] = static_cast<unsigned char>(min(newB, 255));
-		}
+		// Defensive clamp (the scale cap already bounds outputs at 255)
+		pixel[0] = static_cast<unsigned char>(min(newR, 255));
+		pixel[1] = static_cast<unsigned char>(min(newG, 255));
+		pixel[2] = static_cast<unsigned char>(min(newB, 255));
 	}
 }
 
@@ -893,8 +806,6 @@ void CBaseAltaLuxFilter::CalcGraylevelMappings(int uiY, unsigned int ulClipLimit
 		else
 			pImPointer += RegionHeight * OriginalImageWidth;
 	}
-
-	PixelType* SavedImPointer = pImPointer;
 
 	if (static_cast<unsigned int>(uiY) < NumVertRegions)
 	{
