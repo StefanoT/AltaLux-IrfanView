@@ -1,76 +1,124 @@
 # AltaLux - Image Enhancement Plugin for IrfanView
 
-AltaLux is a native IrfanView effects plugin that enhances local contrast using CLAHE
-(Contrast Limited Adaptive Histogram Equalization). The current implementation uses a
-fixed three-layer multiscale pipeline and a modern compare-first dialog with three
-high-level controls.
+AltaLux is a native IrfanView effects plugin for local contrast enhancement. It is
+built on CLAHE (Contrast Limited Adaptive Histogram Equalization), but version 2
+wraps the algorithm in a simpler user model: one overall strength control, two
+look-shaping controls, and a large before/after preview.
 
-Author: Stefano Tommesani  
-Website: http://www.tommesani.com  
-Version: 2.0.0.0  
+Author: Stefano Tommesani
+
+Website: http://www.tommesani.com
+
+Version: 2.0.0.0
+
 License: Microsoft Public License (MS-PL)
 
-## Current User Experience
+## V2 At A Glance
 
-The v2 dialog is built around a large before/after preview and three primary sliders:
+- Replaces the v1 `Intensity` and `Scale` workflow with `Strength`, `Detail`, and
+  `Natural look`.
+- Adds a large draggable before/after split preview with fit and 1:1 preview modes.
+- Adds `Natural`, `Balanced`, and `Detail` presets.
+- Introduces a fixed three-layer multiscale pipeline: fine, balanced, and smooth.
+- Uses BT.709 luminance, BGR/BGRA-aware processing, and multiplicative color
+  reinjection to reduce hue and highlight drift.
+- Preserves RGB32 alpha and keeps RGB24/RGB32 behavior aligned for the same RGB
+  content.
+- Adds SIMD accumulation/output and thresholded parallel layer processing for
+  large images.
+- Expands the Microsoft C++ unit test suite to 20 tests covering the v2 core.
 
-- **Strength**: overall enhancement amount.
-- **Detail**: shifts the blend toward the fine-detail layer.
-- **Natural look**: shifts the blend toward the smoother, more natural layer.
+## Installation
 
-The UI also includes:
+1. Build or download `AltaLux.dll`.
+2. Copy it to the IrfanView `Plugins` folder.
+   - 64-bit default: `C:\Program Files\IrfanView\Plugins\`
+   - 32-bit default: `C:\Program Files (x86)\IrfanView\Plugins\`
+3. Restart IrfanView.
+4. Open AltaLux from IrfanView's image effects menu.
 
-- A draggable vertical split preview.
-- Spacebar hold-to-compare, including when child controls have focus.
-- Double-click on the split divider to recenter it.
-- A `Zoom` toggle for fit-to-preview vs. 1:1 crop preview.
-- Three presets: `Natural`, `Balanced`, and `Detail`.
-- Short helper text under `Detail` and `Natural look`.
+Use a DLL build that matches the IrfanView architecture.
 
-The old v1 `Intensity` + `Scale` UI and preview-variation grid are no longer the
-primary interface.
+## Interactive Usage
+
+1. Open an image in IrfanView.
+2. Launch AltaLux from the effects menu.
+3. Adjust `Strength`, `Detail`, and `Natural look`.
+4. Drag the vertical divider to compare original and processed output.
+5. Hold `Space` to temporarily show the original.
+6. Double-click the divider to recenter it.
+7. Use `Natural`, `Balanced`, or `Detail` as starting presets.
+8. Use `Zoom` to switch between fit preview and 1:1 crop preview.
+9. Press `OK` to apply or `Cancel` to discard.
+
+If an IrfanView selection is active, AltaLux processes only the selected area.
+
+## Controls
+
+### Strength
+
+Controls how strongly CLAHE is applied inside the multiscale layers.
+
+- `0` is a no-op.
+- Mid values are intended for normal use.
+- High values increase local contrast but can reveal noise or make already
+  well-exposed images look less natural.
+
+### Detail
+
+Moves the layer blend toward the fine 16-region CLAHE pass. Raise it when you want
+more small-structure contrast, such as texture, scanned document detail, or fine
+shadow information.
+
+### Natural Look
+
+Moves the layer blend toward the smooth 4-region CLAHE pass. Raise it when the
+image starts looking too busy, gritty, or locally over-processed.
+
+`Detail` and `Natural look` are independent controls. They are not opposites, and
+both can be raised at the same time.
 
 ## Presets
 
 | Preset | Strength | Detail | Natural look |
-|--------|----------|--------|--------------|
+| --- | ---: | ---: | ---: |
 | Natural | 35 | 10 | 55 |
 | Balanced | 45 | 25 | 25 |
 | Detail | 55 | 60 | 10 |
 
-The default startup state is the `Balanced` preset unless saved settings override it.
+The default startup state is `Balanced` unless saved settings override it.
 
-## How The Multiscale Pipeline Works
+## Processing Model
 
-AltaLux v2 processes each image through three fixed CLAHE passes, then blends the
-three outputs and mixes the blended result back with the original image.
+AltaLux v2 processes RGB24/RGB32 image data through three fixed CLAHE passes,
+blends those layer outputs, and writes the weighted multiscale result directly.
 
-Important terminology: the constants are region counts, not pixel tile sizes.
-More regions means smaller CLAHE tiles and more local/detail-sensitive behavior.
+The layer constants are region counts, not pixel tile sizes. More regions means
+smaller CLAHE tiles and more local/detail-sensitive behavior.
 
 | Layer | Constant | Region grid | Visual role |
-|-------|----------|-------------|-------------|
-| Fine | `Constants::FineRegions` | 16 x 16 | Small tiles, more local detail and texture |
+| --- | --- | --- | --- |
+| Fine | `Constants::FineRegions` | 16 x 16 | Small tiles, local detail and texture |
 | Balanced | `Constants::BalancedRegions` | 8 x 8 | Main enhancement backbone |
-| Smooth | `Constants::SmoothRegions` | 4 x 4 | Large tiles, smoother/natural rendering |
+| Smooth | `Constants::SmoothRegions` | 4 x 4 | Larger tiles, smoother tonal rendering |
 
 The processing order in `ProcessMultiscaleImage()` is:
 
-1. Create the fine, balanced, and smooth CLAHE layer outputs.
-2. Compute blend weights from `Detail` and `Natural look`.
-3. Accumulate the weighted RGB/BGR channels into an integer accumulator.
-4. Blend the accumulated enhancement back toward the original using `Strength`.
-5. Preserve alpha for RGB32/BGRA images.
+1. Copy the source image into a layer buffer.
+2. Process the fine, balanced, and smooth CLAHE layers.
+3. Compute blend weights from `Detail` and `Natural look`.
+4. Accumulate weighted BGR channels into an integer accumulator.
+5. Write the weighted multiscale enhancement to the output image.
+6. Preserve alpha for RGB32/BGRA images.
 
-Current implementation detail: `Strength` directly controls the final blend amount.
-The CLAHE strength used inside the three layer passes is derived from `Strength`
-with a conservative non-linear curve, so high slider values do not drive the
-internal CLAHE pass all the way to `100`.
+### Layer Strength Curve
 
-Representative internal layer-strength mapping:
+`Strength` controls the CLAHE strength used inside each layer through a
+conservative non-linear curve, so high slider values do not drive the internal
+CLAHE pass to `100`.
 
-| Strength | Layer CLAHE strength |
-|----------|----------------------|
+| User strength | Internal CLAHE layer strength |
+| ---: | ---: |
 | 0 | 0 |
 | 10 | 11 |
 | 25 | 15 |
@@ -80,107 +128,62 @@ Representative internal layer-strength mapping:
 | 90 | 38 |
 | 100 | 42 |
 
-## Blend Weights
+### Blend Weights
 
-`ComputeBlendWeights()` derives layer weights from the two shaping sliders:
+`ComputeBlendWeights()` starts from these base weights:
 
-- Base weights: fine `0.15`, balanced `0.60`, smooth `0.25`.
-- `Detail` can shift up to `0.35` toward fine.
-- `Natural look` can shift up to `0.35` toward smooth.
-- Balanced is floored at `0.20`.
-- Weights are normalized internally.
+| Layer | Base weight |
+| --- | ---: |
+| Fine | 0.15 |
+| Balanced | 0.60 |
+| Smooth | 0.25 |
 
-`Detail` and `Natural look` are independent. They are not opposites, and both can be
-raised at the same time.
+`Detail` can shift up to `0.35` toward the fine layer. `Natural look` can shift up
+to `0.35` toward the smooth layer. The balanced layer is floored at `0.20`, and
+weights are normalized before processing.
 
-## Color Processing
+## Color And Format Handling
 
-Windows DIB data is handled as BGR/BGRA in the plugin path. The multiscale pipeline
-routes layer processing through the BGR filter variants so luminance coefficients
-match the actual byte order.
+Windows DIB image data is handled as BGR/BGRA in the plugin path. The v2 pipeline
+routes layer processing through the BGR filter variants so the luminance
+coefficients match the actual channel order.
 
 The CLAHE filter:
 
 1. Extracts luminance using BT.709 coefficients:
    `Y = 0.2126 R + 0.7152 G + 0.0722 B`.
 2. Applies CLAHE to the luminance buffer.
-3. Reinjects luminance through multiplicative color scaling.
-4. Uses a Q16 reciprocal lookup table to avoid per-pixel division.
-5. Caps the scale factor to avoid channel overflow and hue drift in highlights.
+3. Reinjects luminance by multiplicative color scaling.
+4. Uses a Q16 reciprocal lookup table instead of per-pixel division.
+5. Caps the scale factor so saturated highlights do not drift in hue.
 
-This is not the old additive `R/G/B + deltaY` model.
+This is not the old additive `R/G/B + deltaY` model. It is designed to preserve
+channel ratios better while still enhancing local contrast.
 
-## Performance
+## Performance And Memory
 
-The default single-scale CLAHE implementation is `CParallelSplitLoopAltaLuxFilter`.
-The v2 pipeline runs three CLAHE passes, so it is more expensive than v1.
+Version 2 does more work than the old single-scale path because it runs three
+CLAHE passes. The implementation adds several compensating optimizations:
 
-Additional v2 optimizations currently implemented:
+- SIMD accumulation and output paths for RGB24/RGB32 buffers.
+- Sequential layer processing for smaller images to avoid task and allocation
+  overhead.
+- Blocked parallel accumulation/output for images at or above 200,000 pixels.
+- Parallel processing of the fine, balanced, and smooth layer passes for images at
+  or above 1,000,000 pixels.
+- A 1 KiB reciprocal lookup table for color scaling, replacing the older 64 KiB
+  two-dimensional scale table.
+- SSE intrinsic implementations for legacy packed YUV luma paths instead of
+  32-bit inline assembly.
 
-- SIMD accumulation and final blend paths.
-- Sequential layer processing for small images to avoid unnecessary task and memory overhead.
-- Parallel layer processing for images at or above `1,000,000` pixels using
-  `concurrency::parallel_invoke`.
-- Blocked parallel accumulation/blending for larger buffers.
-
-The thresholded layer strategy means:
-
-- Preview-sized images usually use the memory-efficient sequential layer path.
-- Large final images can process fine, balanced, and smooth layers concurrently.
-- Three separate layer buffers are allocated only for the large-image parallel path.
-
-Performance can still be memory-bandwidth limited because each layer is a full image
-buffer and the CLAHE filters are internally parallel too.
-
-## Memory Use
-
-For RGB24/RGB32 multiscale processing, the core allocations are:
+For RGB24/RGB32 multiscale processing, the main allocations are:
 
 - An accumulator with three `uint32` values per pixel.
-- A scratch layer buffer for the sequential path.
-- Three layer buffers for the large-image parallel path.
+- One scratch layer buffer for the sequential layer path.
+- Three full layer buffers for the large-image parallel layer path.
 - CLAHE internal luminance buffers and histogram mapping arrays.
 
-For large images, the parallel layer path intentionally trades memory for wall-clock
-latency.
-
-## Installation
-
-1. Build or download `AltaLux.dll`.
-2. Copy it to the IrfanView `Plugins` folder.
-   - 64-bit default: `C:\Program Files\IrfanView\Plugins\`
-   - 32-bit default: `C:\Program Files (x86)\IrfanView\Plugins\`
-3. Restart IrfanView.
-4. Open from IrfanView's image effects menu.
-
-Use a DLL build that matches the IrfanView architecture.
-
-## Interactive Usage
-
-1. Open an image in IrfanView.
-2. Launch AltaLux from the effects menu.
-3. Adjust `Strength`, `Detail`, and `Natural look`.
-4. Drag the preview split divider to compare original vs. processed.
-5. Hold `Space` to temporarily show the original.
-6. Use `Natural`, `Balanced`, or `Detail` presets as starting points.
-7. Use `Zoom` to switch between fit preview and 1:1 crop preview.
-8. Press `OK` to apply or `Cancel` to discard.
-
-If an IrfanView selection is active, AltaLux processes only the selected/cropped area.
-
-## Direct Invocation / Batch Parameters
-
-The current direct/non-dialog path is intentionally simplified for v2. It no longer
-preserves the old v1 `(Intensity, Scale)` parameter model.
-
-When AltaLux is invoked with parameters instead of opening the dialog:
-
-- `param1` initializes `Strength`.
-- `Detail` uses the default value `25`.
-- `Natural look` uses the default value `25`.
-- `param2` is not used as a scale/tile parameter.
-
-This is a breaking change from v1 and is intentional for the current implementation.
+The large-image path intentionally trades memory for wall-clock latency.
 
 ## Settings
 
@@ -194,15 +197,37 @@ NaturalLook=25
 Zoom=0
 ```
 
-The old `Intensity` key is read as a fallback only when `Strength` is absent.
-The old `Scale` setting is not surfaced in the v2 UI or parameter model.
+The old `Intensity` key is read as a fallback only when `Strength` is absent. The
+old `Scale` setting is not surfaced in the v2 UI or parameter model.
+
+## Direct Invocation And Batch Parameters
+
+The current non-dialog path is intentionally simplified for v2. It no longer
+preserves the old v1 `(Intensity, Scale)` parameter model.
+
+When AltaLux is invoked with parameters instead of opening the dialog:
+
+- `param1` initializes `Strength`.
+- `Detail` uses the default value `25`.
+- `Natural look` uses the default value `25`.
+- `param2` is accepted by the IrfanView effect signature but no longer controls
+  CLAHE scale or tile count.
+
+Example:
+
+```text
+i_view32.exe /effect=(AltaLux,45,0) input.jpg
+```
+
+This is a breaking behavior change for scripts that relied on `param2` as the v1
+scale value.
 
 ## Project Structure
 
 ```text
 AltaLux/
   AltaLux.cpp                 IrfanView plugin entry points and Win32 dialog
-  AltaLuxCore.cpp/.h          v2 state, weights, geometry, multiscale processing
+  AltaLuxCore.cpp/.h          v2 UI state, presets, geometry, and processing core
   ScopedBitmapHeader.h        RAII wrapper around DIB GlobalLock/GlobalUnlock
   UIDraw/
     UIDraw.cpp/.h             preview rendering and split comparison drawing
@@ -219,16 +244,21 @@ AltaLuxBench/
   legacy benchmark project
 ```
 
+The root `README.md` is the current v2 guide. The older `AltaLux/README.md` file
+has been removed so there is one canonical README.
+
 ## Building
 
 Requirements:
 
-- Visual Studio with MSVC toolset `v143` or newer.
-- Windows SDK 10.
-- Microsoft C++ Unit Test framework for the test project.
+- Visual Studio with the MSVC toolsets referenced by the project files.
+  - Most current configurations target `v145`.
+  - The legacy Win32 Debug configuration targets `v141_xp`.
+- Windows SDK 10 or newer.
+- Microsoft C++ Unit Test framework for `AltaLuxUnitTest`.
 
-The project files still contain legacy output paths targeting IrfanView plugin
-folders. For local development it is safer to override `OutDir` and `IntDir`.
+If your Visual Studio installation does not include the exact toolset, retarget
+`PlatformToolset` in the project properties before building.
 
 Example x64 plugin build:
 
@@ -262,26 +292,28 @@ Run tests with:
   ".test-out\AltaLuxUnitTest.dll"
 ```
 
+Adjust the Visual Studio path if your installation uses a different edition or
+version.
+
 ## Tests
 
-The current unit test suite covers:
+The current unit test suite contains 20 tests. Coverage includes:
 
 - Serial vs. parallel CLAHE strategy equivalence.
-- Presets and preset tolerance.
-- Blend-weight normalization and balanced floor.
+- Preset application and preset tolerance.
+- Blend-weight normalization and balanced-layer floor.
 - Conservative non-linear layer-strength mapping.
 - Independent `Detail` and `Natural look` behavior.
 - Safe layer region clamping.
-- Fine/balanced/smooth region ordering.
-- Preview rectangle fitting.
+- Fine/balanced/smooth layer ordering.
+- Preview rectangle fitting and 1:1 crop mode.
 - Zero-strength no-op behavior.
 - RGB32 alpha preservation.
 - RGB24/RGB32 consistency for identical RGB content.
-- `Detail` sensitivity on checkerboard input.
-- `Natural look` sensitivity on gradient input.
-- A `1024 x 1024` image path that exercises the parallel-layer threshold.
-
-At the time of this update, the test suite contains 20 tests.
+- Flat-image grayscale behavior.
+- Detail sensitivity on checkerboard input.
+- Natural-look sensitivity on gradient input.
+- The large-image parallel-layer path above the 1,000,000-pixel threshold.
 
 ## Troubleshooting
 
@@ -308,29 +340,39 @@ At the time of this update, the test suite contains 20 tests.
 
 - Use a Release build for normal use.
 - Large images run three CLAHE passes.
-- The large-image path parallelizes the three layer passes, but performance can still be limited by memory bandwidth.
+- The large-image path parallelizes the three layer passes, but performance can
+  still be limited by memory bandwidth.
 
 **Preview and final output differ slightly**
 
-- Preview processing uses a scaled working image.
+- Preview processing uses a scaled working image for responsiveness.
 - Final apply processes the selected/full-resolution region.
 
 ## Changelog
 
 ### Version 2.0.0.0
 
-- Replaced v1 `Intensity` + `Scale` UI with `Strength`, `Detail`, and `Natural look`.
+- Replaced the v1 `Intensity` and `Scale` UI with `Strength`, `Detail`, and
+  `Natural look`.
 - Removed the preview-variation grid from the primary workflow.
-- Added large before/after split preview with draggable divider.
+- Added a large before/after split preview with draggable divider.
 - Added spacebar hold-to-compare and split double-click recenter.
-- Added Natural/Balanced/Detail presets.
-- Added fixed three-layer multiscale pipeline.
+- Added fit and 1:1 zoom preview modes.
+- Added `Natural`, `Balanced`, and `Detail` presets.
+- Added the shared `AltaLuxCore` module for v2 state, presets, geometry,
+  weights, and multiscale processing.
+- Added fixed fine, balanced, and smooth CLAHE layers.
 - Added conservative non-linear internal CLAHE strength mapping.
-- Corrected layer semantics: fine = 16 regions, balanced = 8 regions, smooth = 4 regions.
+- Corrected layer semantics: fine = 16 regions, balanced = 8 regions, smooth =
+  4 regions.
 - Added BT.709 luminance extraction and BGR/BGRA routing for Windows DIB data.
-- Added SIMD accumulation/blending.
-- Added thresholded parallel processing for the three independent CLAHE layer passes.
-- Added Microsoft C++ unit coverage for core v2 behavior and parallel-layer threshold.
+- Added hue-preserving scale capping for highlight handling.
+- Added SIMD accumulation/output and thresholded parallel multiscale work.
+- Replaced the older 64 KiB color scale table with a 1 KiB reciprocal table.
+- Modernized packed YUV luma copy/writeback paths with SSE intrinsics.
+- Preserved RGB32 alpha in v2 processing.
+- Updated project files to include `AltaLuxCore` and newer MSVC toolsets.
+- Expanded Microsoft C++ unit coverage for core v2 behavior.
 
 ### Version 1.9.1.92
 
@@ -338,6 +380,7 @@ At the time of this update, the test suite contains 20 tests.
 - Preview variation grid.
 - Dark mode support.
 - Multiple parallel CLAHE strategies.
+- Multiplicative color reinjection for improved color preservation.
 
 ### Version 1.0
 

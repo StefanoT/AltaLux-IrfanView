@@ -56,7 +56,7 @@ namespace
 		return false;
 	}
 
-	// -------- SIMD helpers for multiscale accumulate/blend --------
+	// -------- SIMD helpers for multiscale accumulate/writeback --------
 	// accum is laid out as 3 × uint32 per pixel (interleaved BGR). Each helper processes
 	// 4 pixels = 12 int32 = three __m128i registers. Uses SSE4.1 (_mm_mullo_epi32,
 	// _mm_packus_epi32, _mm_extract_epi32) and SSSE3 (_mm_shuffle_epi8); the filter code
@@ -109,32 +109,12 @@ namespace
 		}
 	}
 
-	inline void BlendChunk4(unsigned char* targetChunk, const unsigned char* sourceChunk,
-		const unsigned int* accumChunk, __m128 strengthVec, int bitDepth)
+	inline void WriteChunk4(unsigned char* targetChunk, const unsigned int* accumChunk, int bitDepth)
 	{
 		const __m128i zero = _mm_setzero_si128();
 		const __m128i roundingVec = _mm_set1_epi32(kWeightHalf);
-		const __m128 halfVec = _mm_set1_ps(0.5f);
 
-		// Unpack source BGR into 3 × __m128i of 32-bit ints (mirror of AccumulateChunk4)
-		__m128i srcBgr;
-		if (bitDepth == 3)
-		{
-			srcBgr = _mm_loadu_si128(reinterpret_cast<const __m128i*>(sourceChunk));
-		}
-		else
-		{
-			const __m128i bgrExtract = _mm_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
-			const __m128i bgraBytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(sourceChunk));
-			srcBgr = _mm_shuffle_epi8(bgraBytes, bgrExtract);
-		}
-		const __m128i sLo16 = _mm_unpacklo_epi8(srcBgr, zero);
-		const __m128i sHi16 = _mm_unpackhi_epi8(srcBgr, zero);
-		const __m128i sV0 = _mm_unpacklo_epi16(sLo16, zero);
-		const __m128i sV1 = _mm_unpackhi_epi16(sLo16, zero);
-		const __m128i sV2 = _mm_unpacklo_epi16(sHi16, zero);
-
-		// enhanced = (accum + weightHalf) >> 10
+		// Output the weighted multiscale CLAHE result directly.
 		const __m128i a0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 0));
 		const __m128i a1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 4));
 		const __m128i a2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 8));
@@ -142,23 +122,9 @@ namespace
 		const __m128i e1 = _mm_srli_epi32(_mm_add_epi32(a1, roundingVec), kWeightScaleLog2);
 		const __m128i e2 = _mm_srli_epi32(_mm_add_epi32(a2, roundingVec), kWeightScaleLog2);
 
-		// result = src + strength01 * (enhanced - src) + 0.5, truncated → round-to-nearest
-		const __m128 sF0 = _mm_cvtepi32_ps(sV0);
-		const __m128 sF1 = _mm_cvtepi32_ps(sV1);
-		const __m128 sF2 = _mm_cvtepi32_ps(sV2);
-		const __m128 eF0 = _mm_cvtepi32_ps(e0);
-		const __m128 eF1 = _mm_cvtepi32_ps(e1);
-		const __m128 eF2 = _mm_cvtepi32_ps(e2);
-		const __m128 r0 = _mm_add_ps(_mm_add_ps(sF0, _mm_mul_ps(strengthVec, _mm_sub_ps(eF0, sF0))), halfVec);
-		const __m128 r1 = _mm_add_ps(_mm_add_ps(sF1, _mm_mul_ps(strengthVec, _mm_sub_ps(eF1, sF1))), halfVec);
-		const __m128 r2 = _mm_add_ps(_mm_add_ps(sF2, _mm_mul_ps(strengthVec, _mm_sub_ps(eF2, sF2))), halfVec);
-		const __m128i i0 = _mm_cvttps_epi32(r0);
-		const __m128i i1 = _mm_cvttps_epi32(r1);
-		const __m128i i2 = _mm_cvttps_epi32(r2);
-
 		// Pack 32→16 (saturating) and 16→8 (saturating) — this handles clamp to [0,255]
-		const __m128i p01 = _mm_packus_epi32(i0, i1);
-		const __m128i p2z = _mm_packus_epi32(i2, zero);
+		const __m128i p01 = _mm_packus_epi32(e0, e1);
+		const __m128i p2z = _mm_packus_epi32(e2, zero);
 		const __m128i packed = _mm_packus_epi16(p01, p2z);
 
 		if (bitDepth == 3)
@@ -204,23 +170,16 @@ namespace
 		}
 	}
 
-	inline void BlendPixelScalar(unsigned char* target, const unsigned char* source,
-		const unsigned int* accum, int pixelIndex, int bitDepth, float strength01)
+	inline void WritePixelScalar(unsigned char* target, const unsigned int* accum, int pixelIndex, int bitDepth)
 	{
 		const int channelBase = pixelIndex * bitDepth;
 		const int accumIdx = pixelIndex * 3;
 		const int e0 = static_cast<int>((accum[accumIdx]     + kWeightHalf) >> kWeightScaleLog2);
 		const int e1 = static_cast<int>((accum[accumIdx + 1] + kWeightHalf) >> kWeightScaleLog2);
 		const int e2 = static_cast<int>((accum[accumIdx + 2] + kWeightHalf) >> kWeightScaleLog2);
-		const int s0 = source[channelBase];
-		const int s1 = source[channelBase + 1];
-		const int s2 = source[channelBase + 2];
-		const int r0 = static_cast<int>(s0 + strength01 * (e0 - s0) + 0.5f);
-		const int r1 = static_cast<int>(s1 + strength01 * (e1 - s1) + 0.5f);
-		const int r2 = static_cast<int>(s2 + strength01 * (e2 - s2) + 0.5f);
-		target[channelBase]     = static_cast<unsigned char>(ClampInt(r0, 0, 255));
-		target[channelBase + 1] = static_cast<unsigned char>(ClampInt(r1, 0, 255));
-		target[channelBase + 2] = static_cast<unsigned char>(ClampInt(r2, 0, 255));
+		target[channelBase]     = static_cast<unsigned char>(ClampInt(e0, 0, 255));
+		target[channelBase + 1] = static_cast<unsigned char>(ClampInt(e1, 0, 255));
+		target[channelBase + 2] = static_cast<unsigned char>(ClampInt(e2, 0, 255));
 		// bitDepth == 4: target[channelBase + 3] is already correct from the initial memcpy
 	}
 
@@ -245,21 +204,19 @@ namespace
 		}
 	}
 
-	void BlendRange(unsigned char* target, const unsigned char* source, const unsigned int* accum,
-		int pStart, int pEnd, int bitDepth, float strength01)
+	void WriteRange(unsigned char* target, const unsigned int* accum, int pStart, int pEnd, int bitDepth)
 	{
-		const __m128 strengthVec = _mm_set1_ps(strength01);
 		int p = pStart;
 		const int simdStep = 4;
 		const int simdGuard = (bitDepth == 3) ? 8 : 4;
 		while (p + simdGuard <= pEnd)
 		{
-			BlendChunk4(target + p * bitDepth, source + p * bitDepth, accum + p * 3, strengthVec, bitDepth);
+			WriteChunk4(target + p * bitDepth, accum + p * 3, bitDepth);
 			p += simdStep;
 		}
 		for (; p < pEnd; ++p)
 		{
-			BlendPixelScalar(target, source, accum, p, bitDepth, strength01);
+			WritePixelScalar(target, accum, p, bitDepth);
 		}
 	}
 
@@ -535,10 +492,9 @@ bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* tar
 		return false;
 	}
 
-	const float strength01 = static_cast<float>(state.strength) / 100.0f;
 	RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 	{
-		BlendRange(targetImage, sourceImage, accum.get(), pStart, pEnd, bitDepth, strength01);
+		WriteRange(targetImage, accum.get(), pStart, pEnd, bitDepth);
 	});
 
 	return true;
