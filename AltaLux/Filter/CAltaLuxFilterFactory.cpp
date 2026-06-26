@@ -31,9 +31,6 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "CBaseAltaLuxFilter.h"
 #include "CSerialAltaLuxFilter.h"
 #include "CParallelSplitLoopAltaLuxFilter.h"
-#include "CParallelErrorAltaLuxFilter.h"
-#include "CParallelEventAltaLuxFilter.h"
-#include "CParallelActiveWaitAltaLuxFilter.h"
 
 #ifdef ENABLE_LOGGING
 #include "..\Log\easylogging++.h"
@@ -70,15 +67,6 @@ CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateSpecificAltaLuxFilter(int Filte
 		switch (FilterType)
 		{
 		case ALTALUX_FILTER_SERIAL: NewFilterInstance = new CSerialAltaLuxFilter(Width, Height, HorSlices, VerSlices);
-			break;
-		case ALTALUX_FILTER_PARALLEL_ERROR: NewFilterInstance = new CParallelErrorAltaLuxFilter(
-			Width, Height, HorSlices, VerSlices);
-			break;
-		case ALTALUX_FILTER_PARALLEL_EVENT: NewFilterInstance = new CParallelEventAltaLuxFilter(
-			Width, Height, HorSlices, VerSlices);
-			break;
-		case ALTALUX_FILTER_ACTIVE_WAIT: NewFilterInstance = new CParallelActiveWaitAltaLuxFilter(
-			Width, Height, HorSlices, VerSlices);
 			break;
 		case ALTALUX_FILTER_DEFAULT:
 		case ALTALUX_FILTER_PARALLEL_SPLIT_LOOP:

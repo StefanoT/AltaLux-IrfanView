@@ -27,6 +27,8 @@ A "contributor" is any person that distributes its contribution under this licen
 
 #pragma once
 
+#include "..\Kernels\AltaLuxKernels.h"
+
 //=============================================================================
 // CLAHE (Contrast Limited Adaptive Histogram Equalization) Filter
 //=============================================================================
@@ -261,6 +263,12 @@ public:
 	/// @note Higher values provide more dramatic contrast but may amplify noise
 	/// @see AL_MIN_STRENGTH, AL_DEFAULT_STRENGTH, AL_MAX_STRENGTH
 	void SetStrength(int _Strength = AL_DEFAULT_STRENGTH);
+
+	/// @brief Select scalar C++, SSE2, or AVX2 kernels for format conversion
+	void SetKernelImplementation(AltaLuxKernels::KernelImplementation implementation);
+
+	/// @brief Return the selected scalar/SIMD kernel implementation
+	AltaLuxKernels::KernelImplementation GetKernelImplementation() const;
 	
 	/// @brief Set the number of tiles (contextual regions)
 	/// @param HorSlices Number of horizontal tiles (2-16)
@@ -390,8 +398,14 @@ protected:
 	/// Internal buffer for grayscale processing (allocated on demand)
 	unsigned char* ImageBuffer;
 
+	/// Original RGB/BGR luma cached before CLAHE overwrites ImageBuffer
+	unsigned char* OriginalLumaBuffer;
+
 	/// Current processing strength (0-100)
 	int Strength;
+
+	/// Scalar/SIMD kernel implementation used by format conversion helpers
+	AltaLuxKernels::KernelImplementation KernelImplementationMode;
 
 	//-------------------------------------------------------------------------
 	// Tile Configuration
@@ -523,7 +537,7 @@ protected:
 	/// @param ThirdFactor Scaling factor for third color component
 	/// @param PixelOffset Bytes per pixel (3 for RGB24, 4 for RGB32)
 	/// @details Preserves color (hue and saturation) while applying luminance enhancement:
-	///          1. Calculate original Y from current RGB
+	///          1. Reuse original Y cached during RGB/BGR extraction
 	///          2. Lookup pre-computed scale factor from table (eliminates division)
 	///          3. Apply multiplicative scaling: R' = R × scale, G' = G × scale, B' = B × scale
 	///          4. Clamp each channel to [0, 255]
@@ -532,6 +546,7 @@ protected:
 	/// @note Called after CLAHE processing to apply enhancement to color image
 	/// @note Black pixels (Y=0) are handled specially to avoid division by zero
 	/// @note Lookup table initialized once on first call (one-time cost)
-	void InjectYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor, int PixelOffset);
+	void InjectYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor,
+		int PixelOffset, const unsigned char* OriginalLuma);
 
 };

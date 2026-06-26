@@ -1,6 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include <Windows.h>
+
+#include "Kernels/AltaLuxKernels.h"
 
 struct UiState
 {
@@ -31,8 +33,8 @@ struct Preset
 
 struct Constants
 {
-	static constexpr int Rgb24PixelSize = 3;
-	static constexpr int Rgb32PixelSize = 4;
+	static constexpr int RGB24PixelSize = 3;
+	static constexpr int RGB32PixelSize = 4;
 
 	static constexpr int FineRegions = 16;
 	static constexpr int BalancedRegions = 8;
@@ -43,7 +45,7 @@ struct Constants
 	static constexpr int DefaultNatural = 25;
 
 	static constexpr int MinLayerStrength = 10;
-	static constexpr int MaxLayerStrength = 42;
+	static constexpr int MaxLayerStrength = 100;
 
 	static constexpr float BaseFine = 0.15f;
 	static constexpr float BaseBalanced = 0.60f;
@@ -64,3 +66,6 @@ RECT FitImageRect(const RECT& container, int imageWidth, int imageHeight);
 RECT GetPreviewImageRect(int imageWidth, int imageHeight, const RECT& rectPosition, bool noRescaling);
 bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* targetImage, int width, int height,
 	int bitDepth, const UiState& state);
+bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigned char* targetImage,
+	int width, int height, int bitDepth, const UiState& state,
+	AltaLuxKernels::KernelImplementation implementation);

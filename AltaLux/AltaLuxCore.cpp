@@ -7,7 +7,6 @@
 #include <memory>
 #include <vector>
 
-#include <immintrin.h>
 #include <ppl.h>
 
 #include "Filter/CAltaLuxFilterFactory.h"
@@ -32,7 +31,8 @@ namespace
 		return std::unique_ptr<CBaseAltaLuxFilter>(CAltaLuxFilterFactory::CreateAltaLuxFilter(width, height, regions, regions));
 	}
 
-	bool ProcessSingleLayer(unsigned char* image, int width, int height, int bitDepth, int regions, int strength)
+	bool ProcessSingleLayer(unsigned char* image, int width, int height, int bitDepth, int regions, int strength,
+		AltaLuxKernels::KernelImplementation implementation)
 	{
 		auto filter = CreateFilter(width, height, GetSafeLayerRegions(width, height, regions, MIN_HOR_REGIONS, MAX_HOR_REGIONS));
 		if (!filter)
@@ -41,183 +41,20 @@ namespace
 		}
 
 		filter->SetStrength(strength);
+		filter->SetKernelImplementation(implementation);
 		// Windows DIBs are BGR-ordered, so route to the BGR variants to keep
 		// the BT.709 luma coefficients aligned with the actual channel bytes.
-		if (bitDepth == Constants::Rgb32PixelSize)
+		if (bitDepth == Constants::RGB32PixelSize)
 		{
 			return filter->ProcessBGR32(image) == AL_OK;
 		}
 
-		if (bitDepth == Constants::Rgb24PixelSize)
+		if (bitDepth == Constants::RGB24PixelSize)
 		{
 			return filter->ProcessBGR24(image) == AL_OK;
 		}
 
 		return false;
-	}
-
-	// -------- SIMD helpers for multiscale accumulate/writeback --------
-	// accum is laid out as 3 × uint32 per pixel (interleaved BGR). Each helper processes
-	// 4 pixels = 12 int32 = three __m128i registers. Uses SSE4.1 (_mm_mullo_epi32,
-	// _mm_packus_epi32, _mm_extract_epi32) and SSSE3 (_mm_shuffle_epi8); the filter code
-	// already assumes this baseline.
-
-	inline void AccumulateChunk4(unsigned int* accumChunk, const unsigned char* layerChunk,
-		__m128i weightVec, int bitDepth, bool firstLayer)
-	{
-		const __m128i zero = _mm_setzero_si128();
-
-		__m128i bgrBytes;
-		if (bitDepth == 3)
-		{
-			// 12 valid BGR bytes + 4 junk bytes (caller guarantees the overread is safe)
-			bgrBytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(layerChunk));
-		}
-		else
-		{
-			// 4 pixels × 4 bytes BGRA; shuffle away the alpha bytes
-			const __m128i bgrExtract = _mm_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
-			const __m128i bgraBytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(layerChunk));
-			bgrBytes = _mm_shuffle_epi8(bgraBytes, bgrExtract);
-		}
-
-		const __m128i lo16 = _mm_unpacklo_epi8(bgrBytes, zero);
-		const __m128i hi16 = _mm_unpackhi_epi8(bgrBytes, zero);
-		const __m128i v0 = _mm_unpacklo_epi16(lo16, zero);
-		const __m128i v1 = _mm_unpackhi_epi16(lo16, zero);
-		const __m128i v2 = _mm_unpacklo_epi16(hi16, zero);
-
-		const __m128i w0 = _mm_mullo_epi32(v0, weightVec);
-		const __m128i w1 = _mm_mullo_epi32(v1, weightVec);
-		const __m128i w2 = _mm_mullo_epi32(v2, weightVec);
-
-		if (firstLayer)
-		{
-			// Assign-store: skips the need to zero-initialize accum before the first layer
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(accumChunk + 0), w0);
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(accumChunk + 4), w1);
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(accumChunk + 8), w2);
-		}
-		else
-		{
-			const __m128i a0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 0));
-			const __m128i a1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 4));
-			const __m128i a2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 8));
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(accumChunk + 0), _mm_add_epi32(a0, w0));
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(accumChunk + 4), _mm_add_epi32(a1, w1));
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(accumChunk + 8), _mm_add_epi32(a2, w2));
-		}
-	}
-
-	inline void WriteChunk4(unsigned char* targetChunk, const unsigned int* accumChunk, int bitDepth)
-	{
-		const __m128i zero = _mm_setzero_si128();
-		const __m128i roundingVec = _mm_set1_epi32(kWeightHalf);
-
-		// Output the weighted multiscale CLAHE result directly.
-		const __m128i a0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 0));
-		const __m128i a1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 4));
-		const __m128i a2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(accumChunk + 8));
-		const __m128i e0 = _mm_srli_epi32(_mm_add_epi32(a0, roundingVec), kWeightScaleLog2);
-		const __m128i e1 = _mm_srli_epi32(_mm_add_epi32(a1, roundingVec), kWeightScaleLog2);
-		const __m128i e2 = _mm_srli_epi32(_mm_add_epi32(a2, roundingVec), kWeightScaleLog2);
-
-		// Pack 32→16 (saturating) and 16→8 (saturating) — this handles clamp to [0,255]
-		const __m128i p01 = _mm_packus_epi32(e0, e1);
-		const __m128i p2z = _mm_packus_epi32(e2, zero);
-		const __m128i packed = _mm_packus_epi16(p01, p2z);
-
-		if (bitDepth == 3)
-		{
-			// 12 bytes of BGR laid out contiguously; store 8 + 4
-			_mm_storel_epi64(reinterpret_cast<__m128i*>(targetChunk), packed);
-			const int upperQuad = _mm_extract_epi32(packed, 2);
-			memcpy(targetChunk + 8, &upperQuad, 4);
-		}
-		else
-		{
-			// Re-interleave BGR with the alpha bytes already in target (copied from source earlier)
-			const __m128i bgraExpand = _mm_setr_epi8(0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1);
-			const __m128i bgraBody = _mm_shuffle_epi8(packed, bgraExpand);
-			const __m128i alphaMask = _mm_setr_epi8(0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0, -1);
-			const __m128i targetOrig = _mm_loadu_si128(reinterpret_cast<const __m128i*>(targetChunk));
-			const __m128i keepAlpha = _mm_and_si128(targetOrig, alphaMask);
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(targetChunk), _mm_or_si128(bgraBody, keepAlpha));
-		}
-	}
-
-	// Scalar fallbacks for 0–7 trailing pixels that can't safely run through SIMD.
-
-	inline void AccumulatePixelScalar(unsigned int* accum, const unsigned char* layer,
-		int pixelIndex, int bitDepth, int weight, bool firstLayer)
-	{
-		const int channelBase = pixelIndex * bitDepth;
-		const int accumIdx = pixelIndex * 3;
-		const unsigned int c0 = static_cast<unsigned int>(weight * layer[channelBase]);
-		const unsigned int c1 = static_cast<unsigned int>(weight * layer[channelBase + 1]);
-		const unsigned int c2 = static_cast<unsigned int>(weight * layer[channelBase + 2]);
-		if (firstLayer)
-		{
-			accum[accumIdx]     = c0;
-			accum[accumIdx + 1] = c1;
-			accum[accumIdx + 2] = c2;
-		}
-		else
-		{
-			accum[accumIdx]     += c0;
-			accum[accumIdx + 1] += c1;
-			accum[accumIdx + 2] += c2;
-		}
-	}
-
-	inline void WritePixelScalar(unsigned char* target, const unsigned int* accum, int pixelIndex, int bitDepth)
-	{
-		const int channelBase = pixelIndex * bitDepth;
-		const int accumIdx = pixelIndex * 3;
-		const int e0 = static_cast<int>((accum[accumIdx]     + kWeightHalf) >> kWeightScaleLog2);
-		const int e1 = static_cast<int>((accum[accumIdx + 1] + kWeightHalf) >> kWeightScaleLog2);
-		const int e2 = static_cast<int>((accum[accumIdx + 2] + kWeightHalf) >> kWeightScaleLog2);
-		target[channelBase]     = static_cast<unsigned char>(ClampInt(e0, 0, 255));
-		target[channelBase + 1] = static_cast<unsigned char>(ClampInt(e1, 0, 255));
-		target[channelBase + 2] = static_cast<unsigned char>(ClampInt(e2, 0, 255));
-		// bitDepth == 4: target[channelBase + 3] is already correct from the initial memcpy
-	}
-
-	void AccumulateRange(unsigned int* accum, const unsigned char* layer,
-		int pStart, int pEnd, int bitDepth, int weight, bool firstLayer)
-	{
-		const __m128i weightVec = _mm_set1_epi32(weight);
-		int p = pStart;
-		// 24bpp loads 16 bytes per 4-pixel chunk but only 12 are valid → guarantee at least
-		// 4 more pixels remain so the 4-byte overread stays inside the buffer.
-		// 32bpp loads exactly 16 bytes per 4-pixel chunk → no overread.
-		const int simdStep = 4;
-		const int simdGuard = (bitDepth == 3) ? 8 : 4;
-		while (p + simdGuard <= pEnd)
-		{
-			AccumulateChunk4(accum + p * 3, layer + p * bitDepth, weightVec, bitDepth, firstLayer);
-			p += simdStep;
-		}
-		for (; p < pEnd; ++p)
-		{
-			AccumulatePixelScalar(accum, layer, p, bitDepth, weight, firstLayer);
-		}
-	}
-
-	void WriteRange(unsigned char* target, const unsigned int* accum, int pStart, int pEnd, int bitDepth)
-	{
-		int p = pStart;
-		const int simdStep = 4;
-		const int simdGuard = (bitDepth == 3) ? 8 : 4;
-		while (p + simdGuard <= pEnd)
-		{
-			WriteChunk4(target + p * bitDepth, accum + p * 3, bitDepth);
-			p += simdStep;
-		}
-		for (; p < pEnd; ++p)
-		{
-			WritePixelScalar(target, accum, p, bitDepth);
-		}
 	}
 
 	template<typename BlockFn>
@@ -381,8 +218,9 @@ RECT GetPreviewImageRect(int imageWidth, int imageHeight, const RECT& rectPositi
 	return FitImageRect(rectPosition, imageWidth, imageHeight);
 }
 
-bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* targetImage, int width, int height,
-	int bitDepth, const UiState& state)
+bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigned char* targetImage,
+	int width, int height, int bitDepth, const UiState& state,
+	AltaLuxKernels::KernelImplementation implementation)
 {
 	if (sourceImage == nullptr || targetImage == nullptr)
 	{
@@ -394,7 +232,7 @@ bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* tar
 		return false;
 	}
 
-	if (bitDepth != Constants::Rgb24PixelSize && bitDepth != Constants::Rgb32PixelSize)
+	if (bitDepth != Constants::RGB24PixelSize && bitDepth != Constants::RGB32PixelSize)
 	{
 		return false;
 	}
@@ -422,23 +260,24 @@ bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* tar
 	// accum holds per-channel weighted sums as uint32. Allocated via plain new[] rather
 	// than std::vector — the size constructor of std::vector value-initializes (zeroes),
 	// which on large images is a 100+ MB memset we don't need because the fine-layer
-	// pass assigns every element (see firstLayer branch in AccumulateChunk4).
+		// pass assigns every element through the firstLayer branch in the kernel layer.
 	// layerBuffer likewise gets fully overwritten by the memcpy at the top of
 	// accumulateLayer, so its initial contents don't matter.
 	std::unique_ptr<unsigned int[]> accum(new unsigned int[static_cast<size_t>(pixelCount) * 3U]);
 	std::unique_ptr<unsigned char[]> layerBuffer(new unsigned char[static_cast<size_t>(byteCount)]);
 
-	auto processLayerToBuffer = [&](unsigned char* buffer, int regions) -> bool
-	{
-		memcpy(buffer, sourceImage, byteCount);
-		return ProcessSingleLayer(buffer, width, height, bitDepth, regions, layerStrength);
-	};
+		auto processLayerToBuffer = [&](unsigned char* buffer, int regions) -> bool
+		{
+			memcpy(buffer, sourceImage, byteCount);
+			return ProcessSingleLayer(buffer, width, height, bitDepth, regions, layerStrength, implementation);
+		};
 
 	auto accumulateProcessedLayer = [&](const unsigned char* buffer, int weight, bool firstLayer)
 	{
 		RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 		{
-			AccumulateRange(accum.get(), buffer, pStart, pEnd, bitDepth, weight, firstLayer);
+			AltaLuxKernels::AccumulateLayer(accum.get(), buffer, pStart, pEnd, bitDepth,
+				weight, firstLayer, implementation);
 		});
 	};
 
@@ -494,8 +333,16 @@ bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* tar
 
 	RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 	{
-		WriteRange(targetImage, accum.get(), pStart, pEnd, bitDepth);
+		AltaLuxKernels::WriteAccumulatedImage(targetImage, accum.get(), pStart, pEnd, bitDepth,
+			kWeightScaleLog2, kWeightHalf, implementation);
 	});
 
 	return true;
+}
+
+bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* targetImage, int width, int height,
+	int bitDepth, const UiState& state)
+{
+	return ProcessMultiscaleImageWithKernels(sourceImage, targetImage, width, height, bitDepth, state,
+		AltaLuxKernels::GetBestSupportedImplementation());
 }

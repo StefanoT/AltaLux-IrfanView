@@ -27,6 +27,7 @@ Microsoft Public License (MS-PL) [OSI Approved License]
 
 #include "Filter/CAltaLuxFilterFactory.h"
 #include "Filter/CBaseAltaLuxFilter.h"
+#include "Kernels/AltaLuxKernels.h"
 #include "ScopedBitmapHeader.h"
 #include "AltaLuxCore.h"
 #include "UIDraw/UIDraw.h"
@@ -424,58 +425,8 @@ namespace
 	void ScaleDownImage(unsigned char* sourceImage, int sourceWidth, int sourceHeight, unsigned char* targetImage,
 	                    int scaleFactor, int bitDepth)
 	{
-		if (sourceImage == nullptr || targetImage == nullptr || scaleFactor <= 0 ||
-			(bitDepth != Constants::Rgb24PixelSize && bitDepth != Constants::Rgb32PixelSize))
-		{
-			return;
-		}
-
-		if (scaleFactor == 1)
-		{
-			memcpy(targetImage, sourceImage, sourceWidth * sourceHeight * bitDepth);
-			return;
-		}
-
-		const int sourceStride = sourceWidth * bitDepth;
-		const int targetWidth = sourceWidth / scaleFactor;
-		const int targetHeight = sourceHeight / scaleFactor;
-		const int scaleArea = scaleFactor * scaleFactor;
-
-		unsigned char* dst = targetImage;
-		for (int y = 0; y < targetHeight; ++y)
-		{
-			unsigned char* srcRow = sourceImage + ((y * scaleFactor) * sourceStride);
-			for (int x = 0; x < targetWidth; ++x)
-			{
-				unsigned int channelSum[4] = {};
-				for (int iy = 0; iy < scaleFactor; ++iy)
-				{
-					int sourceIndex = iy * sourceStride;
-					for (int ix = 0; ix < scaleFactor; ++ix)
-					{
-						channelSum[0] += srcRow[sourceIndex];
-						channelSum[1] += srcRow[sourceIndex + 1];
-						channelSum[2] += srcRow[sourceIndex + 2];
-						if (bitDepth == Constants::Rgb32PixelSize)
-						{
-							channelSum[3] += srcRow[sourceIndex + 3];
-						}
-						sourceIndex += bitDepth;
-					}
-				}
-
-				dst[0] = static_cast<unsigned char>(channelSum[0] / scaleArea);
-				dst[1] = static_cast<unsigned char>(channelSum[1] / scaleArea);
-				dst[2] = static_cast<unsigned char>(channelSum[2] / scaleArea);
-				if (bitDepth == Constants::Rgb32PixelSize)
-				{
-					dst[3] = static_cast<unsigned char>(channelSum[3] / scaleArea);
-				}
-
-				srcRow += scaleFactor * bitDepth;
-				dst += bitDepth;
-			}
-		}
+		AltaLuxKernels::ScaleDownBox(sourceImage, sourceWidth, sourceHeight, targetImage,
+			scaleFactor, bitDepth, AltaLuxKernels::GetBestSupportedImplementation());
 	}
 
 	void ComputeScalingFactor()
@@ -597,10 +548,10 @@ namespace
 		switch (bitmapHeader->biBitCount)
 		{
 		case 24:
-			ImageBitDepth = Constants::Rgb24PixelSize;
+			ImageBitDepth = Constants::RGB24PixelSize;
 			return true;
 		case 32:
-			ImageBitDepth = Constants::Rgb32PixelSize;
+			ImageBitDepth = Constants::RGB32PixelSize;
 			return true;
 		default:
 			return false;
@@ -950,7 +901,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		ScaleDownImage(srcImage->data(), ImageWidth, ImageHeight, scaledSrcImage->data(), ScalingFactor, ImageBitDepth);
 		CopyScaledSrcImage(scaledProcImage->data());
 
-		const INT_PTR dialogResult = DialogBox(hDll, MAKEINTRESOURCE(IDD_DIALOG1), hwnd, DlgProc);
+		const INT_PTR dialogResult = DialogBox(hDll, MAKEINTRESOURCE(IDD_ALTALUX_DIALOG), hwnd, DlgProc);
 		if (dialogResult == -1)
 		{
 			return false;

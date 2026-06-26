@@ -32,8 +32,8 @@ A "contributor" is any person that distributes its contribution under this licen
 #include <cmath>
 #include <malloc.h>
 #include <memory>
-#include <ppl.h>
-#include <immintrin.h> // For SSE2 if available
+
+#include "..\Kernels\AltaLuxKernels.h"
 
 namespace
 {
@@ -71,6 +71,8 @@ CBaseAltaLuxFilter::CBaseAltaLuxFilter(int Width, int Height, int HorSlices, int
 
 	/// delay allocation of ImageBuffer into SetStrength
 	ImageBuffer = nullptr;
+	OriginalLumaBuffer = nullptr;
+	KernelImplementationMode = AltaLuxKernels::GetBestSupportedImplementation();
 
 	NumHorRegions = HorSlices;
 	NumVertRegions = VerSlices;
@@ -90,6 +92,11 @@ CBaseAltaLuxFilter::~CBaseAltaLuxFilter()
 	{
 		_aligned_free(ImageBuffer);
 		ImageBuffer = nullptr;
+	}
+	if (OriginalLumaBuffer)
+	{
+		_aligned_free(OriginalLumaBuffer);
+		OriginalLumaBuffer = nullptr;
 	}
 }
 
@@ -131,6 +138,11 @@ void CBaseAltaLuxFilter::SetStrength(int _Strength)
 			_aligned_free(ImageBuffer);
 			ImageBuffer = nullptr;
 		}
+		if (OriginalLumaBuffer)
+		{
+			_aligned_free(OriginalLumaBuffer);
+			OriginalLumaBuffer = nullptr;
+		}
 	}
 	else
 	{
@@ -156,6 +168,16 @@ bool CBaseAltaLuxFilter::IsEnabled() const
 	return Strength != AL_MIN_STRENGTH;
 }
 
+void CBaseAltaLuxFilter::SetKernelImplementation(AltaLuxKernels::KernelImplementation implementation)
+{
+	KernelImplementationMode = implementation;
+}
+
+AltaLuxKernels::KernelImplementation CBaseAltaLuxFilter::GetKernelImplementation() const
+{
+	return KernelImplementationMode;
+}
+
 int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 {
 	if (Image == nullptr)
@@ -176,21 +198,12 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 	auto ImagePtr = static_cast<unsigned char *>(Image);
 	auto ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
 	const int ImageSize = ImageWidth * ImageHeight;
-	const int vectorizedPixels = ImageSize & ~15;
+	const auto implementation = KernelImplementationMode;
 
 	/// copy luma from UYVY into ImageBuffer
 	/// UYVY: luma is the high byte of each 16-bit word
-	for (int i = 0; i < vectorizedPixels; i += 16)
-	{
-		__m128i chunk0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
-		__m128i chunk1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
-		chunk0 = _mm_srli_epi16(chunk0, 8);
-		chunk1 = _mm_srli_epi16(chunk1, 8);
-		const __m128i luma = _mm_packus_epi16(chunk0, chunk1);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImageBufferPtr + i), luma);
-	}
-	for (int i = vectorizedPixels; i < ImageSize; ++i)
-		ImageBufferPtr[i] = ImagePtr[i * 2 + 1];
+	AltaLuxKernels::ExtractPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
+		AltaLuxKernels::PackedYUVLumaPosition::HighByte, implementation);
 
 	/// perform processing on ImageBuffer
 	const int RunReturn = Run();
@@ -199,25 +212,8 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 
 	/// copy processed luma back into UYVY, preserving chroma
 	/// chroma (U/V) lives in the low byte of each 16-bit word
-	const __m128i chromaMask = _mm_set1_epi16(0x00FF);
-	const __m128i zero = _mm_setzero_si128();
-	for (int i = 0; i < vectorizedPixels; i += 16)
-	{
-		const __m128i luma = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImageBufferPtr + i));
-		__m128i img0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
-		__m128i img1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
-		// widen luma so Y lands in the high byte of each word (matches UYVY layout)
-		const __m128i lumaLo = _mm_unpacklo_epi8(zero, luma);
-		const __m128i lumaHi = _mm_unpackhi_epi8(zero, luma);
-		img0 = _mm_and_si128(img0, chromaMask);
-		img1 = _mm_and_si128(img1, chromaMask);
-		img0 = _mm_or_si128(img0, lumaLo);
-		img1 = _mm_or_si128(img1, lumaHi);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2), img0);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2 + 16), img1);
-	}
-	for (int i = vectorizedPixels; i < ImageSize; ++i)
-		ImagePtr[i * 2 + 1] = ImageBufferPtr[i];
+	AltaLuxKernels::InjectPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
+		AltaLuxKernels::PackedYUVLumaPosition::HighByte, implementation);
 
 	return AL_OK;
 }
@@ -232,6 +228,9 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
+	if (!IsEnabled())
+		return AL_OK;
+
 	if (ImageBuffer == nullptr)
 	{
 		/// if ImageBuffer allocation failed in SetStrength, try again
@@ -244,22 +243,12 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 	auto ImagePtr = static_cast<unsigned char *>(Image);
 	auto ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
 	const int ImageSize = ImageWidth * ImageHeight;
-	const int vectorizedPixels = ImageSize & ~15;
+	const auto implementation = KernelImplementationMode;
 
 	/// copy luma from YUYV into ImageBuffer
 	/// YUYV: luma is the low byte of each 16-bit word
-	const __m128i lumaMask = _mm_set1_epi16(0x00FF);
-	for (int i = 0; i < vectorizedPixels; i += 16)
-	{
-		__m128i chunk0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
-		__m128i chunk1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
-		chunk0 = _mm_and_si128(chunk0, lumaMask);
-		chunk1 = _mm_and_si128(chunk1, lumaMask);
-		const __m128i luma = _mm_packus_epi16(chunk0, chunk1);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImageBufferPtr + i), luma);
-	}
-	for (int i = vectorizedPixels; i < ImageSize; ++i)
-		ImageBufferPtr[i] = ImagePtr[i * 2];
+	AltaLuxKernels::ExtractPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
+		AltaLuxKernels::PackedYUVLumaPosition::LowByte, implementation);
 
 	/// perform processing on ImageBuffer
 	const int RunReturn = Run();
@@ -268,25 +257,8 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 
 	/// copy processed luma back into YUYV, preserving chroma
 	/// chroma (U/V) lives in the high byte of each 16-bit word
-	const __m128i chromaMask = _mm_set1_epi16(static_cast<short>(0xFF00));
-	const __m128i zero = _mm_setzero_si128();
-	for (int i = 0; i < vectorizedPixels; i += 16)
-	{
-		const __m128i luma = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImageBufferPtr + i));
-		__m128i img0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2));
-		__m128i img1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ImagePtr + i * 2 + 16));
-		// widen luma so Y lands in the low byte of each word (matches YUYV layout)
-		const __m128i lumaLo = _mm_unpacklo_epi8(luma, zero);
-		const __m128i lumaHi = _mm_unpackhi_epi8(luma, zero);
-		img0 = _mm_and_si128(img0, chromaMask);
-		img1 = _mm_and_si128(img1, chromaMask);
-		img0 = _mm_or_si128(img0, lumaLo);
-		img1 = _mm_or_si128(img1, lumaHi);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2), img0);
-		_mm_storeu_si128(reinterpret_cast<__m128i*>(ImagePtr + i * 2 + 16), img1);
-	}
-	for (int i = vectorizedPixels; i < ImageSize; ++i)
-		ImagePtr[i * 2] = ImageBufferPtr[i];
+	AltaLuxKernels::InjectPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
+		AltaLuxKernels::PackedYUVLumaPosition::LowByte, implementation);
 
 	return AL_OK;
 }
@@ -320,8 +292,6 @@ int CBaseAltaLuxFilter::ProcessGray(void* Image)
 
 	return Run();
 }
-
-#include <mmintrin.h>
 
 /// ITU-R BT.709 luma (also matches sRGB / Display P3 primaries):
 ///   Ey = 0.2126*Er + 0.7152*Eg + 0.0722*Eb
@@ -361,15 +331,23 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
+	if (OriginalLumaBuffer == nullptr)
+	{
+		OriginalLumaBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
+		if (OriginalLumaBuffer == nullptr)
+			return AL_OUT_OF_MEMORY;
+	}
 
 	ExtractYComponent(Image, FirstFactor, SecondFactor, ThirdFactor, PixelOffset);
+	const int numPixels = OriginalImageWidth * OriginalImageHeight;
+	memcpy(OriginalLumaBuffer, ImageBuffer, numPixels);
 
 	/// perform processing on ImageBuffer
 	int RunReturn = Run();
 	if (RunReturn != AL_OK)
 		return RunReturn;
 
-	InjectYComponent(Image, FirstFactor, SecondFactor, ThirdFactor, PixelOffset);
+	InjectYComponent(Image, FirstFactor, SecondFactor, ThirdFactor, PixelOffset, OriginalLumaBuffer);
 
 	return AL_OK;
 }
@@ -388,118 +366,9 @@ void CBaseAltaLuxFilter::ExtractYComponent(void* Image, int FirstFactor,
 	unsigned char* ImagePtr = static_cast<unsigned char*>(Image);
 	unsigned char* ImageBufferPtr = static_cast<unsigned char*>(ImageBuffer);
 	const int numPixels = OriginalImageWidth * OriginalImageHeight;
-	const int roundingOffset = 1 << (SCALING_LOG - 1);
-
-#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-#include <emmintrin.h>
-	// SSE2 optimized path
-	if (PixelOffset == 3)  // RGB24
-	{
-		const __m128i round = _mm_set1_epi32(roundingOffset);
-		const __m128i maxVal = _mm_set1_epi16(255);
-
-		int i = 0;
-		// Process 4 pixels at a time
-		for (; i <= numPixels - 4; i += 4)
-		{
-			// Load 12 bytes (4 RGB pixels): R0G0B0 R1G1B1 R2G2B2 R3G3B3
-			const unsigned char* src = ImagePtr + (i * 3);
-
-			// Unpack to 32-bit integers for multiplication
-			__m128i r = _mm_setr_epi32(src[0], src[3], src[6], src[9]);
-			__m128i g = _mm_setr_epi32(src[1], src[4], src[7], src[10]);
-			__m128i b = _mm_setr_epi32(src[2], src[5], src[8], src[11]);
-
-			// Calculate Y = R*FirstFactor + G*SecondFactor + B*ThirdFactor
-			__m128i y = _mm_add_epi32(_mm_mullo_epi32(r, _mm_set1_epi32(FirstFactor)),
-				_mm_mullo_epi32(g, _mm_set1_epi32(SecondFactor)));
-			y = _mm_add_epi32(y, _mm_mullo_epi32(b, _mm_set1_epi32(ThirdFactor)));
-
-			// Add rounding and shift
-			y = _mm_add_epi32(y, round);
-			y = _mm_srai_epi32(y, SCALING_LOG);
-
-			// Pack 32-bit to 16-bit with saturation
-			y = _mm_packs_epi32(y, _mm_setzero_si128());
-
-			// Clamp to 0-255 and pack to 8-bit
-			y = _mm_min_epi16(y, maxVal);
-			y = _mm_packus_epi16(y, _mm_setzero_si128());
-
-			// Store 4 bytes
-			*reinterpret_cast<int*>(&ImageBufferPtr[i]) = _mm_cvtsi128_si32(y);
-		}
-
-		// Handle remaining pixels (0-3) with scalar code
-		for (; i < numPixels; i++)
-		{
-			const unsigned char* src = ImagePtr + (i * 3);
-			int YValue = (src[0] * FirstFactor) +
-				(src[1] * SecondFactor) +
-				(src[2] * ThirdFactor);
-			YValue = (YValue + roundingOffset) >> SCALING_LOG;
-			ImageBufferPtr[i] = static_cast<unsigned char>(min(YValue, 255));
-		}
-	}
-	else if (PixelOffset == 4)  // RGB32
-	{
-		const __m128i round = _mm_set1_epi32(roundingOffset);
-		const __m128i maxVal = _mm_set1_epi16(255);
-
-		int i = 0;
-		// Process 4 pixels at a time (16 bytes aligned access)
-		for (; i <= numPixels - 4; i += 4)
-		{
-			// Load 16 bytes (4 RGBA pixels): R0G0B0A0 R1G1B1A1 R2G2B2A2 R3G3B3A3
-			const unsigned char* src = ImagePtr + (i * 4);
-
-			__m128i r = _mm_setr_epi32(src[0], src[4], src[8], src[12]);
-			__m128i g = _mm_setr_epi32(src[1], src[5], src[9], src[13]);
-			__m128i b = _mm_setr_epi32(src[2], src[6], src[10], src[14]);
-
-			// Calculate Y = R*FirstFactor + G*SecondFactor + B*ThirdFactor
-			__m128i y = _mm_add_epi32(_mm_mullo_epi32(r, _mm_set1_epi32(FirstFactor)),
-				_mm_mullo_epi32(g, _mm_set1_epi32(SecondFactor)));
-			y = _mm_add_epi32(y, _mm_mullo_epi32(b, _mm_set1_epi32(ThirdFactor)));
-
-			// Add rounding and shift
-			y = _mm_add_epi32(y, round);
-			y = _mm_srai_epi32(y, SCALING_LOG);
-
-			// Pack and saturate
-			y = _mm_packs_epi32(y, _mm_setzero_si128());
-			y = _mm_min_epi16(y, maxVal);
-			y = _mm_packus_epi16(y, _mm_setzero_si128());
-
-			// Store 4 bytes
-			*reinterpret_cast<int*>(&ImageBufferPtr[i]) = _mm_cvtsi128_si32(y);
-		}
-
-		// Handle remaining pixels
-		for (; i < numPixels; i++)
-		{
-			const unsigned char* src = ImagePtr + (i * 4);
-			int YValue = (src[0] * FirstFactor) +
-				(src[1] * SecondFactor) +
-				(src[2] * ThirdFactor);
-			YValue = (YValue + roundingOffset) >> SCALING_LOG;
-			ImageBufferPtr[i] = static_cast<unsigned char>(min(YValue, 255));
-		}
-	}
-	else
-#endif
-	{
-		// Scalar fallback
-		for (int i = 0; i < numPixels; i++)
-		{
-			const unsigned char* src = ImagePtr + (i * PixelOffset);
-			int YValue = (src[0] * FirstFactor) +
-				(src[1] * SecondFactor) +
-				(src[2] * ThirdFactor);
-			YValue = (YValue + roundingOffset) >> SCALING_LOG;
-			ImageBufferPtr[i] = static_cast<unsigned char>(min(YValue, 255));
-		}
-	}
+	AltaLuxKernels::ExtractRGBLuma(ImagePtr, ImageBufferPtr, numPixels, PixelOffset,
+		FirstFactor, SecondFactor, ThirdFactor, SCALING_LOG,
+		KernelImplementationMode);
 }
 
 /// <summary>
@@ -512,57 +381,14 @@ void CBaseAltaLuxFilter::ExtractYComponent(void* Image, int FirstFactor,
 /// </remarks>
 void CBaseAltaLuxFilter::InjectYComponent(void* Image,
                                           int FirstFactor, int SecondFactor,
-                                          int ThirdFactor, int PixelOffset)
+                                          int ThirdFactor, int PixelOffset,
+                                          const unsigned char* OriginalLuma)
 {
 	unsigned char* ImagePtr = static_cast<unsigned char*>(Image);
 	unsigned char* ImageBufferPtr = static_cast<unsigned char*>(ImageBuffer);
 	const int numPixels = OriginalImageWidth * OriginalImageHeight;
-	const int roundingOffset = 1 << (SCALING_LOG - 1);
-
-	// Process all pixels (using the statically initialized g_RecipLUT)
-	for (int i = 0; i < numPixels; i++)
-	{
-		unsigned char* pixel = ImagePtr + (i * PixelOffset);
-
-		// Calculate original luminance from current RGB values
-		int OldYValue = (pixel[0] * FirstFactor) +
-		                (pixel[1] * SecondFactor) +
-		                (pixel[2] * ThirdFactor);
-		OldYValue = (OldYValue + roundingOffset) >> SCALING_LOG;
-		OldYValue = min(OldYValue, 255);
-
-		// Get enhanced luminance from processed buffer
-		const int NewYValue = ImageBufferPtr[i];
-
-		// scale ≈ (NewY << 8) / OldY, derived from the Q16 reciprocal table (no division).
-		// g_RecipLUT.table[0] is zero by value-initialization, so OldY == 0 pixels naturally
-		// produce scale == 0 → (0,0,0) output. Preserving pure black is the correct behavior
-		// for a hue-preserving scaler when there is no hue signal to preserve.
-		int scale = (NewYValue * g_RecipLUT.table[OldYValue] + (1 << 7)) >> 8;
-
-		// Cap scale so that no channel exceeds 255. Without this cap, a single saturated
-		// channel in a bright pixel clamps while the others keep climbing, which drifts
-		// the hue (e.g. orange → yellow in highlights). Capping undershoots the target
-		// luma slightly but preserves R:G:B ratios — the whole point of this pipeline.
-		const int maxChannel = max(pixel[0], max(pixel[1], pixel[2]));
-		if (maxChannel > 0)
-		{
-			const int scaleCap = (255 << 8) / maxChannel;
-			if (scale > scaleCap) scale = scaleCap;
-		}
-
-		// Apply multiplicative scaling to each channel (preserves hue and saturation).
-		// Rounding (+128) matches the rounding used when computing scale above — removes
-		// a ~½-LSB darkening bias that used to come from truncating here.
-		const int newR = (pixel[0] * scale + (1 << 7)) >> 8;
-		const int newG = (pixel[1] * scale + (1 << 7)) >> 8;
-		const int newB = (pixel[2] * scale + (1 << 7)) >> 8;
-
-		// Defensive clamp (the scale cap already bounds outputs at 255)
-		pixel[0] = static_cast<unsigned char>(min(newR, 255));
-		pixel[1] = static_cast<unsigned char>(min(newG, 255));
-		pixel[2] = static_cast<unsigned char>(min(newB, 255));
-	}
+	AltaLuxKernels::InjectRGBLumaWithOriginalLuma(ImagePtr, ImageBufferPtr, OriginalLuma,
+		numPixels, PixelOffset, g_RecipLUT.table, KernelImplementationMode);
 }
 
 int CBaseAltaLuxFilter::ProcessRGB24(void* Image)
@@ -586,16 +412,6 @@ int CBaseAltaLuxFilter::ProcessBGR32(void* Image)
 }
 
 /// private methods
-inline unsigned int FloatToInt(float f)
-{
-#ifdef __SSE2__  // If SSE2 is available
-	return _mm_cvtt_ss2si(_mm_set_ss(f));
-#else
-	// Portable fallback
-	return static_cast<unsigned int>(std::lround(f));
-#endif
-}
-
 /// <summary>
 /// Performs clipping of the histogram and redistribution of bins
 /// </summary>
@@ -609,67 +425,7 @@ inline unsigned int FloatToInt(float f)
 /// </remarks>
 void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int ClipLimit)
 {
-	unsigned int *pulBinPointer, *pulEndPointer, *pulHisto;
-	unsigned int ulNrExcess, ulUpper, ulBinIncr, ulStepSize, i;
-	int lBinExcess;
-
-	ulNrExcess = 0;
-	pulBinPointer = pHistogram;
-	for (i = 0; i < NUM_GRAY_LEVELS; i++)
-	{
-		/// calculate total number of excess pixels
-		lBinExcess = (int)pulBinPointer[i] - ClipLimit;
-		if (lBinExcess > 0)
-			ulNrExcess += lBinExcess; //< excess in current bin
-	}
-
-	/// Second part: clip histogram and redistribute excess pixels in each bin
-	ulBinIncr = ulNrExcess / NUM_GRAY_LEVELS; //< average binincrement
-	ulUpper = ClipLimit - ulBinIncr; //< Bins larger than ulUpper set to cliplimit
-
-	for (i = 0; i < NUM_GRAY_LEVELS; i++)
-	{
-		if (pHistogram[i] > ClipLimit)
-			pHistogram[i] = ClipLimit; //< clip bin
-		else
-		{
-			if (pHistogram[i] > ulUpper)
-			{
-				/// high bin count
-				ulNrExcess -= pHistogram[i] - ulUpper;
-				pHistogram[i] = ClipLimit;
-			}
-			else
-			{
-				/// low bin count
-				ulNrExcess -= ulBinIncr;
-				pHistogram[i] += ulBinIncr;
-			}
-		}
-	}
-
-	while (ulNrExcess)
-	{
-		/// Redistribute remaining excess
-		pulEndPointer = &pHistogram[NUM_GRAY_LEVELS];
-		pulHisto = pHistogram;
-
-		while (ulNrExcess && pulHisto < pulEndPointer)
-		{
-			ulStepSize = NUM_GRAY_LEVELS / ulNrExcess;
-			if (ulStepSize < 1)
-				ulStepSize = 1; //< stepsize at least 1
-			for (pulBinPointer = pulHisto; pulBinPointer < pulEndPointer && ulNrExcess; pulBinPointer += ulStepSize)
-			{
-				if (*pulBinPointer < ClipLimit)
-				{
-					(*pulBinPointer)++;
-					ulNrExcess--; //< reduce excess
-				}
-			}
-			pulHisto++; //< restart redistributing on other bin location
-		}
-	}
+	AltaLuxKernels::ClipHistogram(pHistogram, ClipLimit, KernelImplementationMode);
 }
 
 /// <summary>
@@ -682,16 +438,8 @@ void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int Cl
 /// </remarks>
 void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogram)
 {
-	/// clear histogram
-	memset(pHistogram, 0, sizeof(unsigned int) * NUM_GRAY_LEVELS);
-
-	for (int i = 0; i < RegionHeight; i++)
-	{
-		PixelType* pRegionEnd = &pImage[RegionWidth];
-		while (pImage < pRegionEnd)
-			pHistogram[*pImage++]++;
-		pImage += OriginalImageWidth-RegionWidth;
-	}
+	AltaLuxKernels::MakeHistogram(pImage, OriginalImageWidth, RegionWidth, RegionHeight,
+		pHistogram, KernelImplementationMode);
 }
 
 /// <summary>
@@ -705,15 +453,7 @@ void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogr
 /// </remarks>
 void CBaseAltaLuxFilter::MapHistogram(unsigned int* pHistogram, unsigned int NumOfPixels)
 {
-	unsigned int HistoSum = 0;
-	const float Scale = ((float)MAX_GRAY_VALUE) / NumOfPixels;
-
-	for (unsigned int i = 0; i < NUM_GRAY_LEVELS; i++)
-	{
-		HistoSum += pHistogram[i];
-		unsigned int TargetValue = FloatToInt(HistoSum * Scale);
-		pHistogram[i] = min(MAX_GRAY_VALUE, TargetValue);
-	}
+	AltaLuxKernels::MapHistogram(pHistogram, NumOfPixels, KernelImplementationMode);
 }
 
 /// <summary>
@@ -737,57 +477,9 @@ void CBaseAltaLuxFilter::Interpolate(PixelType* pImage,
                                      unsigned int* pMapLeftBottom, unsigned int* pMapRightBottom,
                                      unsigned int MatrixWidth, unsigned int MatrixHeight)
 {
-	const unsigned int PtrIncr = OriginalImageWidth - MatrixWidth; //< pointer increment after processing row
-	unsigned int MatrixArea = MatrixWidth * MatrixHeight; //< normalization factor
-
-	if (MatrixArea & (MatrixArea - 1))
-	{
-		/// if MatrixArea is not a power of two, use division
-		float FInvArea = 1.0f / MatrixArea;
-		FInvArea *= 65536.0f;
-		FInvArea *= 65536.0f;
-		int InvMatrixArea = (int)FInvArea;
-		// huge images
-		for (unsigned int YCoef = 0, YInvCoef = MatrixHeight;
-		     YCoef < MatrixHeight;
-		     YCoef++, YInvCoef--, pImage += PtrIncr)
-		{
-			for (unsigned int XCoef = 0, XInvCoef = MatrixWidth;
-			     XCoef < MatrixWidth;
-			     XCoef++, XInvCoef--)
-			{
-				PixelType GreyValue = *pImage; //< get histogram bin value
-
-				*pImage++ = (PixelType)((YInvCoef * (XInvCoef * pMapLeftUp[GreyValue]
-						+ XCoef * pMapRightUp[GreyValue])
-					+ YCoef * (XInvCoef * pMapLeftBottom[GreyValue]
-						+ XCoef * pMapRightBottom[GreyValue])
-					+ (MatrixArea >> 1)) / MatrixArea);
-			}
-		}
-	}
-	else
-	{
-		/// avoid the division and use a right shift instead
-		unsigned int ShiftIndex = 0;
-		while (MatrixArea >>= 1)
-			ShiftIndex++; //< Calculate log2 of MatrixArea
-		for (unsigned int YCoef = 0, YInvCoef = MatrixHeight;
-		     YCoef < MatrixHeight;
-		     YCoef++, YInvCoef--, pImage += PtrIncr)
-		{
-			for (unsigned int XCoef = 0, XInvCoef = MatrixWidth;
-			     XCoef < MatrixWidth;
-			     XCoef++, XInvCoef--)
-			{
-				PixelType GreyValue = *pImage; //< get histogram bin value
-				*pImage++ = (PixelType)((YInvCoef * (XInvCoef * pMapLeftUp[GreyValue]
-						+ XCoef * pMapRightUp[GreyValue])
-					+ YCoef * (XInvCoef * pMapLeftBottom[GreyValue]
-						+ XCoef * pMapRightBottom[GreyValue])) >> ShiftIndex);
-			}
-		}
-	}
+	AltaLuxKernels::Interpolate(pImage, OriginalImageWidth,
+		pMapLeftUp, pMapRightUp, pMapLeftBottom, pMapRightBottom,
+		MatrixWidth, MatrixHeight, KernelImplementationMode);
 }
 
 void CBaseAltaLuxFilter::CalcGraylevelMappings(int uiY, unsigned int ulClipLimit, unsigned int* pulMapArray)

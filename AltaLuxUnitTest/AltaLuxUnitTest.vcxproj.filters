@@ -19,6 +19,12 @@
     <Filter Include="Header Files\Filter">
       <UniqueIdentifier>{efdd2829-1b00-47dd-8519-a66697870c6f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\Kernels">
+      <UniqueIdentifier>{92f40ef8-9914-44f2-b4fa-7e247dc785d5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Kernels">
+      <UniqueIdentifier>{03fd77e2-b3fe-4353-82d8-9f6efb146ae0}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -36,20 +42,17 @@
     <ClInclude Include="..\AltaLux\Filter\CBaseAltaLuxFilter.h">
       <Filter>Header Files\Filter</Filter>
     </ClInclude>
-    <ClInclude Include="..\AltaLux\Filter\CParallelActiveWaitAltaLuxFilter.h">
-      <Filter>Header Files\Filter</Filter>
-    </ClInclude>
-    <ClInclude Include="..\AltaLux\Filter\CParallelErrorAltaLuxFilter.h">
-      <Filter>Header Files\Filter</Filter>
-    </ClInclude>
-    <ClInclude Include="..\AltaLux\Filter\CParallelEventAltaLuxFilter.h">
-      <Filter>Header Files\Filter</Filter>
-    </ClInclude>
     <ClInclude Include="..\AltaLux\Filter\CParallelSplitLoopAltaLuxFilter.h">
       <Filter>Header Files\Filter</Filter>
     </ClInclude>
     <ClInclude Include="..\AltaLux\AltaLuxCore.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\AltaLux\Kernels\AltaLuxKernels.h">
+      <Filter>Header Files\Kernels</Filter>
+    </ClInclude>
+    <ClInclude Include="..\AltaLux\Kernels\AltaLuxKernelsInternal.h">
+      <Filter>Header Files\Kernels</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -65,15 +68,6 @@
     <ClCompile Include="..\AltaLux\Filter\CBaseAltaLuxFilter.cpp">
       <Filter>Source Files\Filter</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Filter\CParallelActiveWaitAltaLuxFilter.cpp">
-      <Filter>Source Files\Filter</Filter>
-    </ClCompile>
-    <ClCompile Include="..\AltaLux\Filter\CParallelErrorAltaLuxFilter.cpp">
-      <Filter>Source Files\Filter</Filter>
-    </ClCompile>
-    <ClCompile Include="..\AltaLux\Filter\CParallelEventAltaLuxFilter.cpp">
-      <Filter>Source Files\Filter</Filter>
-    </ClCompile>
     <ClCompile Include="..\AltaLux\Filter\CParallelSplitLoopAltaLuxFilter.cpp">
       <Filter>Source Files\Filter</Filter>
     </ClCompile>
@@ -82,6 +76,18 @@
     </ClCompile>
     <ClCompile Include="..\AltaLux\AltaLuxCore.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernels.cpp">
+      <Filter>Source Files\Kernels</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsScalar.cpp">
+      <Filter>Source Files\Kernels</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSse2.cpp">
+      <Filter>Source Files\Kernels</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsAvx2.cpp">
+      <Filter>Source Files\Kernels</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

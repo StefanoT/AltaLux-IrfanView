@@ -124,20 +124,6 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 //
-// Bitmap
-//
-
-IDB_BITMAP_GRID_LARGE   BITMAP                  "Bitmap\\bmp00001.bmp"
-
-IDB_BITMAP_GRID_SMALL   BITMAP                  "Bitmap\\bitmap1.bmp"
-
-IDB_BITMAP_BATTERY_LOW  BITMAP                  "Bitmap\\bmp00002.bmp"
-
-IDB_BITMAP_BATTERY_FULL BITMAP                  "Bitmap\\bmp00003.bmp"
-
-
-/////////////////////////////////////////////////////////////////////////////
-//
 // DESIGNINFO
 //
 

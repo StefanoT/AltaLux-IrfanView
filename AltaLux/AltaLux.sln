@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 2013
-VisualStudioVersion = 12.0.40629.0
+# Visual Studio Version 18
+VisualStudioVersion = 18.7.11903.348 stable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AltaLux", "AltaLux.vcxproj", "{4C680C3B-B4F0-4063-83CD-4E0800C89154}"
 EndProject
@@ -46,7 +46,8 @@ Global
 		{1100821B-BD53-4956-A62F-E0F6455232B7}.Release|Mixed Platforms.Build.0 = Release|Win32
 		{1100821B-BD53-4956-A62F-E0F6455232B7}.Release|Win32.ActiveCfg = Release|Win32
 		{1100821B-BD53-4956-A62F-E0F6455232B7}.Release|Win32.Build.0 = Release|Win32
-		{1100821B-BD53-4956-A62F-E0F6455232B7}.Release|x64.ActiveCfg = Release|Win32
+		{1100821B-BD53-4956-A62F-E0F6455232B7}.Release|x64.ActiveCfg = Release|x64
+		{1100821B-BD53-4956-A62F-E0F6455232B7}.Release|x64.Build.0 = Release|x64
 		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Debug|Any CPU.ActiveCfg = Debug|Win32
 		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Debug|Mixed Platforms.ActiveCfg = Debug|Win32
 		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Debug|Mixed Platforms.Build.0 = Debug|Win32
@@ -58,7 +59,8 @@ Global
 		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Release|Mixed Platforms.Build.0 = Release|Win32
 		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Release|Win32.ActiveCfg = Release|Win32
 		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Release|Win32.Build.0 = Release|Win32
-		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Release|x64.ActiveCfg = Release|Win32
+		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Release|x64.ActiveCfg = Release|x64
+		{32F30C27-1B2F-49DD-A5E5-8D5533D2E14E}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

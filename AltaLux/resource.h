@@ -2,7 +2,6 @@
 // Microsoft Visual C++ generated include file.
 // Used by AltaLux.rc
 //
-#define IDD_DIALOG1                     1000
 #define IDC_STRENGTH_SLIDER             1000
 #define IDD_ALTALUX_DIALOG              1000
 #define IDC_DETAIL_SLIDER               1001
@@ -21,7 +20,7 @@
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        1011
+#define _APS_NEXT_RESOURCE_VALUE        1001
 #define _APS_NEXT_COMMAND_VALUE         32771
 #define _APS_NEXT_CONTROL_VALUE         1014
 #define _APS_NEXT_SYMED_VALUE           1000

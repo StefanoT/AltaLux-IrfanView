@@ -152,11 +152,10 @@
   <ItemGroup>
     <ClInclude Include="AltaLux.h" />
     <ClInclude Include="AltaLuxCore.h" />
+    <ClInclude Include="Kernels\AltaLuxKernels.h" />
+    <ClInclude Include="Kernels\AltaLuxKernelsInternal.h" />
     <ClInclude Include="Filter\CBaseAltaLuxFilter.h" />
     <ClInclude Include="Filter\CAltaLuxFilterFactory.h" />
-    <ClInclude Include="Filter\CParallelActiveWaitAltaLuxFilter.h" />
-    <ClInclude Include="Filter\CParallelErrorAltaLuxFilter.h" />
-    <ClInclude Include="Filter\CParallelEventAltaLuxFilter.h" />
     <ClInclude Include="Filter\CParallelSplitLoopAltaLuxFilter.h" />
     <ClInclude Include="Filter\CSerialAltaLuxFilter.h" />
     <ClInclude Include="resource.h" />
@@ -168,11 +167,16 @@
   <ItemGroup>
     <ClCompile Include="AltaLux.cpp" />
     <ClCompile Include="AltaLuxCore.cpp" />
+    <ClCompile Include="Kernels\AltaLuxKernels.cpp" />
+    <ClCompile Include="Kernels\AltaLuxKernelsScalar.cpp" />
+    <ClCompile Include="Kernels\AltaLuxKernelsSse2.cpp">
+      <EnableEnhancedInstructionSet Condition="'$(Platform)'=='Win32'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="Kernels\AltaLuxKernelsAvx2.cpp">
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
     <ClCompile Include="Filter\CBaseAltaLuxFilter.cpp" />
     <ClCompile Include="Filter\CAltaLuxFilterFactory.cpp" />
-    <ClCompile Include="Filter\CParallelActiveWaitAltaLuxFilter.cpp" />
-    <ClCompile Include="Filter\CParallelErrorAltaLuxFilter.cpp" />
-    <ClCompile Include="Filter\CParallelEventAltaLuxFilter.cpp" />
     <ClCompile Include="Filter\CParallelSplitLoopAltaLuxFilter.cpp" />
     <ClCompile Include="Filter\CSerialAltaLuxFilter.cpp" />
     <ClCompile Include="stdafx.cpp">
@@ -185,16 +189,6 @@
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="AltaLux.rc" />
-  </ItemGroup>
-  <ItemGroup>
-    <Image Include="bitmap1.bmp" />
-    <Image Include="Bitmap\bitmap1.bmp" />
-    <Image Include="Bitmap\bmp00001.bmp" />
-    <Image Include="Bitmap\bmp00002.bmp" />
-    <Image Include="Bitmap\bmp00003.bmp" />
-    <Image Include="bmp00001.bmp" />
-    <Image Include="bmp00002.bmp" />
-    <Image Include="bmp00003.bmp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
