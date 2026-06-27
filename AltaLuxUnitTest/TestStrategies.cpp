@@ -325,13 +325,13 @@ namespace AltaLuxUnitTest
 		TEST_METHOD(LayerStrengthUsesConservativeNonLinearCurve)
 		{
 			Assert::AreEqual(0, ComputeLayerStrength(0));
-			Assert::AreEqual(14, ComputeLayerStrength(10));
-			Assert::AreEqual(23, ComputeLayerStrength(25));
-			Assert::AreEqual(39, ComputeLayerStrength(45));
-			Assert::AreEqual(54, ComputeLayerStrength(60));
-			Assert::AreEqual(70, ComputeLayerStrength(75));
-			Assert::AreEqual(88, ComputeLayerStrength(90));
-			Assert::AreEqual(100, ComputeLayerStrength(100));
+			Assert::AreEqual(3, ComputeLayerStrength(10));
+			Assert::AreEqual(11, ComputeLayerStrength(25));
+			Assert::AreEqual(25, ComputeLayerStrength(45));
+			Assert::AreEqual(37, ComputeLayerStrength(60));
+			Assert::AreEqual(50, ComputeLayerStrength(75));
+			Assert::AreEqual(65, ComputeLayerStrength(90));
+			Assert::AreEqual(75, ComputeLayerStrength(100));
 		}
 
 		TEST_METHOD(LayerStrengthCurveIsMonotonicAndClamped)
@@ -348,6 +348,63 @@ namespace AltaLuxUnitTest
 
 			Assert::AreEqual(0, ComputeLayerStrength(-20));
 			Assert::AreEqual(Constants::MaxLayerStrength, ComputeLayerStrength(140));
+		}
+
+		TEST_METHOD(ClipHistogramRaisesImpossibleLowClipLimit)
+		{
+			auto assertClippedHistogramIsValid = [](unsigned int* histogram, unsigned int pixelCount,
+				unsigned int requestedClipLimit)
+			{
+				const unsigned int minimumFeasibleClipLimit =
+					(pixelCount + NUM_GRAY_LEVELS - 1) / NUM_GRAY_LEVELS;
+				const unsigned int expectedMaxBin =
+					requestedClipLimit > minimumFeasibleClipLimit ? requestedClipLimit : minimumFeasibleClipLimit;
+
+				AltaLuxKernels::ClipHistogram(histogram, requestedClipLimit, AltaLuxKernels::KernelImplementation::Scalar);
+
+				unsigned int actualPixelCount = 0;
+				unsigned int actualMaxBin = 0;
+				for (int i = 0; i < NUM_GRAY_LEVELS; ++i)
+				{
+					actualPixelCount += histogram[i];
+					if (actualMaxBin < histogram[i])
+					{
+						actualMaxBin = histogram[i];
+					}
+				}
+
+				Assert::AreEqual(pixelCount, actualPixelCount);
+				Assert::IsTrue(actualMaxBin <= expectedMaxBin);
+			};
+
+			const unsigned int pixelCounts[] = { 1, 255, 256, 257, 3900, 4096, 65536 };
+			for (const unsigned int pixelCount : pixelCounts)
+			{
+				for (unsigned int requestedClipLimit = 1; requestedClipLimit <= 20; ++requestedClipLimit)
+				{
+					unsigned int histogram[NUM_GRAY_LEVELS] = {};
+					histogram[42] = pixelCount;
+					assertClippedHistogramIsValid(histogram, pixelCount, requestedClipLimit);
+				}
+			}
+
+			for (unsigned int seed = 1; seed <= 8; ++seed)
+			{
+				unsigned int sourceHistogram[NUM_GRAY_LEVELS] = {};
+				unsigned int pixelCount = 0;
+				for (int i = 0; i < NUM_GRAY_LEVELS; ++i)
+				{
+					sourceHistogram[i] = ((static_cast<unsigned int>(i) * 37U) + (seed * 19U)) % 97U;
+					pixelCount += sourceHistogram[i];
+				}
+
+				for (unsigned int requestedClipLimit = 1; requestedClipLimit <= 20; ++requestedClipLimit)
+				{
+					unsigned int histogram[NUM_GRAY_LEVELS] = {};
+					memcpy(histogram, sourceHistogram, sizeof(histogram));
+					assertClippedHistogramIsValid(histogram, pixelCount, requestedClipLimit);
+				}
+			}
 		}
 
 		TEST_METHOD(DetailAndNaturalAreIndependent)
@@ -421,6 +478,40 @@ namespace AltaLuxUnitTest
 
 			Assert::IsTrue(processed);
 			Assert::IsTrue(memcmp(input.data(), output.data(), input.size()) == 0);
+		}
+
+		TEST_METHOD(MultiscaleProcessingHandlesVeryLowStrengths)
+		{
+			auto assertVeryLowStrengthsProcess = [](int width, int height, int firstStrength, int lastStrength)
+			{
+				const std::vector<unsigned char> input = MakePatternImage(width, height, Constants::RGB24PixelSize);
+
+				for (int strength = firstStrength; strength <= lastStrength; ++strength)
+				{
+					const UiState state = MakeProcessingState(strength, 25, 25);
+					std::vector<unsigned char> output(input.size(), 0);
+					Assert::IsTrue(ProcessMultiscaleImage(input.data(), output.data(), width, height,
+						Constants::RGB24PixelSize, state));
+
+					std::vector<unsigned char> inPlace = input;
+					Assert::IsTrue(ProcessMultiscaleImage(inPlace.data(), inPlace.data(), width, height,
+						Constants::RGB24PixelSize, state));
+				}
+			};
+
+			assertVeryLowStrengthsProcess(32, 24, 1, 7);
+			assertVeryLowStrengthsProcess(1024, 1024, 1, 3);
+		}
+
+		TEST_METHOD(MultiscaleProcessingHandlesFlatLowStrengthWithTightClipLimit)
+		{
+			const int width = 800;
+			const int height = 1248;
+			const std::vector<unsigned char> input(static_cast<size_t>(width * height * Constants::RGB24PixelSize), 96);
+			std::vector<unsigned char> output(input.size(), 0);
+
+			Assert::IsTrue(ProcessMultiscaleImage(input.data(), output.data(), width, height,
+				Constants::RGB24PixelSize, MakeProcessingState(3, 25, 25)));
 		}
 
 		TEST_METHOD(MultiscaleProcessingPreservesAlphaForRGB32)

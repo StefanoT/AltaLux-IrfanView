@@ -1,5 +1,8 @@
 #pragma once
 
+// Kernel entry points dispatch to scalar, SSSE3, or AVX2 implementations.
+// SIMD paths may still delegate specific operations to scalar code when the
+// instruction set lacks safe scatter/gather support or when handling tails.
 namespace AltaLuxKernels
 {
 	enum class KernelImplementation

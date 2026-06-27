@@ -30,52 +30,38 @@ A "contributor" is any person that distributes its contribution under this licen
 #include <memory>
 #include <ppl.h>
 
-/// <summary>
-/// Implements CLAHE on an input image. CLAHE is an advanced image enhancement technique that improves local contrast while avoiding over-amplification of noise.
-/// </summary>
-/// <returns>error code, refer to AL_XXX codes</returns>
-/// <remarks>
-/// parallel code that divides the loop in two and puts a synchronization barrier in the middle 
-/// to ensure that all data dependencies are resolved before moving to the next steps
-/// </remarks>
 int CParallelSplitLoopAltaLuxFilter::Run()
 {
 	if (ClipLimit == 1.0)
-		return AL_OK; //< is OK, immediately returns original image
+		return AL_OK;
 
-	auto pImage = static_cast<PixelType *>(ImageBuffer);
-
-	/// pulMapArray is pointer to mappings
+	auto pImage = static_cast<PixelType*>(ImageBuffer);
 	auto pulMapArray = std::make_unique<unsigned int[]>(NumHorRegions * NumVertRegions * NUM_GRAY_LEVELS);
 
-	/// region pixel count
-	unsigned int NumPixels = static_cast<unsigned int>(RegionWidth) * static_cast<unsigned int>(RegionHeight);
+	const unsigned int NumPixels = static_cast<unsigned int>(RegionWidth) * static_cast<unsigned int>(RegionHeight);
 
-	unsigned int ulClipLimit; //< clip limit
+	unsigned int ulClipLimit;
 	if (ClipLimit > 0.0)
 	{
-		/// calculate actual cliplimit
 		ulClipLimit = static_cast<unsigned int>(ClipLimit * (RegionWidth * RegionHeight) / NUM_GRAY_LEVELS);
 		ulClipLimit = (ulClipLimit < 1UL) ? 1UL : ulClipLimit;
 	}
 	else
-		ulClipLimit = 1UL << 14; //< large value, do not clip (AHE)
+	{
+		ulClipLimit = 1UL << 14; // Large value: adaptive histogram equalization without clipping.
+	}
 
-	/// The image is divided into rectangular tiles: NumHorRegions x NumVertRegions.
+	// Phase 1 builds independent tile maps. parallel_for completes all maps
+	// before Phase 2 begins, which is the required dependency barrier.
 	concurrency::parallel_for((int)0, (int)(NumVertRegions + 1), [&](int uiY)
 	{
-		if (uiY < NumVertRegions)
+		if (uiY < static_cast<int>(NumVertRegions))
 		{
 			PixelType* pImPointer = pImage;
 			if (uiY > 0)
 				pImPointer += ((RegionHeight >> 1) + ((uiY - 1) * RegionHeight)) * OriginalImageWidth;
 			for (unsigned int uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth)
 			{
-				/// For each tile :
-				/// 1. Extract the tile’s pixel data.
-				/// 2. Compute the histogram(MakeHistogram).
-				/// 3. Clip histogram bins above the clip limit(ClipHistogram).
-				/// 4. Generate a mapping from old intensity to new intensity(MapHistogram).
 				unsigned int* pHistogram = &pulMapArray[NUM_GRAY_LEVELS * (uiY * NumHorRegions + uiX)];
 				MakeHistogram(pImPointer, pHistogram);
 				ClipHistogram(pHistogram, ulClipLimit);
@@ -84,20 +70,19 @@ int CParallelSplitLoopAltaLuxFilter::Run()
 		}
 	});
 
-	/// To avoid block artifacts, the algorithm interpolates pixel values between neighboring tiles.		
+	// Phase 2 reads tile maps only and writes non-overlapping output regions.
 	concurrency::parallel_for((int)0, (int)(NumVertRegions + 1), [&](int uiY)
 	{
-		unsigned int uiSubX, uiSubY; //< size of subimages
-		unsigned int uiXL, uiXR, uiYU, uiYB; //< auxiliary variables interpolation routine
+		unsigned int uiSubX, uiSubY;
+		unsigned int uiXL, uiXR, uiYU, uiYB;
 
 		PixelType* pImPointer = pImage;
 		if (uiY > 0)
 			pImPointer += ((RegionHeight >> 1) + ((uiY - 1) * RegionHeight)) * OriginalImageWidth;
 
-		// Special cases handle edges and corners where neighboring tiles may not exist.
+		// Edges use half regions and duplicate the nearest map where a neighbor is missing.
 		if (uiY == 0)
 		{
-			/// special case: top row
 			uiSubY = RegionHeight >> 1;
 			uiYU = 0;
 			uiYB = 0;
@@ -106,14 +91,12 @@ int CParallelSplitLoopAltaLuxFilter::Run()
 		{
 			if (uiY == NumVertRegions)
 			{
-				/// special case: bottom row
 				uiSubY = (RegionHeight >> 1) + (OriginalImageHeight - ImageHeight);
 				uiYU = NumVertRegions - 1;
 				uiYB = uiYU;
 			}
 			else
 			{
-				/// default values
 				uiSubY = RegionHeight;
 				uiYU = uiY - 1;
 				uiYB = uiY;
@@ -124,7 +107,6 @@ int CParallelSplitLoopAltaLuxFilter::Run()
 		{
 			if (uiX == 0)
 			{
-				/// special case: left column
 				uiSubX = RegionWidth >> 1;
 				uiXL = 0;
 				uiXR = 0;
@@ -133,21 +115,18 @@ int CParallelSplitLoopAltaLuxFilter::Run()
 			{
 				if (uiX == NumHorRegions)
 				{
-					/// special case: right column
 					uiSubX = (RegionWidth >> 1) + (OriginalImageWidth - ImageWidth);
 					uiXL = NumHorRegions - 1;
 					uiXR = uiXL;
 				}
 				else
 				{
-					/// default values
 					uiSubX = RegionWidth;
 					uiXL = uiX - 1;
 					uiXR = uiX;
 				}
 			}
-			// For each pixel, it calculates the new intensity using bilinear interpolation of the four surrounding tiles :
-			// pulLU(upper - left), pulRU(upper - right), pulLB(lower - left), pulRB(lower - right)
+
 			auto pulLU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXL)];
 			auto pulRU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXR)];
 			auto pulLB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXL)];
@@ -155,9 +134,9 @@ int CParallelSplitLoopAltaLuxFilter::Run()
 
 			Interpolate(pImPointer, pulLU, pulRU, pulLB, pulRB, uiSubX, uiSubY);
 
-			pImPointer += uiSubX; //< set pointer on next matrix
+			pImPointer += uiSubX;
 		}
 	});
 
-	return AL_OK; //< return status OK
+	return AL_OK;
 }

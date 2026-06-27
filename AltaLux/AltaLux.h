@@ -43,7 +43,7 @@ A "contributor" is any person that distributes its contribution under this licen
 /// - **Advanced Enhancement**: CLAHE algorithm for superior local contrast
 /// - **High Performance**: Parallel processing utilizing multi-core CPUs
 /// - **Multiple Formats**: Supports RGB24, RGB32, BGR24, BGR32, and YUV formats
-/// - **Configurable**: Adjustable strength (0-100) and tile size (2×2 to 16×16)
+/// - **Configurable**: Adjustable strength (0-100) and tile size (2x2 to 16x16)
 /// - **Interactive Preview**: Real-time preview with multiple parameter variations
 /// - **Dark Mode Support**: Native Windows dark mode integration
 /// - **Selection Support**: Process entire image or selected region
@@ -65,9 +65,8 @@ A "contributor" is any person that distributes its contribution under this licen
 /// - See variations with different parameters
 ///
 /// @section performance_sec Performance
-/// - Serial implementation: ~1.2 seconds for Full HD
-/// - Parallel implementation: ~0.3 seconds for Full HD (4× speedup)
-/// - Scales well with CPU core count (up to 8 cores)
+/// Processing uses the parallel split-loop CLAHE filter and the best supported
+/// scalar, SSSE3, or AVX2 kernel implementation selected at runtime.
 ///
 /// @section api_sec Plugin API
 /// IrfanView plugins export two main functions:
@@ -189,15 +188,15 @@ extern "C" {
 /// @see CBaseAltaLuxFilter
 /// @see ScopedBitmapHeader
 ALTALUX_API bool __cdecl StartEffects2(
-	HANDLE hDib,        ///< [in] Handle to 24 BPP DIB image data
-	HWND hwnd,          ///< [in] Parent window for dialogs (IrfanView main window)
-	int filter,         ///< [in] Effect selection (reserved, currently unused)
-	RECT rect,          ///< [in] Selection rect: {left, top, WIDTH, HEIGHT}
-	int param1,         ///< [in] Enhancement strength (0-100) or -1 for GUI
-	int param2,         ///< [in] Tile grid size (2-16) or -1 for GUI
-	char* iniFile,      ///< [in] Path to IrfanView INI file
-	char* szAppName,    ///< [in] Application name (typically "IrfanView")
-	int regID           ///< [in] Registration ID (reserved for future use)
+	HANDLE hDib,
+	HWND hwnd,
+	int filter,
+	RECT rect,
+	int param1,
+	int param2,
+	char* iniFile,
+	char* szAppName,
+	int regID
 );
 
 /// @brief Alias for StartEffects2 (alternative entry point name)
@@ -230,7 +229,7 @@ ALTALUX_API bool __cdecl AltaLux_Effects(
 ///
 /// @par Version String Format:
 /// Version follows semantic versioning: "Major.Minor"
-/// - Current version: "1.10"
+/// - Current version: "2.00"
 /// - Format: "X.YZ" where X is major, YZ is minor
 ///
 /// @par Description String:
@@ -242,14 +241,14 @@ ALTALUX_API bool __cdecl AltaLux_Effects(
 /// - fileFormats: Minimum 256 bytes (actual: ~35 bytes used)
 /// IrfanView allocates these buffers, plugin writes to them.
 ///
-/// @warning Do not write beyond buffer sizes. Use sprintf with known limits.
+/// @warning Do not write beyond buffer sizes. Use bounded string writes.
 ///
 /// @par Usage by IrfanView:
 /// @code
 /// char version[16];
 /// char description[256];
 /// GetPlugInInfo(version, description);
-/// // IrfanView displays: "AltaLux image enhancement filter v1.10"
+/// // IrfanView displays: "AltaLux image enhancement filter v2.00"
 /// @endcode
 ///
 /// @note This function is called during plugin enumeration, before any
@@ -257,8 +256,8 @@ ALTALUX_API bool __cdecl AltaLux_Effects(
 ///
 /// @see StartEffects2
 ALTALUX_API int __cdecl GetPlugInInfo(
-	char* versionString,  ///< [out] Buffer for version string (e.g., "1.10")
-	char* fileFormats     ///< [out] Buffer for description string
+	char* versionString,
+	char* fileFormats
 );
 
 } // extern "C"

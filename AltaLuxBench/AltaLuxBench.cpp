@@ -37,7 +37,10 @@ const int RGB24_SAMPLE_SIZE = SAMPLE_PIXELS * 3;
 const int RGB32_SAMPLE_SIZE = SAMPLE_PIXELS * 4;
 const int PACKED_YUV_SAMPLE_SIZE = SAMPLE_PIXELS * 2;
 const int ACCUM_SAMPLE_SIZE = SAMPLE_PIXELS * 3;
-const int BENCHMARK_SAMPLES = 10;
+const int BENCHMARK_SAMPLES = 15;
+const int BENCHMARK_WARMUP_OPERATIONS = 3;
+const int BENCHMARK_MIN_SAMPLE_MSEC = 100;
+const int BENCHMARK_MAX_BATCH_OPERATIONS = 512;
 const int HISTOGRAM_CLIP_BENCHMARK_BATCH = 1024;
 const int HISTOGRAM_MAP_BENCHMARK_BATCH = 16384;
 
@@ -59,57 +62,114 @@ void FillRandomBuffer(unsigned char *Buffer, int BufferSize)
 		Buffer[j] = rand() & 0xFF;
 }
 
-int ElapsedTimeToMSec(int ElapsedTime)
+LONGLONG GetTimerFrequency()
 {
 	LARGE_INTEGER TimerFrequency;
-	LARGE_INTEGER LargeElapsedTime;
-	LargeElapsedTime.HighPart = 0;
-	LargeElapsedTime.LowPart = ElapsedTime;
 	QueryPerformanceFrequency(&TimerFrequency);
-	LargeElapsedTime.QuadPart = (LargeElapsedTime.QuadPart * 1000) / TimerFrequency.QuadPart;
-	return LargeElapsedTime.LowPart;
+	return TimerFrequency.QuadPart;
 }
 
-void PrintSpeedup(int baselineTicks, int measuredTicks)
+double ElapsedTimeToMSec(double ElapsedTime)
+{
+	return (ElapsedTime * 1000.0) / static_cast<double>(GetTimerFrequency());
+}
+
+LONGLONG MsecToElapsedTicks(int Milliseconds)
+{
+	return (GetTimerFrequency() * Milliseconds) / 1000;
+}
+
+void PrintElapsedMSec(double elapsedTicks)
+{
+	const ios_base::fmtflags previousFlags = cout.flags();
+	const streamsize previousPrecision = cout.precision();
+	const double elapsedMSec = ElapsedTimeToMSec(elapsedTicks);
+	cout << fixed << setprecision(elapsedMSec < 10.0 ? 3 : 1) << elapsedMSec << " ms";
+	cout.flags(previousFlags);
+	cout.precision(previousPrecision);
+}
+
+void PrintSpeedup(double baselineTicks, double measuredTicks)
 {
 	const ios_base::fmtflags previousFlags = cout.flags();
 	const streamsize previousPrecision = cout.precision();
 	cout << " [" << fixed << setprecision(2)
-		<< (static_cast<double>(baselineTicks) / static_cast<double>(measuredTicks))
+		<< (baselineTicks / measuredTicks)
 		<< "x vs Scalar]";
 	cout.flags(previousFlags);
 	cout.precision(previousPrecision);
 }
 
-int PrintBenchmarkResults(vector<int>& BenchmarkSamples, int baselineTicks = 0)
+double BenchmarkSampleTicksPerOperation(LONGLONG sampleTicks, int repetitions)
+{
+	return static_cast<double>(sampleTicks) / static_cast<double>(repetitions);
+}
+
+double PrintBenchmarkResults(vector<LONGLONG>& BenchmarkSamples, int repetitions, double baselineTicks = 0.0)
 {
 	sort(BenchmarkSamples.begin(), BenchmarkSamples.end());
-	const int medianTicks = BenchmarkSamples[BenchmarkSamples.size() >> 1];
-	cout << ElapsedTimeToMSec(medianTicks) << " ms";
+	const LONGLONG medianSampleTicks = BenchmarkSamples[BenchmarkSamples.size() >> 1];
+	const double medianTicks = BenchmarkSampleTicksPerOperation(medianSampleTicks, repetitions);
+	PrintElapsedMSec(medianTicks);
 	if (baselineTicks > 0)
 		PrintSpeedup(baselineTicks, medianTicks);
+	cout << " per op, batch " << repetitions << "x: ";
+	PrintElapsedMSec(static_cast<double>(medianSampleTicks));
 	cout << " (";
 	for (auto item = BenchmarkSamples.begin(); item != BenchmarkSamples.end(); ++item)
-		cout << ElapsedTimeToMSec(*item) << "ms  ";
+	{
+		PrintElapsedMSec(BenchmarkSampleTicksPerOperation(*item, repetitions));
+		cout << "  ";
+	}
 	cout << ")" << endl;
 	return medianTicks;
 }
 
 template<typename Fn>
-int BenchmarkOperation(const char *BenchmarkName, Fn operation, int baselineTicks = 0)
+LONGLONG MeasureBenchmarkBatch(Fn operation, int repetitions)
 {
-	vector<int> BenchmarkSamples;
-	for (int iteration = 0; iteration < BENCHMARK_SAMPLES; iteration++)
-	{
-		LARGE_INTEGER StartTime, StopTime;
-		QueryPerformanceCounter(&StartTime);
+	LARGE_INTEGER StartTime, StopTime;
+	QueryPerformanceCounter(&StartTime);
+	for (int i = 0; i < repetitions; ++i)
 		operation();
-		QueryPerformanceCounter(&StopTime);
-		BenchmarkSamples.push_back(static_cast<int>(StopTime.QuadPart - StartTime.QuadPart));
+	QueryPerformanceCounter(&StopTime);
+	return StopTime.QuadPart - StartTime.QuadPart;
+}
+
+template<typename Fn>
+void WarmupBenchmark(Fn operation)
+{
+	for (int i = 0; i < BENCHMARK_WARMUP_OPERATIONS; ++i)
+		operation();
+}
+
+template<typename Fn>
+int CalibrateBenchmarkBatchSize(Fn operation)
+{
+	int repetitions = 1;
+	const LONGLONG minSampleTicks = MsecToElapsedTicks(BENCHMARK_MIN_SAMPLE_MSEC);
+	while (repetitions < BENCHMARK_MAX_BATCH_OPERATIONS)
+	{
+		const LONGLONG elapsedTicks = MeasureBenchmarkBatch(operation, repetitions);
+		if (elapsedTicks >= minSampleTicks)
+			break;
+		repetitions *= 2;
 	}
+	return repetitions;
+}
+
+template<typename Fn>
+double BenchmarkOperation(const char *BenchmarkName, Fn operation, double baselineTicks = 0.0)
+{
+	WarmupBenchmark(operation);
+	const int repetitions = CalibrateBenchmarkBatchSize(operation);
+
+	vector<LONGLONG> BenchmarkSamples;
+	for (int iteration = 0; iteration < BENCHMARK_SAMPLES; iteration++)
+		BenchmarkSamples.push_back(MeasureBenchmarkBatch(operation, repetitions));
 
 	cout << BenchmarkName << endl;
-	return PrintBenchmarkResults(BenchmarkSamples, baselineTicks);
+	return PrintBenchmarkResults(BenchmarkSamples, repetitions, baselineTicks);
 }
 
 template<typename Fn>
@@ -122,7 +182,8 @@ void BenchmarkImplementationGroup(const char *BenchmarkName, Fn operation)
 		AltaLuxKernels::KernelImplementation::AVX2
 	};
 	const int implementationCount = 3;
-	vector<int> samples[implementationCount];
+	vector<LONGLONG> samples[implementationCount];
+	int repetitions[implementationCount] = {};
 	bool supported[implementationCount] = {};
 
 	for (int i = 0; i < implementationCount; ++i)
@@ -135,6 +196,23 @@ void BenchmarkImplementationGroup(const char *BenchmarkName, Fn operation)
 		}
 	}
 
+	for (int i = 0; i < implementationCount; ++i)
+	{
+		if (!supported[i])
+		{
+			continue;
+		}
+
+		WarmupBenchmark([&]()
+		{
+			operation(implementations[i]);
+		});
+		repetitions[i] = CalibrateBenchmarkBatchSize([&]()
+		{
+			operation(implementations[i]);
+		});
+	}
+
 	for (int iteration = 0; iteration < BENCHMARK_SAMPLES; ++iteration)
 	{
 		for (int slot = 0; slot < implementationCount; ++slot)
@@ -145,15 +223,14 @@ void BenchmarkImplementationGroup(const char *BenchmarkName, Fn operation)
 				continue;
 			}
 
-			LARGE_INTEGER StartTime, StopTime;
-			QueryPerformanceCounter(&StartTime);
-			operation(implementations[implementationIndex]);
-			QueryPerformanceCounter(&StopTime);
-			samples[implementationIndex].push_back(static_cast<int>(StopTime.QuadPart - StartTime.QuadPart));
+			samples[implementationIndex].push_back(MeasureBenchmarkBatch([&]()
+			{
+				operation(implementations[implementationIndex]);
+			}, repetitions[implementationIndex]));
 		}
 	}
 
-	int scalarTicks = 0;
+	double scalarTicks = 0.0;
 	for (int i = 0; i < implementationCount; ++i)
 	{
 		if (!supported[i])
@@ -163,8 +240,8 @@ void BenchmarkImplementationGroup(const char *BenchmarkName, Fn operation)
 
 		string label = string(BenchmarkName) + " " + AltaLuxKernels::GetImplementationName(implementations[i]);
 		cout << label << endl;
-		const int medianTicks = PrintBenchmarkResults(samples[i],
-			(implementations[i] == AltaLuxKernels::KernelImplementation::Scalar) ? 0 : scalarTicks);
+		const double medianTicks = PrintBenchmarkResults(samples[i], repetitions[i],
+			(implementations[i] == AltaLuxKernels::KernelImplementation::Scalar) ? 0.0 : scalarTicks);
 		if (implementations[i] == AltaLuxKernels::KernelImplementation::Scalar)
 		{
 			scalarTicks = medianTicks;

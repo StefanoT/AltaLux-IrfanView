@@ -188,30 +188,27 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 
 	if (ImageBuffer == nullptr)
 	{
-		/// if ImageBuffer allocation failed in SetStrength, try again
-		/// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+		// Retry allocation here because SetStrength may have failed earlier.
 		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
 
-	auto ImagePtr = static_cast<unsigned char *>(Image);
-	auto ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
+	auto ImagePtr = static_cast<unsigned char*>(Image);
+	auto ImageBufferPtr = static_cast<unsigned char*>(ImageBuffer);
 	const int ImageSize = ImageWidth * ImageHeight;
 	const auto implementation = KernelImplementationMode;
 
-	/// copy luma from UYVY into ImageBuffer
-	/// UYVY: luma is the high byte of each 16-bit word
+	// UYVY stores luma in the high byte of each 16-bit word.
 	AltaLuxKernels::ExtractPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
 		AltaLuxKernels::PackedYUVLumaPosition::HighByte, implementation);
 
-	/// perform processing on ImageBuffer
+	// Process ImageBuffer in-place.
 	const int RunReturn = Run();
 	if (RunReturn != AL_OK)
 		return RunReturn;
 
-	/// copy processed luma back into UYVY, preserving chroma
-	/// chroma (U/V) lives in the low byte of each 16-bit word
+	// Copy processed luma back while preserving chroma in the low bytes.
 	AltaLuxKernels::InjectPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
 		AltaLuxKernels::PackedYUVLumaPosition::HighByte, implementation);
 
@@ -220,7 +217,7 @@ int CBaseAltaLuxFilter::ProcessUYVY(void* Image)
 
 int CBaseAltaLuxFilter::ProcessVYUY(void* Image)
 {
-	return ProcessUYVY(Image); //< no operations are performed on chroma
+	return ProcessUYVY(Image); // Chroma is preserved by the UYVY path.
 }
 
 int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
@@ -233,30 +230,27 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 
 	if (ImageBuffer == nullptr)
 	{
-		/// if ImageBuffer allocation failed in SetStrength, try again
-		/// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+		// Retry allocation here because SetStrength may have failed earlier.
 		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
 
-	auto ImagePtr = static_cast<unsigned char *>(Image);
-	auto ImageBufferPtr = static_cast<unsigned char *>(ImageBuffer);
+	auto ImagePtr = static_cast<unsigned char*>(Image);
+	auto ImageBufferPtr = static_cast<unsigned char*>(ImageBuffer);
 	const int ImageSize = ImageWidth * ImageHeight;
 	const auto implementation = KernelImplementationMode;
 
-	/// copy luma from YUYV into ImageBuffer
-	/// YUYV: luma is the low byte of each 16-bit word
+	// YUYV stores luma in the low byte of each 16-bit word.
 	AltaLuxKernels::ExtractPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
 		AltaLuxKernels::PackedYUVLumaPosition::LowByte, implementation);
 
-	/// perform processing on ImageBuffer
+	// Process ImageBuffer in-place.
 	const int RunReturn = Run();
 	if (RunReturn != AL_OK)
 		return RunReturn;
 
-	/// copy processed luma back into YUYV, preserving chroma
-	/// chroma (U/V) lives in the high byte of each 16-bit word
+	// Copy processed luma back into YUYV, preserving chroma in the high bytes.
 	AltaLuxKernels::InjectPackedYUVLuma(ImagePtr, ImageBufferPtr, ImageSize,
 		AltaLuxKernels::PackedYUVLumaPosition::LowByte, implementation);
 
@@ -265,14 +259,9 @@ int CBaseAltaLuxFilter::ProcessYUYV(void* Image)
 
 int CBaseAltaLuxFilter::ProcessYVYU(void* Image)
 {
-	return ProcessYUYV(Image); //< no operations are performed on chroma
+	return ProcessYUYV(Image); // Chroma is preserved by the YUYV path.
 }
 
-/// <summary>
-/// process a 8-bpp, luma-only input image
-/// </summary>
-/// <param name="Image">image to be processed</param>
-/// <returns></returns>
 int CBaseAltaLuxFilter::ProcessGray(void* Image)
 {
 	if (Image == nullptr)
@@ -282,7 +271,7 @@ int CBaseAltaLuxFilter::ProcessGray(void* Image)
 	// buffer for the duration of Run(). The RAII guard restores ImageBuffer on every
 	// exit path, so the destructor never accidentally _aligned_free()s caller memory.
 	unsigned char* const SavedImageBuffer = ImageBuffer;
-	ImageBuffer = static_cast<unsigned char *>(Image);
+	ImageBuffer = static_cast<unsigned char*>(Image);
 	struct RestoreGuard
 	{
 		unsigned char** slot;
@@ -303,30 +292,19 @@ const int Y_RED_SCALE = static_cast<int>(0.2126 * SCALING_FACTOR);
 const int Y_GREEN_SCALE = static_cast<int>(0.7152 * SCALING_FACTOR);
 const int Y_BLUE_SCALE = static_cast<int>(0.0722 * SCALING_FACTOR);
 
-/// <summary>
-/// process an input image with a generic format
-/// </summary>
-/// <param name="Image">image to be processed</param>
-/// <param name="FirstFactor">scaling factor for first byte of each pixel</param>
-/// <param name="SecondFactor">scaling factor for second byte of each pixel</param>
-/// <param name="ThirdFactor">scaling factor for third byte of each pixel</param>
-/// <param name="PixelOffset">distance in bytes between pixels (3 for RGB24, 4 for RGB32)</param>
-/// <returns></returns>
 int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondFactor,
                                        int ThirdFactor, int PixelOffset)
 {
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
-	// Early return if filter is disabled (Strength = 0)
-	// Avoids unnecessary processing and memory allocation
+	// Avoid work and allocation when strength is zero.
 	if (!IsEnabled())
 		return AL_OK;
 
 	if (ImageBuffer == nullptr)
 	{
-		/// if ImageBuffer allocation failed in SetStrength, try again
-		/// _aligned_malloc returns nullptr on failure (doesn't throw exceptions)
+		// Retry allocation here because SetStrength may have failed earlier.
 		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
@@ -342,7 +320,7 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 	const int numPixels = OriginalImageWidth * OriginalImageHeight;
 	memcpy(OriginalLumaBuffer, ImageBuffer, numPixels);
 
-	/// perform processing on ImageBuffer
+	// Process ImageBuffer in-place.
 	int RunReturn = Run();
 	if (RunReturn != AL_OK)
 		return RunReturn;
@@ -352,13 +330,6 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 	return AL_OK;
 }
 
-/// <summary>
-/// Extraction of Y (luminance) component from RGB image
-/// </summary>
-/// <remarks>
-/// Performance improvements:
-/// - Optional SIMD for 2-4x speedup
-/// </remarks>
 void CBaseAltaLuxFilter::ExtractYComponent(void* Image, int FirstFactor,
 	int SecondFactor, int ThirdFactor,
 	int PixelOffset)
@@ -371,14 +342,8 @@ void CBaseAltaLuxFilter::ExtractYComponent(void* Image, int FirstFactor,
 		KernelImplementationMode);
 }
 
-/// <summary>
-/// Injects processed Y component back into RGB image using multiplicative scaling
-/// </summary>
-/// <remarks>
-/// Uses multiplicative scaling to preserve color ratios (hue and saturation).
-/// R' = R × (Y_new / Y_old) preserves color perfectly.
-/// Lookup table eliminates per-pixel division.
-/// </remarks>
+// Reapply processed luma by scaling RGB channels from the original luma.
+// The reciprocal table avoids a per-pixel divide in scalar and SIMD kernels.
 void CBaseAltaLuxFilter::InjectYComponent(void* Image,
                                           int FirstFactor, int SecondFactor,
                                           int ThirdFactor, int PixelOffset,
@@ -411,67 +376,22 @@ int CBaseAltaLuxFilter::ProcessBGR32(void* Image)
 	return ProcessGeneric(Image, Y_BLUE_SCALE, Y_GREEN_SCALE, Y_RED_SCALE, 4);
 }
 
-/// private methods
-/// <summary>
-/// Performs clipping of the histogram and redistribution of bins
-/// </summary>
-/// <param name="pHistogram">Pointer to histogram array to be clipped (NUM_GRAY_LEVELS elements)</param>
-/// <param name="ClipLimit">Maximum allowed bin count</param>
-/// <remarks>
-/// The histogram is clipped and the number of excess pixels is counted. Afterwards
-/// the excess pixels are equally redistributed across the whole histogram (providing
-/// the bin count is smaller than the cliplimit). This prevents over-amplification
-/// of noise in uniform regions.
-/// </remarks>
 void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int ClipLimit)
 {
 	AltaLuxKernels::ClipHistogram(pHistogram, ClipLimit, KernelImplementationMode);
 }
 
-/// <summary>
-/// Classifies the greylevels present in the image array into a greylevel histogram
-/// </summary>
-/// <param name="pImage">Pointer to top-left corner of image tile</param>
-/// <param name="pHistogram">Output histogram array (NUM_GRAY_LEVELS elements)</param>
-/// <remarks>
-/// Only processes RegionWidth × RegionHeight area starting from pImage pointer
-/// </remarks>
 void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogram)
 {
 	AltaLuxKernels::MakeHistogram(pImage, OriginalImageWidth, RegionWidth, RegionHeight,
 		pHistogram, KernelImplementationMode);
 }
 
-/// <summary>
-/// Calculates the equalized lookup table (mapping) by cumulating the input histogram
-/// </summary>
-/// <param name="pHistogram">Input/output histogram array (modified in-place, NUM_GRAY_LEVELS elements)</param>
-/// <param name="NumOfPixels">Total number of pixels in the tile</param>
-/// <remarks>
-/// The lookup table is rescaled to range [0..255]. Each bin becomes the cumulative
-/// sum up to that gray level, normalized to the output range.
-/// </remarks>
 void CBaseAltaLuxFilter::MapHistogram(unsigned int* pHistogram, unsigned int NumOfPixels)
 {
 	AltaLuxKernels::MapHistogram(pHistogram, NumOfPixels, KernelImplementationMode);
 }
 
-/// <summary>
-/// Calculates new greylevel assignments for pixels within a submatrix using bilinear interpolation
-/// </summary>
-/// <param name="pImage">Pointer to input/output image region</param>
-/// <param name="pMapLeftUp">Mapping of greylevels from upper-left tile histogram</param>
-/// <param name="pMapRightUp">Mapping of greylevels from upper-right tile histogram</param>
-/// <param name="pMapLeftBottom">Mapping of greylevels from lower-left tile histogram</param>
-/// <param name="pMapRightBottom">Mapping of greylevels from lower-right tile histogram</param>
-/// <param name="MatrixWidth">Width of image submatrix to interpolate</param>
-/// <param name="MatrixHeight">Height of image submatrix to interpolate</param>
-/// <remarks>
-/// This function calculates the new greylevel assignments of pixels within a submatrix
-/// of the image with size MatrixWidth and MatrixHeight. This is done by a bilinear interpolation
-/// between four different mappings in order to eliminate boundary artifacts.
-/// Each pixel value is weighted by its distance to neighboring tiles.
-/// </remarks>
 void CBaseAltaLuxFilter::Interpolate(PixelType* pImage,
                                      unsigned int* pMapLeftUp, unsigned int* pMapRightUp,
                                      unsigned int* pMapLeftBottom, unsigned int* pMapRightBottom,
@@ -480,120 +400,4 @@ void CBaseAltaLuxFilter::Interpolate(PixelType* pImage,
 	AltaLuxKernels::Interpolate(pImage, OriginalImageWidth,
 		pMapLeftUp, pMapRightUp, pMapLeftBottom, pMapRightBottom,
 		MatrixWidth, MatrixHeight, KernelImplementationMode);
-}
-
-void CBaseAltaLuxFilter::CalcGraylevelMappings(int uiY, unsigned int ulClipLimit, unsigned int* pulMapArray)
-{
-	PixelType* pImage = (PixelType *)ImageBuffer;
-	PixelType* pImPointer = pImage; //< pointer to image
-
-	/// region pixel count
-	unsigned int NumPixels = (unsigned int)RegionWidth * (unsigned int)RegionHeight; //< region pixel count
-
-	/// Interpolate greylevel mappings to get CLAHE image
-	for (int k = 0; k < uiY; k++)
-	{
-		if (k == 0)
-			pImPointer += (RegionHeight >> 1) * OriginalImageWidth;
-		else
-			pImPointer += RegionHeight * OriginalImageWidth;
-	}
-
-	if (static_cast<unsigned int>(uiY) < NumVertRegions)
-	{
-		/// calculate greylevel mappings for each contextual region
-		for (unsigned int uiX = 0; uiX < NumHorRegions; uiX++, pImPointer += RegionWidth)
-		{
-			unsigned int* pHistogram = &pulMapArray[NUM_GRAY_LEVELS * (uiY * NumHorRegions + uiX)];
-			MakeHistogram(pImPointer, pHistogram);
-			ClipHistogram(pHistogram, ulClipLimit);
-			MapHistogram(pHistogram, NumPixels);
-		}
-	}
-}
-
-void CBaseAltaLuxFilter::ProcessRow(int uiY, unsigned int ulClipLimit, unsigned int* pulMapArray)
-{
-	PixelType* pImage = (PixelType *)ImageBuffer;
-
-	unsigned int uiX; //< counters
-	unsigned int uiSubX, uiSubY; //< size of subimages
-	unsigned int uiXL, uiXR, uiYU, uiYB; //< auxiliary variables interpolation routine
-	PixelType* pImPointer; //< pointer to image
-	unsigned int *pulLU, *pulLB, *pulRU, *pulRB; //< auxiliary pointers interpolation
-
-	/// region pixel count
-	unsigned int NumPixels = (unsigned int)RegionWidth * (unsigned int)RegionHeight; //< region pixel count
-
-	/// Interpolate greylevel mappings to get CLAHE image
-
-	pImPointer = pImage;
-	for (int k = 0; k < uiY; k++)
-	{
-		if (k == 0)
-			pImPointer += (RegionHeight >> 1) * OriginalImageWidth;
-		else
-			pImPointer += RegionHeight * OriginalImageWidth;
-	}
-
-	if (uiY == 0)
-	{
-		/// special case: top row
-		uiSubY = RegionHeight >> 1;
-		uiYU = 0;
-		uiYB = 0;
-	}
-	else
-	{
-		if (uiY == NumVertRegions)
-		{
-			/// special case: bottom row
-			uiSubY = (RegionHeight >> 1) + (OriginalImageHeight - ImageHeight);
-			uiYU = NumVertRegions - 1;
-			uiYB = uiYU;
-		}
-		else
-		{
-			/// default values
-			uiSubY = RegionHeight;
-			uiYU = uiY - 1;
-			uiYB = uiY;
-		}
-	}
-
-	for (uiX = 0; uiX <= NumHorRegions; uiX++)
-	{
-		if (uiX == 0)
-		{
-			/// special case: left column
-			uiSubX = RegionWidth >> 1;
-			uiXL = 0;
-			uiXR = 0;
-		}
-		else
-		{
-			if (uiX == NumHorRegions)
-			{
-				/// special case: right column
-				uiSubX = (RegionWidth >> 1) + (OriginalImageWidth - ImageWidth);
-				uiXL = NumHorRegions - 1;
-				uiXR = uiXL;
-			}
-			else
-			{
-				/// default values
-				uiSubX = RegionWidth;
-				uiXL = uiX - 1;
-				uiXR = uiX;
-			}
-		}
-		pulLU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXL)];
-		pulRU = &pulMapArray[NUM_GRAY_LEVELS * (uiYU * NumHorRegions + uiXR)];
-		pulLB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXL)];
-		pulRB = &pulMapArray[NUM_GRAY_LEVELS * (uiYB * NumHorRegions + uiXR)];
-
-		Interpolate(pImPointer, pulLU, pulRU, pulLB, pulRB, uiSubX, uiSubY);
-
-		pImPointer += uiSubX; //< set pointer on next matrix
-	}
 }

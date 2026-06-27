@@ -257,20 +257,16 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	const int smoothWeight = (std::max)(0, kWeightScale - fineWeight - balancedWeight);
 	const int layerStrength = ComputeLayerStrength(state.strength);
 
-	// accum holds per-channel weighted sums as uint32. Allocated via plain new[] rather
-	// than std::vector — the size constructor of std::vector value-initializes (zeroes),
-	// which on large images is a 100+ MB memset we don't need because the fine-layer
-		// pass assigns every element through the firstLayer branch in the kernel layer.
-	// layerBuffer likewise gets fully overwritten by the memcpy at the top of
-	// accumulateLayer, so its initial contents don't matter.
+	// Raw arrays avoid std::vector value-initialization. The fine layer assigns
+	// every accumulator element, and layerBuffer is overwritten before each use.
 	std::unique_ptr<unsigned int[]> accum(new unsigned int[static_cast<size_t>(pixelCount) * 3U]);
 	std::unique_ptr<unsigned char[]> layerBuffer(new unsigned char[static_cast<size_t>(byteCount)]);
 
-		auto processLayerToBuffer = [&](unsigned char* buffer, int regions) -> bool
-		{
-			memcpy(buffer, sourceImage, byteCount);
-			return ProcessSingleLayer(buffer, width, height, bitDepth, regions, layerStrength, implementation);
-		};
+	auto processLayerToBuffer = [&](unsigned char* buffer, int regions) -> bool
+	{
+		memcpy(buffer, sourceImage, byteCount);
+		return ProcessSingleLayer(buffer, width, height, bitDepth, regions, layerStrength, implementation);
+	};
 
 	auto accumulateProcessedLayer = [&](const unsigned char* buffer, int weight, bool firstLayer)
 	{

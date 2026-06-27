@@ -176,9 +176,9 @@ Creates filter with specific implementation strategy.
   - `ALTALUX_FILTER_DEFAULT` (0) - ParallelSplitLoop
   - `ALTALUX_FILTER_SERIAL` (1) - Single-threaded
   - `ALTALUX_FILTER_PARALLEL_SPLIT_LOOP` (2) - Two-phase parallel
-  - `ALTALUX_FILTER_PARALLEL_ERROR` (3) - Error-based sync
-  - `ALTALUX_FILTER_PARALLEL_EVENT` (4) - Event-based sync
-  - `ALTALUX_FILTER_ACTIVE_WAIT` (5) - Active waiting
+  - `ALTALUX_FILTER_PARALLEL_ERROR` (3) - Legacy id, maps to default
+  - `ALTALUX_FILTER_PARALLEL_EVENT` (4) - Legacy id, maps to default
+  - `ALTALUX_FILTER_ACTIVE_WAIT` (5) - Legacy id, maps to default
 - **Returns**: Pointer to filter instance or `nullptr` on failure
 
 #### Usage Example
@@ -243,9 +243,9 @@ CParallelSplitLoopAltaLuxFilter(
 ```
 
 **Characteristics**:
-- Fast performance (~0.3s for Full HD, 4× speedup)
-- Simple implementation (uses `concurrency::parallel_for`)
-- Good scalability (up to 8 cores)
+- Uses `concurrency::parallel_for` for histogram and interpolation phases
+- Avoids explicit locks by separating the two dependency phases
+- Scales with available CPU cores on large images
 - Automatic thread management
 
 **Algorithm**:
@@ -450,7 +450,7 @@ ALTALUX_API int __cdecl GetPlugInInfo(
 ```
 
 **Parameters**:
-- `versionString`: Buffer for version (e.g., "1.10")
+- `versionString`: Buffer for version (e.g., "2.00")
 - `fileFormats`: Buffer for description (e.g., "AltaLux image enhancement filter")
 
 **Returns**: Always 0 (success)

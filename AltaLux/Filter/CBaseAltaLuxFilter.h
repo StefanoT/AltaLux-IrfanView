@@ -46,7 +46,7 @@ A "contributor" is any person that distributes its contribution under this licen
 /// Bilinear interpolation between neighboring tiles eliminates boundary artifacts.
 ///
 /// @par Processing Steps:
-/// 1. **Tile Division**: Image divided into NumHorRegions × NumVertRegions tiles
+/// 1. **Tile Division**: Image divided into NumHorRegions x NumVertRegions tiles
 /// 2. **Histogram Calculation**: Compute histogram for each tile
 /// 3. **Histogram Clipping**: Clip histogram bins exceeding ClipLimit
 /// 4. **Mapping Generation**: Create cumulative distribution function (CDF)
@@ -61,7 +61,7 @@ A "contributor" is any person that distributes its contribution under this licen
 /// - YUV formats (UYVY, VYUY, YUYV, YVYU)
 ///
 /// @author Stefano Tommesani
-/// @version 1.10
+/// @version 2.00
 
 //-----------------------------------------------------------------------------
 // Return Codes
@@ -197,7 +197,7 @@ const float MAX_CLIP_LIMIT = 5.0f;
 ///          - Serial (single-threaded reference implementation)
 ///          - Parallel Split Loop (recommended for most use cases)
 ///          - Parallel with Events
-///          - Parallel with Active Waiting
+///          - Parallel split-loop strategy
 ///
 /// @par Memory Management:
 /// The class manages an internal buffer (ImageBuffer) for intermediate processing.
@@ -360,25 +360,7 @@ public:
 	/// @note Format: [B G R A] [B G R A] ... (4 bytes per pixel)
 	int ProcessBGR32(void* Image);
 
-	//-------------------------------------------------------------------------
-	// Helper Methods (used by derived classes)
-	//-------------------------------------------------------------------------
-	
-	/// @brief Process a single row of tiles (used in parallel implementations)
-	/// @param uiY Row index (0 to NumVertRegions)
-	/// @param ulClipLimit Histogram clip limit
-	/// @param pulMapArray Pointer to mapping array
-	/// @note This method is called by parallel implementations to process rows concurrently
-	void ProcessRow(int uiY, unsigned int ulClipLimit, unsigned int* pulMapArray);
-	
-	/// @brief Calculate grayscale mappings for a row of tiles
-	/// @param uiY Row index (0 to NumVertRegions-1)
-	/// @param ulClipLimit Histogram clip limit
-	/// @param pulMapArray Pointer to mapping array
-	/// @note Computes histogram, clips it, and generates equalization mapping
-	void CalcGraylevelMappings(int uiY, unsigned int ulClipLimit, unsigned int* pulMapArray);
-
-protected:
+	protected:
 	//-------------------------------------------------------------------------
 	// Image Properties
 	//-------------------------------------------------------------------------
@@ -464,7 +446,7 @@ protected:
 	/// @param pImage Pointer to top-left corner of tile
 	/// @param pHistogram Output histogram array (NUM_GRAY_LEVELS elements)
 	/// @note Histogram counts frequency of each gray level (0-255)
-	/// @note Only processes RegionWidth × RegionHeight area
+		/// @note Only processes RegionWidth x RegionHeight area
 	void MakeHistogram(PixelType* pImage, unsigned int* pHistogram);
 	
 	/// @brief Generate cumulative distribution function (CDF) mapping
@@ -527,7 +509,7 @@ protected:
 	///          Y = 0.2126*R + 0.7152*G + 0.0722*B
 	///          Uses fixed-point arithmetic (scale by 2^15) for performance.
 	///          Result stored in ImageBuffer for CLAHE processing.
-	/// @note This method is optimized with SSSE3 SIMD when available (2-4x faster)
+		/// @note Uses the selected scalar, SSSE3, or AVX2 kernel implementation
 	void ExtractYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor, int PixelOffset);
 
 	/// @brief Injects processed Y component back into RGB image using multiplicative scaling
@@ -539,10 +521,10 @@ protected:
 	/// @details Preserves color (hue and saturation) while applying luminance enhancement:
 	///          1. Reuse original Y cached during RGB/BGR extraction
 	///          2. Lookup pre-computed scale factor from table (eliminates division)
-	///          3. Apply multiplicative scaling: R' = R × scale, G' = G × scale, B' = B × scale
+	///          3. Apply multiplicative scaling: R' = R * scale, G' = G * scale, B' = B * scale
 	///          4. Clamp each channel to [0, 255]
 	///          This preserves color ratios perfectly, preventing hue shifts and desaturation.
-	///          Uses lookup table (256 KB) for ~1.8-2.5x speedup over division.
+	///          Uses a lookup table to avoid per-pixel division.
 	/// @note Called after CLAHE processing to apply enhancement to color image
 	/// @note Black pixels (Y=0) are handled specially to avoid division by zero
 	/// @note Lookup table initialized once on first call (one-time cost)

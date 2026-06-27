@@ -25,7 +25,6 @@ A "contributor" is any person that distributes its contribution under this licen
 (E) The software is licensed "as-is." You bear the risk of using it. The contributors give no express warranties, guarantees or conditions. You may have additional consumer rights under your local laws which this license cannot change. To the extent permitted under your local laws, the contributors exclude the implied warranties of merchantability, fitness for a particular purpose and non-infringement.
 */
 
-//#include "stdafx.h"
 #include <exception>
 #include "CAltaLuxFilterFactory.h"
 #include "CBaseAltaLuxFilter.h"
@@ -36,28 +35,11 @@ A "contributor" is any person that distributes its contribution under this licen
 #include "..\Log\easylogging++.h"
 #endif // ENABLE_LOGGING
 
-/// <summary>
-/// create an instance of the AltaLux filter using the default strategy
-/// </summary>
-/// <param name="Width"></param>
-/// <param name="Height"></param>
-/// <param name="HorSlices"></param>
-/// <param name="VerSlices"></param>
-/// <returns>Instance of AltaLux filter</returns>
 CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateAltaLuxFilter(int Width, int Height, int HorSlices, int VerSlices)
 {
 	return CreateSpecificAltaLuxFilter(ALTALUX_FILTER_DEFAULT, Width, Height, HorSlices, VerSlices);
 }
 
-/// <summary>
-/// create an instance of the AltaLux filter with the specified strategy. Used for testing and benchmarking
-/// </summary>
-/// <param name="FilterType">Strategy to use, refer to ALTALUX_FILTER_XXX constants</param>
-/// <param name="Width"></param>
-/// <param name="Height"></param>
-/// <param name="HorSlices"></param>
-/// <param name="VerSlices"></param>
-/// <returns>Instance of AltaLux filter</returns>
 CBaseAltaLuxFilter* CAltaLuxFilterFactory::CreateSpecificAltaLuxFilter(int FilterType, int Width, int Height,
 	int HorSlices, int VerSlices)
 {

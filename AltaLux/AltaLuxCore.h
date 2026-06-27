@@ -44,8 +44,8 @@ struct Constants
 	static constexpr int DefaultDetail = 25;
 	static constexpr int DefaultNatural = 25;
 
-	static constexpr int MinLayerStrength = 10;
-	static constexpr int MaxLayerStrength = 100;
+	static constexpr int MinLayerStrength = 0;
+	static constexpr int MaxLayerStrength = 75;
 
 	static constexpr float BaseFine = 0.15f;
 	static constexpr float BaseBalanced = 0.60f;

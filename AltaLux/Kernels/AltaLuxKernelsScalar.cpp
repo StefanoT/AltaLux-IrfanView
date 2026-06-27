@@ -162,58 +162,67 @@ namespace AltaLuxKernels
 
 	void ClipHistogramScalar(unsigned int* histogram, unsigned int clipLimit)
 	{
-		unsigned int excess = 0;
+		unsigned int totalPixels = 0;
 		for (int i = 0; i < LumaMapSize; ++i)
 		{
-			const int binExcess = static_cast<int>(histogram[i]) - static_cast<int>(clipLimit);
-			if (binExcess > 0)
-			{
-				excess += static_cast<unsigned int>(binExcess);
-			}
+			totalPixels += histogram[i];
 		}
 
-		const unsigned int binIncrement = excess / LumaMapSize;
-		const unsigned int upper = clipLimit - binIncrement;
+		const unsigned int minimumFeasibleClipLimit =
+			(totalPixels + LumaMapSize - 1) / LumaMapSize;
+		if (clipLimit < minimumFeasibleClipLimit)
+		{
+			clipLimit = minimumFeasibleClipLimit;
+		}
 
+		unsigned int excess = 0;
 		for (int i = 0; i < LumaMapSize; ++i)
 		{
 			if (histogram[i] > clipLimit)
 			{
+				excess += histogram[i] - clipLimit;
 				histogram[i] = clipLimit;
-			}
-			else if (histogram[i] > upper)
-			{
-				excess -= histogram[i] - upper;
-				histogram[i] = clipLimit;
-			}
-			else
-			{
-				excess -= binIncrement;
-				histogram[i] += binIncrement;
 			}
 		}
 
 		while (excess)
 		{
-			unsigned int* end = histogram + LumaMapSize;
-			unsigned int* start = histogram;
-
-			while (excess && start < end)
+			bool madeProgress = false;
+			const unsigned int binIncrement = excess / LumaMapSize;
+			if (binIncrement > 0)
 			{
-				unsigned int stepSize = LumaMapSize / excess;
-				if (stepSize < 1)
+				for (int i = 0; i < LumaMapSize && excess; ++i)
 				{
-					stepSize = 1;
-				}
-				for (unsigned int* bin = start; bin < end && excess; bin += stepSize)
-				{
-					if (*bin < clipLimit)
+					const unsigned int room = clipLimit - histogram[i];
+					if (room > 0)
 					{
-						++(*bin);
-						--excess;
+						unsigned int add = room < binIncrement ? room : binIncrement;
+						if (add > excess)
+						{
+							add = excess;
+						}
+						histogram[i] += add;
+						excess -= add;
+						madeProgress = true;
 					}
 				}
-				++start;
+			}
+			else
+			{
+				for (int i = 0; i < LumaMapSize && excess; ++i)
+				{
+					if (histogram[i] < clipLimit)
+					{
+						++histogram[i];
+						--excess;
+						madeProgress = true;
+					}
+				}
+			}
+
+			if (!madeProgress)
+			{
+				++clipLimit;
 			}
 		}
 	}
