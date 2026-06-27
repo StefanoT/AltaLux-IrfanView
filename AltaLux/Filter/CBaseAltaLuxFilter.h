@@ -264,7 +264,7 @@ public:
 	/// @see AL_MIN_STRENGTH, AL_DEFAULT_STRENGTH, AL_MAX_STRENGTH
 	void SetStrength(int _Strength = AL_DEFAULT_STRENGTH);
 
-	/// @brief Select scalar C++, SSE2, or AVX2 kernels for format conversion
+	/// @brief Select scalar C++, SSSE3, or AVX2 kernels for format conversion
 	void SetKernelImplementation(AltaLuxKernels::KernelImplementation implementation);
 
 	/// @brief Return the selected scalar/SIMD kernel implementation
@@ -527,7 +527,7 @@ protected:
 	///          Y = 0.2126*R + 0.7152*G + 0.0722*B
 	///          Uses fixed-point arithmetic (scale by 2^15) for performance.
 	///          Result stored in ImageBuffer for CLAHE processing.
-	/// @note This method is optimized with SSE2 SIMD when available (2-4x faster)
+	/// @note This method is optimized with SSSE3 SIMD when available (2-4x faster)
 	void ExtractYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor, int PixelOffset);
 
 	/// @brief Injects processed Y component back into RGB image using multiplicative scaling

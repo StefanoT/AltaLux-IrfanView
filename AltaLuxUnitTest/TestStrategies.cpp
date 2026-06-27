@@ -271,9 +271,9 @@ namespace AltaLuxUnitTest
 			}
 		}
 
-		TEST_METHOD(SSE2FilterOutputsMatchScalar)
+		TEST_METHOD(SSSE3FilterOutputsMatchScalar)
 		{
-			AssertFilterOutputsMatchScalar(AltaLuxKernels::KernelImplementation::SSE2);
+			AssertFilterOutputsMatchScalar(AltaLuxKernels::KernelImplementation::SSSE3);
 		}
 
 		TEST_METHOD(AVX2FilterOutputsMatchScalar)
@@ -281,9 +281,9 @@ namespace AltaLuxUnitTest
 			AssertFilterOutputsMatchScalar(AltaLuxKernels::KernelImplementation::AVX2);
 		}
 
-		TEST_METHOD(SSE2ScaleDownBoxMatchesScalar)
+		TEST_METHOD(SSSE3ScaleDownBoxMatchesScalar)
 		{
-			AssertScaleDownBoxMatchesScalar(AltaLuxKernels::KernelImplementation::SSE2);
+			AssertScaleDownBoxMatchesScalar(AltaLuxKernels::KernelImplementation::SSSE3);
 		}
 
 		TEST_METHOD(AVX2ScaleDownBoxMatchesScalar)

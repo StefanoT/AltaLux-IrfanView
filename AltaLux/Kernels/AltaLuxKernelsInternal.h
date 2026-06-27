@@ -59,29 +59,29 @@ namespace AltaLuxKernels
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
 		unsigned int matrixWidth, unsigned int matrixHeight);
 
-	void ExtractPackedYUVLumaSSE2(const unsigned char* source, unsigned char* luma,
+	void ExtractPackedYUVLumaSSSE3(const unsigned char* source, unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition);
-	void InjectPackedYUVLumaSSE2(unsigned char* target, const unsigned char* luma,
+	void InjectPackedYUVLumaSSSE3(unsigned char* target, const unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition);
-	void ExtractRGBLumaSSE2(const unsigned char* source, unsigned char* luma, int pixelCount,
+	void ExtractRGBLumaSSSE3(const unsigned char* source, unsigned char* luma, int pixelCount,
 		int pixelStride, int firstFactor, int secondFactor, int thirdFactor, int scalingLog);
-	void InjectRGBLumaSSE2(unsigned char* image, const unsigned char* luma, int pixelCount,
+	void InjectRGBLumaSSSE3(unsigned char* image, const unsigned char* luma, int pixelCount,
 		int pixelStride, int firstFactor, int secondFactor, int thirdFactor, int scalingLog,
 		const int* reciprocalLut);
-	void InjectRGBLumaWithOriginalLumaSSE2(unsigned char* image, const unsigned char* luma,
+	void InjectRGBLumaWithOriginalLumaSSSE3(unsigned char* image, const unsigned char* luma,
 		const unsigned char* originalLuma, int pixelCount, int pixelStride,
 		const int* reciprocalLut);
-	void ScaleDownBoxSSE2(const unsigned char* source, int sourceWidth, int sourceHeight,
+	void ScaleDownBoxSSSE3(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride);
-	void MakeHistogramSSE2(const unsigned char* image, int imageStride, int regionWidth,
+	void MakeHistogramSSSE3(const unsigned char* image, int imageStride, int regionWidth,
 		int regionHeight, unsigned int* histogram);
-	void ClipHistogramSSE2(unsigned int* histogram, unsigned int clipLimit);
-	void MapHistogramSSE2(unsigned int* histogram, unsigned int pixelCount);
-	void AccumulateLayerSSE2(unsigned int* accum, const unsigned char* layer, int pixelStart,
+	void ClipHistogramSSSE3(unsigned int* histogram, unsigned int clipLimit);
+	void MapHistogramSSSE3(unsigned int* histogram, unsigned int pixelCount);
+	void AccumulateLayerSSSE3(unsigned int* accum, const unsigned char* layer, int pixelStart,
 		int pixelEnd, int pixelStride, int weight, bool firstLayer);
-	void WriteAccumulatedImageSSE2(unsigned char* target, const unsigned int* accum, int pixelStart,
+	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int pixelStart,
 		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
-	void InterpolateSSE2(unsigned char* image, int imageStride,
+	void InterpolateSSSE3(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
 		unsigned int matrixWidth, unsigned int matrixHeight);

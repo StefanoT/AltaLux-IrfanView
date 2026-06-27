@@ -21,14 +21,23 @@ namespace
 		return lut;
 	}();
 
+	inline __m128i CalculateRGBLuma4FromPacked(__m128i pixels, __m128i factors,
+		__m128i roundingOffset, __m128i shiftCount);
+
 	// Computes luma for four RGB32/BGR32 pixels. This is the same 128-bit data
-	// shape as the SSE2 helper: widen bytes, pairwise multiply-add channel factors,
+	// shape as the SSSE3 helper: widen bytes, pairwise multiply-add channel factors,
 	// merge pair sums, then round and shift to one 32-bit luma per pixel.
 	inline __m128i CalculateRGB32Luma4(const unsigned char* src, __m128i factors,
 		__m128i roundingOffset, __m128i shiftCount)
 	{
-		const __m128i zero = _mm_setzero_si128();
 		const __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
+		return CalculateRGBLuma4FromPacked(pixels, factors, roundingOffset, shiftCount);
+	}
+
+	inline __m128i CalculateRGBLuma4FromPacked(__m128i pixels, __m128i factors,
+		__m128i roundingOffset, __m128i shiftCount)
+	{
+		const __m128i zero = _mm_setzero_si128();
 		const __m128i loWords = _mm_unpacklo_epi8(pixels, zero);
 		const __m128i hiWords = _mm_unpackhi_epi8(pixels, zero);
 		const __m128i loPairs = _mm_madd_epi16(loWords, factors);
@@ -39,6 +48,16 @@ namespace
 		const __m128i y23 = _mm_shuffle_epi32(hiSums, _MM_SHUFFLE(2, 0, 2, 0));
 		const __m128i y = _mm_unpacklo_epi64(y01, y23);
 		return _mm_sra_epi32(_mm_add_epi32(y, roundingOffset), shiftCount);
+	}
+
+	inline __m128i LoadRGB24AsRGBX4(const unsigned char* src)
+	{
+		const __m128i rgb24ToRGBX = _mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
+		return _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src)), rgb24ToRGBX);
 	}
 
 	// Computes luma for eight RGB24/BGR24 pixels. AVX2 gathers one dword starting
@@ -97,20 +116,17 @@ namespace
 	}
 
 	// Writes four packed RGB32 pixels while preserving the existing fourth byte.
-	// Each 3-byte triplet is shifted into its dword lane and ORed with the
-	// original alpha/unused byte from the target image.
+	// PSHUFB expands contiguous RGB triplets into RGBX dwords, then the original
+	// alpha/unused byte is ORed back into each pixel.
 	inline void StoreRGB32Pixels4(unsigned char* target, __m128i packedRGB)
 	{
-		const __m128i colorMask0 = _mm_setr_epi32(0x00FFFFFF, 0, 0, 0);
-		const __m128i colorMask1 = _mm_setr_epi32(0, 0x00FFFFFF, 0, 0);
-		const __m128i colorMask2 = _mm_setr_epi32(0, 0, 0x00FFFFFF, 0);
-		const __m128i colorMask3 = _mm_setr_epi32(0, 0, 0, 0x00FFFFFF);
+		const __m128i rgbToRGBX = _mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
 		const __m128i alphaMask = _mm_set1_epi32(static_cast<int>(0xFF000000u));
-		const __m128i p0 = _mm_and_si128(packedRGB, colorMask0);
-		const __m128i p1 = _mm_and_si128(_mm_slli_si128(_mm_srli_si128(packedRGB, 3), 4), colorMask1);
-		const __m128i p2 = _mm_and_si128(_mm_slli_si128(_mm_srli_si128(packedRGB, 6), 8), colorMask2);
-		const __m128i p3 = _mm_and_si128(_mm_slli_si128(_mm_srli_si128(packedRGB, 9), 12), colorMask3);
-		const __m128i colors = _mm_or_si128(_mm_or_si128(p0, p1), _mm_or_si128(p2, p3));
+		const __m128i colors = _mm_shuffle_epi8(packedRGB, rgbToRGBX);
 		const __m128i original = _mm_loadu_si128(reinterpret_cast<const __m128i*>(target));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(target),
 			_mm_or_si128(_mm_and_si128(original, alphaMask), colors));
@@ -242,6 +258,46 @@ namespace
 		StoreRGB24Pixel(target + 21, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(hi, 12))));
 	}
 
+	inline __m256i LoadTwoRGB24ScaleDownChunksAVX2(const unsigned char* row)
+	{
+		const __m128i firstTwoDestPixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(row));
+		const __m128i secondTwoDestPixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(row + 12));
+		return _mm256_inserti128_si256(_mm256_castsi128_si256(firstTwoDestPixels), secondTwoDestPixels, 1);
+	}
+
+	inline __m256i AverageBox2x2ShuffleAVX2(__m256i topPixels, __m256i bottomPixels,
+		__m256i evenMask, __m256i oddMask)
+	{
+		const __m256i zero = _mm256_setzero_si256();
+		const __m256i topEven = _mm256_shuffle_epi8(topPixels, evenMask);
+		const __m256i topOdd = _mm256_shuffle_epi8(topPixels, oddMask);
+		const __m256i bottomEven = _mm256_shuffle_epi8(bottomPixels, evenMask);
+		const __m256i bottomOdd = _mm256_shuffle_epi8(bottomPixels, oddMask);
+		__m256i sum = _mm256_add_epi16(_mm256_unpacklo_epi8(topEven, zero), _mm256_unpacklo_epi8(topOdd, zero));
+		sum = _mm256_add_epi16(sum, _mm256_unpacklo_epi8(bottomEven, zero));
+		sum = _mm256_add_epi16(sum, _mm256_unpacklo_epi8(bottomOdd, zero));
+		return _mm256_packus_epi16(_mm256_srli_epi16(sum, 2), zero);
+	}
+
+	inline void StoreFourRGB32DownscaledPixelsAVX2(unsigned char* target, __m256i pixels)
+	{
+		_mm_storel_epi64(reinterpret_cast<__m128i*>(target), _mm256_castsi256_si128(pixels));
+		_mm_storel_epi64(reinterpret_cast<__m128i*>(target + 8), _mm256_extracti128_si256(pixels, 1));
+	}
+
+	inline void StoreLow6BytesAVX2(unsigned char* target, __m128i value)
+	{
+		*reinterpret_cast<unsigned int*>(target) = static_cast<unsigned int>(_mm_cvtsi128_si32(value));
+		*reinterpret_cast<unsigned short*>(target + 4) =
+			static_cast<unsigned short>(_mm_extract_epi16(value, 2));
+	}
+
+	inline void StoreFourRGB24DownscaledPixelsAVX2(unsigned char* target, __m256i pixels)
+	{
+		StoreLow6BytesAVX2(target, _mm256_castsi256_si128(pixels));
+		StoreLow6BytesAVX2(target + 6, _mm256_extracti128_si256(pixels, 1));
+	}
+
 	inline void ScaleDownBox2x2Tail(const unsigned char* topRow, const unsigned char* bottomRow,
 		unsigned char* target, int startX, int endX, int pixelStride)
 	{
@@ -298,7 +354,7 @@ namespace AltaLuxKernels
 				_mm256_storeu_si256(reinterpret_cast<__m256i*>(luma + i), packed);
 			}
 		}
-		ExtractPackedYUVLumaSSE2(source + (i * 2), luma + i, pixelCount - i, lumaPosition);
+		ExtractPackedYUVLumaSSSE3(source + (i * 2), luma + i, pixelCount - i, lumaPosition);
 	}
 
 	// Replaces the luma byte inside packed 16-bit YUV words without disturbing
@@ -341,31 +397,30 @@ namespace AltaLuxKernels
 				_mm256_storeu_si256(reinterpret_cast<__m256i*>(target + (i * 2) + 32), img1);
 			}
 		}
-		InjectPackedYUVLumaSSE2(target + (i * 2), luma + i, pixelCount - i, lumaPosition);
+		InjectPackedYUVLumaSSSE3(target + (i * 2), luma + i, pixelCount - i, lumaPosition);
 	}
 
-	// Extracts luma from RGB/BGR input. RGB24 uses AVX2 gathers at 3-byte offsets;
-	// RGB32 reuses the fast 128-bit four-pixel helper twice per loop because the
-	// packed 4-byte layout maps cleanly to two XMM loads.
+	// Extracts luma from RGB/BGR input. RGB24 uses contiguous loads plus PSHUFB to
+	// expand two 4-pixel groups from 3-byte pixels into RGBX dwords; this avoids
+	// the high latency of AVX2 gathers at 3-byte offsets. RGB32 uses the same
+	// 128-bit four-pixel helper twice per loop.
 	void ExtractRGBLumaAVX2(const unsigned char* source, unsigned char* luma, int pixelCount,
 		int pixelStride, int firstFactor, int secondFactor, int thirdFactor, int scalingLog)
 	{
 		int i = 0;
 		if (pixelStride == 3)
 		{
-			const __m256i offsets = _mm256_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21);
-			const __m256i firstFactorVec = _mm256_set1_epi32(firstFactor);
-			const __m256i secondFactorVec = _mm256_set1_epi32(secondFactor);
-			const __m256i thirdFactorVec = _mm256_set1_epi32(thirdFactor);
-			const __m256i roundingOffset = _mm256_set1_epi32(1 << (scalingLog - 1));
+			const __m128i factors = _mm_setr_epi16(
+				static_cast<short>(firstFactor), static_cast<short>(secondFactor), static_cast<short>(thirdFactor), 0,
+				static_cast<short>(firstFactor), static_cast<short>(secondFactor), static_cast<short>(thirdFactor), 0);
+			const __m128i roundingOffset = _mm_set1_epi32(1 << (scalingLog - 1));
 			const __m128i shiftCount = _mm_cvtsi32_si128(scalingLog);
-			// Gather reads four bytes per pixel; keep one extra pixel available so the
-			// last gathered dword stays inside the source buffer.
-			for (; i + 8 < pixelCount; i += 8)
+			for (; i <= pixelCount - 10; i += 8)
 			{
-				const __m256i y = CalculateRGB24Luma8(source + (i * 3), offsets,
-					firstFactorVec, secondFactorVec, thirdFactorVec, roundingOffset, shiftCount);
-				StoreLuma8(luma + i, y);
+				StoreLuma4(luma + i, CalculateRGBLuma4FromPacked(
+					LoadRGB24AsRGBX4(source + (i * 3)), factors, roundingOffset, shiftCount));
+				StoreLuma4(luma + i + 4, CalculateRGBLuma4FromPacked(
+					LoadRGB24AsRGBX4(source + ((i + 4) * 3)), factors, roundingOffset, shiftCount));
 			}
 			ExtractRGBLumaScalar(source + (i * 3), luma + i, pixelCount - i,
 				3, firstFactor, secondFactor, thirdFactor, scalingLog);
@@ -384,7 +439,7 @@ namespace AltaLuxKernels
 				StoreLuma4(luma + i, CalculateRGB32Luma4(source + (i * 4), factors, roundingOffset, shiftCount));
 				StoreLuma4(luma + i + 4, CalculateRGB32Luma4(source + (i * 4) + 16, factors, roundingOffset, shiftCount));
 			}
-			ExtractRGBLumaSSE2(source + (i * 4), luma + i, pixelCount - i,
+			ExtractRGBLumaSSSE3(source + (i * 4), luma + i, pixelCount - i,
 				4, firstFactor, secondFactor, thirdFactor, scalingLog);
 			return;
 		}
@@ -447,7 +502,7 @@ namespace AltaLuxKernels
 			output = _mm256_or_si256(output, _mm256_slli_epi32(out2, 16));
 			_mm256_storeu_si256(reinterpret_cast<__m256i*>(image + (i * 4)), output);
 		}
-		InjectRGBLumaSSE2(image + (i * 4), luma + i, pixelCount - i,
+		InjectRGBLumaSSSE3(image + (i * 4), luma + i, pixelCount - i,
 				4, firstFactor, secondFactor, thirdFactor, scalingLog, reciprocalLut);
 	}
 
@@ -495,13 +550,14 @@ namespace AltaLuxKernels
 			output = _mm256_or_si256(output, _mm256_slli_epi32(out2, 16));
 			_mm256_storeu_si256(reinterpret_cast<__m256i*>(image + (i * 4)), output);
 		}
-		InjectRGBLumaWithOriginalLumaSSE2(image + (i * 4), luma + i, originalLuma + i,
+		InjectRGBLumaWithOriginalLumaSSSE3(image + (i * 4), luma + i, originalLuma + i,
 			pixelCount - i, 4, reciprocalLut);
 	}
 
 	// Downscales an RGB24/RGB32 image with a box filter. AVX2 handles the common
-	// 2x preview reduction by averaging four source pixels into eight destination
-	// pixels per iteration; other scale factors use the scalar exact kernel.
+	// 2x preview reduction by loading contiguous source bytes, using VPSHUFB to
+	// split even and odd horizontal samples in each 128-bit lane, then averaging
+	// the four contributing pixels. Other scale factors use the scalar exact kernel.
 	void ScaleDownBoxAVX2(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride)
 	{
@@ -516,8 +572,18 @@ namespace AltaLuxKernels
 		const int targetWidth = sourceWidth / 2;
 		const int targetHeight = sourceHeight / 2;
 		const int targetStride = targetWidth * pixelStride;
-		const int vectorizedWidth = targetWidth & ~7;
-		const bool includeFourthChannel = pixelStride == 4;
+		const __m256i rgb32EvenMask = _mm256_setr_epi8(
+			0, 1, 2, 3, 8, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1,
+			0, 1, 2, 3, 8, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1);
+		const __m256i rgb32OddMask = _mm256_setr_epi8(
+			4, 5, 6, 7, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1,
+			4, 5, 6, 7, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
+		const __m256i rgb24EvenMask = _mm256_setr_epi8(
+			0, 1, 2, 6, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+			0, 1, 2, 6, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+		const __m256i rgb24OddMask = _mm256_setr_epi8(
+			3, 4, 5, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+			3, 4, 5, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
 
 		for (int y = 0; y < targetHeight; ++y)
 		{
@@ -525,15 +591,29 @@ namespace AltaLuxKernels
 			const unsigned char* bottomRow = topRow + sourceStride;
 			unsigned char* dst = target + (y * targetStride);
 			int x = 0;
-			for (; x < vectorizedWidth; x += 8)
+			if (pixelStride == 4)
 			{
-				const __m256i topLeft = LoadEightBoxPixelsAVX2(topRow, x, 0, pixelStride);
-				const __m256i topRight = LoadEightBoxPixelsAVX2(topRow, x, 1, pixelStride);
-				const __m256i bottomLeft = LoadEightBoxPixelsAVX2(bottomRow, x, 0, pixelStride);
-				const __m256i bottomRight = LoadEightBoxPixelsAVX2(bottomRow, x, 1, pixelStride);
-				StoreEightDownscaledPixelsAVX2(dst + (x * pixelStride),
-					AverageBox2x2PixelsAVX2(topLeft, topRight, bottomLeft, bottomRight, includeFourthChannel),
-					pixelStride);
+				for (; x <= targetWidth - 4; x += 4)
+				{
+					const __m256i topPixels = _mm256_loadu_si256(
+						reinterpret_cast<const __m256i*>(topRow + (x * 2 * 4)));
+					const __m256i bottomPixels = _mm256_loadu_si256(
+						reinterpret_cast<const __m256i*>(bottomRow + (x * 2 * 4)));
+					const __m256i out = AverageBox2x2ShuffleAVX2(topPixels, bottomPixels,
+						rgb32EvenMask, rgb32OddMask);
+					StoreFourRGB32DownscaledPixelsAVX2(dst + (x * 4), out);
+				}
+			}
+			else
+			{
+				for (; x <= targetWidth - 5; x += 4)
+				{
+					const __m256i topPixels = LoadTwoRGB24ScaleDownChunksAVX2(topRow + (x * 2 * 3));
+					const __m256i bottomPixels = LoadTwoRGB24ScaleDownChunksAVX2(bottomRow + (x * 2 * 3));
+					const __m256i out = AverageBox2x2ShuffleAVX2(topPixels, bottomPixels,
+						rgb24EvenMask, rgb24OddMask);
+					StoreFourRGB24DownscaledPixelsAVX2(dst + (x * 3), out);
+				}
 			}
 			ScaleDownBox2x2Tail(topRow, bottomRow, dst + (x * pixelStride), x, targetWidth, pixelStride);
 		}
@@ -599,7 +679,7 @@ namespace AltaLuxKernels
 						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 16)), w2));
 				}
 			}
-			AccumulateLayerSSE2(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			AccumulateLayerSSSE3(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 			return;
 		}
 
@@ -651,7 +731,7 @@ namespace AltaLuxKernels
 					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 16)), w2));
 			}
 		}
-		AccumulateLayerSSE2(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+		AccumulateLayerSSSE3(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 	}
 
 	// Converts accumulated weighted sums back to RGB bytes eight pixels at a time.
@@ -687,7 +767,7 @@ namespace AltaLuxKernels
 						_mm256_castsi256_si128(e2),
 						_mm256_extracti128_si256(e2, 1)));
 			}
-			WriteAccumulatedImageSSE2(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+			WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 			return;
 		}
 
@@ -714,11 +794,11 @@ namespace AltaLuxKernels
 						_mm256_castsi256_si128(e2),
 						_mm256_extracti128_si256(e2, 1)));
 			}
-			WriteAccumulatedImageSSE2(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+			WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 			return;
 		}
 
-		WriteAccumulatedImageSSE2(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+		WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 	}
 
 	// Interpolates CLAHE mapping regions using the scalar interleaved row-map

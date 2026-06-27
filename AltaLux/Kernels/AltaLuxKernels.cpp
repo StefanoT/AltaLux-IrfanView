@@ -6,7 +6,7 @@ namespace
 {
 	struct CpuFeatures
 	{
-		bool sse2;
+		bool ssse3;
 		bool avx2;
 	};
 
@@ -21,7 +21,7 @@ namespace
 		if (maxFunction >= 1)
 		{
 			__cpuidex(cpuInfo, 1, 0);
-			features.sse2 = (cpuInfo[3] & (1 << 26)) != 0;
+			features.ssse3 = (cpuInfo[2] & (1 << 9)) != 0;
 
 			const bool osXsave = (cpuInfo[2] & (1 << 27)) != 0;
 			const bool avx = (cpuInfo[2] & (1 << 28)) != 0;
@@ -39,9 +39,6 @@ namespace
 			}
 		}
 
-#if defined(_M_X64)
-		features.sse2 = true;
-#endif
 		return features;
 	}
 
@@ -70,8 +67,8 @@ namespace AltaLuxKernels
 		{
 		case KernelImplementation::Scalar:
 			return "Scalar";
-		case KernelImplementation::SSE2:
-			return "SSE2";
+		case KernelImplementation::SSSE3:
+			return "SSSE3";
 		case KernelImplementation::AVX2:
 			return "AVX2";
 		default:
@@ -86,8 +83,8 @@ namespace AltaLuxKernels
 		{
 		case KernelImplementation::Scalar:
 			return true;
-		case KernelImplementation::SSE2:
-			return features.sse2;
+		case KernelImplementation::SSSE3:
+			return features.ssse3;
 		case KernelImplementation::AVX2:
 			return features.avx2;
 		default:
@@ -101,9 +98,9 @@ namespace AltaLuxKernels
 		{
 			return KernelImplementation::AVX2;
 		}
-		if (IsImplementationSupported(KernelImplementation::SSE2))
+		if (IsImplementationSupported(KernelImplementation::SSSE3))
 		{
-			return KernelImplementation::SSE2;
+			return KernelImplementation::SSSE3;
 		}
 		return KernelImplementation::Scalar;
 	}
@@ -116,8 +113,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			ExtractPackedYUVLumaAVX2(source, luma, pixelCount, lumaPosition);
 			break;
-		case KernelImplementation::SSE2:
-			ExtractPackedYUVLumaSSE2(source, luma, pixelCount, lumaPosition);
+		case KernelImplementation::SSSE3:
+			ExtractPackedYUVLumaSSSE3(source, luma, pixelCount, lumaPosition);
 			break;
 		default:
 			ExtractPackedYUVLumaScalar(source, luma, pixelCount, lumaPosition);
@@ -133,8 +130,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			InjectPackedYUVLumaAVX2(target, luma, pixelCount, lumaPosition);
 			break;
-		case KernelImplementation::SSE2:
-			InjectPackedYUVLumaSSE2(target, luma, pixelCount, lumaPosition);
+		case KernelImplementation::SSSE3:
+			InjectPackedYUVLumaSSSE3(target, luma, pixelCount, lumaPosition);
 			break;
 		default:
 			InjectPackedYUVLumaScalar(target, luma, pixelCount, lumaPosition);
@@ -152,8 +149,8 @@ namespace AltaLuxKernels
 			ExtractRGBLumaAVX2(source, luma, pixelCount, pixelStride,
 				firstFactor, secondFactor, thirdFactor, scalingLog);
 			break;
-		case KernelImplementation::SSE2:
-			ExtractRGBLumaSSE2(source, luma, pixelCount, pixelStride,
+		case KernelImplementation::SSSE3:
+			ExtractRGBLumaSSSE3(source, luma, pixelCount, pixelStride,
 				firstFactor, secondFactor, thirdFactor, scalingLog);
 			break;
 		default:
@@ -173,8 +170,8 @@ namespace AltaLuxKernels
 			InjectRGBLumaAVX2(image, luma, pixelCount, pixelStride,
 				firstFactor, secondFactor, thirdFactor, scalingLog, reciprocalLut);
 			break;
-		case KernelImplementation::SSE2:
-			InjectRGBLumaSSE2(image, luma, pixelCount, pixelStride,
+		case KernelImplementation::SSSE3:
+			InjectRGBLumaSSSE3(image, luma, pixelCount, pixelStride,
 				firstFactor, secondFactor, thirdFactor, scalingLog, reciprocalLut);
 			break;
 		default:
@@ -194,8 +191,8 @@ namespace AltaLuxKernels
 			InjectRGBLumaWithOriginalLumaAVX2(image, luma, originalLuma, pixelCount,
 				pixelStride, reciprocalLut);
 			break;
-		case KernelImplementation::SSE2:
-			InjectRGBLumaWithOriginalLumaSSE2(image, luma, originalLuma, pixelCount,
+		case KernelImplementation::SSSE3:
+			InjectRGBLumaWithOriginalLumaSSSE3(image, luma, originalLuma, pixelCount,
 				pixelStride, reciprocalLut);
 			break;
 		default:
@@ -213,8 +210,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			ScaleDownBoxAVX2(source, sourceWidth, sourceHeight, target, scaleFactor, pixelStride);
 			break;
-		case KernelImplementation::SSE2:
-			ScaleDownBoxSSE2(source, sourceWidth, sourceHeight, target, scaleFactor, pixelStride);
+		case KernelImplementation::SSSE3:
+			ScaleDownBoxSSSE3(source, sourceWidth, sourceHeight, target, scaleFactor, pixelStride);
 			break;
 		default:
 			ScaleDownBoxScalar(source, sourceWidth, sourceHeight, target, scaleFactor, pixelStride);
@@ -230,8 +227,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			MakeHistogramAVX2(image, imageStride, regionWidth, regionHeight, histogram);
 			break;
-		case KernelImplementation::SSE2:
-			MakeHistogramSSE2(image, imageStride, regionWidth, regionHeight, histogram);
+		case KernelImplementation::SSSE3:
+			MakeHistogramSSSE3(image, imageStride, regionWidth, regionHeight, histogram);
 			break;
 		default:
 			MakeHistogramScalar(image, imageStride, regionWidth, regionHeight, histogram);
@@ -246,8 +243,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			ClipHistogramAVX2(histogram, clipLimit);
 			break;
-		case KernelImplementation::SSE2:
-			ClipHistogramSSE2(histogram, clipLimit);
+		case KernelImplementation::SSSE3:
+			ClipHistogramSSSE3(histogram, clipLimit);
 			break;
 		default:
 			ClipHistogramScalar(histogram, clipLimit);
@@ -262,8 +259,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			MapHistogramAVX2(histogram, pixelCount);
 			break;
-		case KernelImplementation::SSE2:
-			MapHistogramSSE2(histogram, pixelCount);
+		case KernelImplementation::SSSE3:
+			MapHistogramSSSE3(histogram, pixelCount);
 			break;
 		default:
 			MapHistogramScalar(histogram, pixelCount);
@@ -279,8 +276,8 @@ namespace AltaLuxKernels
 		case KernelImplementation::AVX2:
 			AccumulateLayerAVX2(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
 			break;
-		case KernelImplementation::SSE2:
-			AccumulateLayerSSE2(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
+		case KernelImplementation::SSSE3:
+			AccumulateLayerSSSE3(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
 			break;
 		default:
 			AccumulateLayerScalar(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
@@ -298,8 +295,8 @@ namespace AltaLuxKernels
 			WriteAccumulatedImageAVX2(target, accum, pixelStart, pixelEnd, pixelStride,
 				weightScaleLog2, weightHalf);
 			break;
-		case KernelImplementation::SSE2:
-			WriteAccumulatedImageSSE2(target, accum, pixelStart, pixelEnd, pixelStride,
+		case KernelImplementation::SSSE3:
+			WriteAccumulatedImageSSSE3(target, accum, pixelStart, pixelEnd, pixelStride,
 				weightScaleLog2, weightHalf);
 			break;
 		default:
@@ -320,8 +317,8 @@ namespace AltaLuxKernels
 			InterpolateAVX2(image, imageStride, mapLeftUp, mapRightUp,
 				mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 			break;
-		case KernelImplementation::SSE2:
-			InterpolateSSE2(image, imageStride, mapLeftUp, mapRightUp,
+		case KernelImplementation::SSSE3:
+			InterpolateSSSE3(image, imageStride, mapLeftUp, mapRightUp,
 				mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 			break;
 		default:

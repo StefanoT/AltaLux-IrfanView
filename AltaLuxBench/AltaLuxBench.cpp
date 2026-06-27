@@ -118,7 +118,7 @@ void BenchmarkImplementationGroup(const char *BenchmarkName, Fn operation)
 	const AltaLuxKernels::KernelImplementation implementations[] =
 	{
 		AltaLuxKernels::KernelImplementation::Scalar,
-		AltaLuxKernels::KernelImplementation::SSE2,
+		AltaLuxKernels::KernelImplementation::SSSE3,
 		AltaLuxKernels::KernelImplementation::AVX2
 	};
 	const int implementationCount = 3;
@@ -188,7 +188,7 @@ void BenchmarkFilterImplementations(const vector<unsigned char>& reference, cons
 	const AltaLuxKernels::KernelImplementation implementations[] =
 	{
 		AltaLuxKernels::KernelImplementation::Scalar,
-		AltaLuxKernels::KernelImplementation::SSE2,
+		AltaLuxKernels::KernelImplementation::SSSE3,
 		AltaLuxKernels::KernelImplementation::AVX2
 	};
 	vector<unsigned char> inputs[3];
@@ -210,7 +210,7 @@ void BenchmarkFilterImplementations(const vector<unsigned char>& reference, cons
 	BenchmarkImplementationGroup(FilterName, [&](AltaLuxKernels::KernelImplementation implementation)
 	{
 		const int index = (implementation == AltaLuxKernels::KernelImplementation::Scalar) ? 0 :
-			((implementation == AltaLuxKernels::KernelImplementation::SSE2) ? 1 : 2);
+			((implementation == AltaLuxKernels::KernelImplementation::SSSE3) ? 1 : 2);
 		memcpy(inputs[index].data(), reference.data(), reference.size());
 		(filters[index].get()->*processMethod)(inputs[index].data());
 	});

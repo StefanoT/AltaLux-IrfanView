@@ -5,7 +5,7 @@ namespace AltaLuxKernels
 	enum class KernelImplementation
 	{
 		Scalar,
-		SSE2,
+		SSSE3,
 		AVX2
 	};
 

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -159,7 +159,7 @@
   <ItemGroup>
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernels.cpp" />
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsScalar.cpp" />
-    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSse2.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSSSE3.cpp">
       <EnableEnhancedInstructionSet Condition="'$(Platform)'=='Win32'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <EnableEnhancedInstructionSet Condition="'$(Platform)'=='x64'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>

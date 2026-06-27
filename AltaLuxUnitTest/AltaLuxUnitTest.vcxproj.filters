@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -83,7 +83,7 @@
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsScalar.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSse2.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSSSE3.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsAvx2.cpp">

@@ -1,13 +1,13 @@
 #include "AltaLuxKernelsInternal.h"
 
-#include <emmintrin.h>
+#include <tmmintrin.h>
 
 namespace
 {
-	// Multiplies four unsigned 32-bit lanes using SSE2, which only has even-lane
-	// 32x32->64 multiplication. Shifted copies produce lanes 1 and 3, then the
-	// low 32-bit products are interleaved back into normal lane order.
-	inline __m128i MulloEpi32SSE2(__m128i a, __m128i b)
+	// Multiplies four unsigned 32-bit lanes using the even-lane 32x32->64
+	// instruction. Shifted copies produce lanes 1 and 3, then the low
+	// 32-bit products are interleaved back into normal lane order.
+	inline __m128i MulloEpi32Compat(__m128i a, __m128i b)
 	{
 		const __m128i prod02 = _mm_mul_epu32(a, b);
 		const __m128i prod13 = _mm_mul_epu32(_mm_srli_si128(a, 4), _mm_srli_si128(b, 4));
@@ -16,14 +16,14 @@ namespace
 		return _mm_unpacklo_epi32(prod02Low, prod13Low);
 	}
 
-	// Computes luma for four RGB32/BGR32 pixels. Bytes are widened to 16-bit
-	// channels, _mm_madd_epi16 performs pairwise channel*factor sums, and adjacent
-	// pair sums are combined into one 32-bit luma value per pixel.
-	inline __m128i CalculateRGB32Luma4(const unsigned char* src, __m128i factors,
+	// Computes luma for four RGB/RGBX pixels already arranged as four dwords:
+	// C0 C1 C2 X. Bytes are widened to 16-bit channels, _mm_madd_epi16 performs
+	// pairwise channel*factor sums, and adjacent pair sums are combined into one
+	// 32-bit luma value per pixel.
+	inline __m128i CalculateRGBLuma4FromPacked(__m128i pixels, __m128i factors,
 		__m128i roundingOffset, __m128i shiftCount)
 	{
 		const __m128i zero = _mm_setzero_si128();
-		const __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
 		const __m128i loWords = _mm_unpacklo_epi8(pixels, zero);
 		const __m128i hiWords = _mm_unpackhi_epi8(pixels, zero);
 		const __m128i loPairs = _mm_madd_epi16(loWords, factors);
@@ -34,6 +34,23 @@ namespace
 		const __m128i y23 = _mm_shuffle_epi32(hiSums, _MM_SHUFFLE(2, 0, 2, 0));
 		const __m128i y = _mm_unpacklo_epi64(y01, y23);
 		return _mm_sra_epi32(_mm_add_epi32(y, roundingOffset), shiftCount);
+	}
+
+	inline __m128i CalculateRGB32Luma4(const unsigned char* src, __m128i factors,
+		__m128i roundingOffset, __m128i shiftCount)
+	{
+		return CalculateRGBLuma4FromPacked(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src)),
+			factors, roundingOffset, shiftCount);
+	}
+
+	inline __m128i LoadRGB24AsRGBX4(const unsigned char* src)
+	{
+		const __m128i rgb24ToRGBX = _mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
+		return _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src)), rgb24ToRGBX);
 	}
 
 	// Stores four 32-bit luma values as four saturated bytes. The two packing
@@ -63,20 +80,17 @@ namespace
 	}
 
 	// Writes four packed RGB32 pixels while preserving the existing fourth byte.
-	// Each 3-byte triplet is shifted into its dword lane and ORed with the
-	// original alpha/unused byte from the target image.
+	// SSSE3 expands the contiguous RGB triplets into RGBX dwords with PSHUFB, then
+	// the previous alpha/unused byte is ORed back into each pixel.
 	inline void StoreRGB32Pixels4(unsigned char* target, __m128i packedRGB)
 	{
-		const __m128i colorMask0 = _mm_setr_epi32(0x00FFFFFF, 0, 0, 0);
-		const __m128i colorMask1 = _mm_setr_epi32(0, 0x00FFFFFF, 0, 0);
-		const __m128i colorMask2 = _mm_setr_epi32(0, 0, 0x00FFFFFF, 0);
-		const __m128i colorMask3 = _mm_setr_epi32(0, 0, 0, 0x00FFFFFF);
+		const __m128i rgbToRGBX = _mm_setr_epi8(
+			0, 1, 2, -1,
+			3, 4, 5, -1,
+			6, 7, 8, -1,
+			9, 10, 11, -1);
 		const __m128i alphaMask = _mm_set1_epi32(static_cast<int>(0xFF000000u));
-		const __m128i p0 = _mm_and_si128(packedRGB, colorMask0);
-		const __m128i p1 = _mm_and_si128(_mm_slli_si128(_mm_srli_si128(packedRGB, 3), 4), colorMask1);
-		const __m128i p2 = _mm_and_si128(_mm_slli_si128(_mm_srli_si128(packedRGB, 6), 8), colorMask2);
-		const __m128i p3 = _mm_and_si128(_mm_slli_si128(_mm_srli_si128(packedRGB, 9), 12), colorMask3);
-		const __m128i colors = _mm_or_si128(_mm_or_si128(p0, p1), _mm_or_si128(p2, p3));
+		const __m128i colors = _mm_shuffle_epi8(packedRGB, rgbToRGBX);
 		const __m128i original = _mm_loadu_si128(reinterpret_cast<const __m128i*>(target));
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(target),
 			_mm_or_si128(_mm_and_si128(original, alphaMask), colors));
@@ -117,10 +131,22 @@ namespace
 	{
 		const __m128i channelMask = _mm_set1_epi32(0xFF);
 		const __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
-		const __m128i c0 = MulloEpi32SSE2(_mm_and_si128(pixels, channelMask), weightVec);
-		const __m128i c1 = MulloEpi32SSE2(_mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask), weightVec);
-		const __m128i c2 = MulloEpi32SSE2(_mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask), weightVec);
+		const __m128i c0 = MulloEpi32Compat(_mm_and_si128(pixels, channelMask), weightVec);
+		const __m128i c1 = MulloEpi32Compat(_mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask), weightVec);
+		const __m128i c2 = MulloEpi32Compat(_mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask), weightVec);
 		BuildAccumTriplets4(c0, c1, c2, w0, w1, w2);
+	}
+
+	inline void LoadWeightedRGB24Accum4(const unsigned char* src, __m128i weightVec,
+		__m128i& w0, __m128i& w1, __m128i& w2)
+	{
+		const __m128i rgbx = LoadRGB24AsRGBX4(src);
+		const __m128i v0Mask = _mm_setr_epi8(0, -1, -1, -1, 1, -1, -1, -1, 2, -1, -1, -1, 4, -1, -1, -1);
+		const __m128i v1Mask = _mm_setr_epi8(5, -1, -1, -1, 6, -1, -1, -1, 8, -1, -1, -1, 9, -1, -1, -1);
+		const __m128i v2Mask = _mm_setr_epi8(10, -1, -1, -1, 12, -1, -1, -1, 13, -1, -1, -1, 14, -1, -1, -1);
+		w0 = MulloEpi32Compat(_mm_shuffle_epi8(rgbx, v0Mask), weightVec);
+		w1 = MulloEpi32Compat(_mm_shuffle_epi8(rgbx, v1Mask), weightVec);
+		w2 = MulloEpi32Compat(_mm_shuffle_epi8(rgbx, v2Mask), weightVec);
 	}
 
 	inline unsigned int LoadRGB24Pixel(const unsigned char* pixel)
@@ -147,7 +173,7 @@ namespace
 		return LoadRGB24Pixel(pixel);
 	}
 
-	inline __m128i LoadFourBoxPixelsSSE2(const unsigned char* row, int startX, int sourceOffset,
+	inline __m128i LoadFourBoxPixelsSSSE3(const unsigned char* row, int startX, int sourceOffset,
 		int pixelStride)
 	{
 		return _mm_setr_epi32(
@@ -157,7 +183,7 @@ namespace
 			static_cast<int>(LoadPackedPixel(row + (((startX + 3) * 2 + sourceOffset) * pixelStride), pixelStride)));
 	}
 
-	inline __m128i AverageBox2x2PixelsSSE2(__m128i topLeft, __m128i topRight,
+	inline __m128i AverageBox2x2PixelsSSSE3(__m128i topLeft, __m128i topRight,
 		__m128i bottomLeft, __m128i bottomRight, bool includeFourthChannel)
 	{
 		const __m128i byteMask = _mm_set1_epi32(0xFF);
@@ -191,7 +217,7 @@ namespace
 		return packed;
 	}
 
-	inline void StoreFourDownscaledPixelsSSE2(unsigned char* target, __m128i pixels, int pixelStride)
+	inline void StoreFourDownscaledPixelsSSSE3(unsigned char* target, __m128i pixels, int pixelStride)
 	{
 		if (pixelStride == 4)
 		{
@@ -222,6 +248,29 @@ namespace
 			target += pixelStride;
 		}
 	}
+
+	inline __m128i AverageBox2x2ShuffleSSSE3(const unsigned char* top, const unsigned char* bottom,
+		__m128i evenMask, __m128i oddMask)
+	{
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i topPixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(top));
+		const __m128i bottomPixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bottom));
+		const __m128i topEven = _mm_shuffle_epi8(topPixels, evenMask);
+		const __m128i topOdd = _mm_shuffle_epi8(topPixels, oddMask);
+		const __m128i bottomEven = _mm_shuffle_epi8(bottomPixels, evenMask);
+		const __m128i bottomOdd = _mm_shuffle_epi8(bottomPixels, oddMask);
+		__m128i sum = _mm_add_epi16(_mm_unpacklo_epi8(topEven, zero), _mm_unpacklo_epi8(topOdd, zero));
+		sum = _mm_add_epi16(sum, _mm_unpacklo_epi8(bottomEven, zero));
+		sum = _mm_add_epi16(sum, _mm_unpacklo_epi8(bottomOdd, zero));
+		return _mm_packus_epi16(_mm_srli_epi16(sum, 2), zero);
+	}
+
+	inline void StoreLow6Bytes(unsigned char* target, __m128i value)
+	{
+		*reinterpret_cast<unsigned int*>(target) = static_cast<unsigned int>(_mm_cvtsi128_si32(value));
+		*reinterpret_cast<unsigned short*>(target + 4) =
+			static_cast<unsigned short>(_mm_extract_epi16(value, 2));
+	}
 }
 
 namespace AltaLuxKernels
@@ -229,7 +278,7 @@ namespace AltaLuxKernels
 	// Extracts the luma byte from packed 16-bit YUV words. Two source vectors
 	// contain sixteen pixels; the wanted byte is shifted or masked into 16-bit
 	// lanes, then packed down to sixteen contiguous luma bytes.
-	void ExtractPackedYUVLumaSSE2(const unsigned char* source, unsigned char* luma,
+	void ExtractPackedYUVLumaSSSE3(const unsigned char* source, unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition)
 	{
 		int i = 0;
@@ -263,7 +312,7 @@ namespace AltaLuxKernels
 	// Replaces the luma byte inside packed 16-bit YUV words without disturbing
 	// chroma. The luma bytes are widened into either the low or high byte of each
 	// word, masked with the preserved chroma bytes, and stored back in place.
-	void InjectPackedYUVLumaSSE2(unsigned char* target, const unsigned char* luma,
+	void InjectPackedYUVLumaSSSE3(unsigned char* target, const unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition)
 	{
 		int i = 0;
@@ -300,38 +349,51 @@ namespace AltaLuxKernels
 		InjectPackedYUVLumaScalar(target + (i * 2), luma + i, pixelCount - i, lumaPosition);
 	}
 
-	// Extracts luma from RGB32/BGR32 pixels four at a time. RGB24 falls back to
-	// scalar here because SSE2 cannot gather the non-contiguous 3-byte pixels
-	// efficiently enough to beat the simple scalar loop.
-	void ExtractRGBLumaSSE2(const unsigned char* source, unsigned char* luma, int pixelCount,
+	// Extracts luma from RGB/BGR pixels four at a time. RGB24 is loaded
+	// contiguously and expanded to RGBX dwords with PSHUFB, avoiding the scalar
+	// byte gathers that made the previous middle-tier path slow.
+	void ExtractRGBLumaSSSE3(const unsigned char* source, unsigned char* luma, int pixelCount,
 		int pixelStride, int firstFactor, int secondFactor, int thirdFactor, int scalingLog)
 	{
-		if (pixelStride != 4)
-		{
-			ExtractRGBLumaScalar(source, luma, pixelCount, pixelStride,
-				firstFactor, secondFactor, thirdFactor, scalingLog);
-			return;
-		}
-
 		const __m128i factors = _mm_setr_epi16(
 			static_cast<short>(firstFactor), static_cast<short>(secondFactor), static_cast<short>(thirdFactor), 0,
 			static_cast<short>(firstFactor), static_cast<short>(secondFactor), static_cast<short>(thirdFactor), 0);
 		const __m128i roundingOffset = _mm_set1_epi32(1 << (scalingLog - 1));
 		const __m128i shiftCount = _mm_cvtsi32_si128(scalingLog);
 		int i = 0;
-		for (; i <= pixelCount - 4; i += 4)
+		if (pixelStride == 3)
 		{
-			const __m128i y = CalculateRGB32Luma4(source + (i * 4), factors, roundingOffset, shiftCount);
-			StoreLuma4(luma + i, y);
+			for (; i <= pixelCount - 6; i += 4)
+			{
+				const __m128i y = CalculateRGBLuma4FromPacked(LoadRGB24AsRGBX4(source + (i * 3)),
+					factors, roundingOffset, shiftCount);
+				StoreLuma4(luma + i, y);
+			}
+			ExtractRGBLumaScalar(source + (i * 3), luma + i, pixelCount - i,
+				3, firstFactor, secondFactor, thirdFactor, scalingLog);
+			return;
 		}
-		ExtractRGBLumaScalar(source + (i * 4), luma + i, pixelCount - i,
-			4, firstFactor, secondFactor, thirdFactor, scalingLog);
+
+		if (pixelStride == 4)
+		{
+			for (; i <= pixelCount - 4; i += 4)
+			{
+				const __m128i y = CalculateRGB32Luma4(source + (i * 4), factors, roundingOffset, shiftCount);
+				StoreLuma4(luma + i, y);
+			}
+			ExtractRGBLumaScalar(source + (i * 4), luma + i, pixelCount - i,
+				4, firstFactor, secondFactor, thirdFactor, scalingLog);
+			return;
+		}
+
+		ExtractRGBLumaScalar(source, luma, pixelCount, pixelStride,
+			firstFactor, secondFactor, thirdFactor, scalingLog);
 	}
 
-	// Injects processed luma into RGB32/BGR32 pixels. SSE2 is used to compute the
+	// Injects processed luma into RGB32/BGR32 pixels. SSSE3 is used to compute the
 	// old luma values in groups of four; the per-pixel reciprocal lookup and scale
-	// cap remain scalar because SSE2 has no integer gather instruction.
-	void InjectRGBLumaSSE2(unsigned char* image, const unsigned char* luma, int pixelCount,
+	// cap remain scalar because SSSE3 has no integer gather instruction.
+	void InjectRGBLumaSSSE3(unsigned char* image, const unsigned char* luma, int pixelCount,
 		int pixelStride, int firstFactor, int secondFactor, int thirdFactor, int scalingLog,
 		const int* reciprocalLut)
 	{
@@ -368,9 +430,9 @@ namespace AltaLuxKernels
 
 	// Injects processed luma into RGB32/BGR32 pixels when the original luma has
 	// already been cached during extraction. This removes the second RGB->luma
-	// pass; SSE2 still applies four per-pixel scale factors to RGB channels at a
-	// time, while reciprocal lookup stays scalar because SSE2 has no gather.
-	void InjectRGBLumaWithOriginalLumaSSE2(unsigned char* image, const unsigned char* luma,
+	// pass; SSSE3 still applies four per-pixel scale factors to RGB channels at a
+	// time, while reciprocal lookup stays scalar because SSSE3 has no gather.
+	void InjectRGBLumaWithOriginalLumaSSSE3(unsigned char* image, const unsigned char* luma,
 		const unsigned char* originalLuma, int pixelCount, int pixelStride,
 		const int* reciprocalLut)
 	{
@@ -402,9 +464,9 @@ namespace AltaLuxKernels
 			const __m128i c0 = _mm_and_si128(pixels, channelMask);
 			const __m128i c1 = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask);
 			const __m128i c2 = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask);
-			const __m128i out0 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32SSE2(c0, scale), scaleRounding), 8);
-			const __m128i out1 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32SSE2(c1, scale), scaleRounding), 8);
-			const __m128i out2 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32SSE2(c2, scale), scaleRounding), 8);
+			const __m128i out0 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c0, scale), scaleRounding), 8);
+			const __m128i out1 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c1, scale), scaleRounding), 8);
+			const __m128i out2 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c2, scale), scaleRounding), 8);
 			__m128i output = _mm_or_si128(_mm_and_si128(pixels, alphaMask), out0);
 			output = _mm_or_si128(output, _mm_slli_epi32(out1, 8));
 			output = _mm_or_si128(output, _mm_slli_epi32(out2, 16));
@@ -414,10 +476,10 @@ namespace AltaLuxKernels
 			pixelCount - i, 4, reciprocalLut);
 	}
 
-	// Downscales an RGB24/RGB32 image with a box filter. SSE2 handles the common
-	// 2x preview reduction by averaging four source pixels into four destination
-	// pixels per iteration; other scale factors use the scalar exact kernel.
-	void ScaleDownBoxSSE2(const unsigned char* source, int sourceWidth, int sourceHeight,
+	// Downscales an RGB24/RGB32 image with a box filter. SSSE3 handles the common
+	// 2x preview reduction by loading contiguous source pixels and using PSHUFB to
+	// select the even/odd horizontal samples that feed each destination pixel.
+	void ScaleDownBoxSSSE3(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride)
 	{
 		if (scaleFactor != 2 || source == nullptr || target == nullptr ||
@@ -431,8 +493,10 @@ namespace AltaLuxKernels
 		const int targetWidth = sourceWidth / 2;
 		const int targetHeight = sourceHeight / 2;
 		const int targetStride = targetWidth * pixelStride;
-		const int vectorizedWidth = targetWidth & ~3;
-		const bool includeFourthChannel = pixelStride == 4;
+		const __m128i rgb32EvenMask = _mm_setr_epi8(0, 1, 2, 3, 8, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1);
+		const __m128i rgb32OddMask = _mm_setr_epi8(4, 5, 6, 7, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1);
+		const __m128i rgb24EvenMask = _mm_setr_epi8(0, 1, 2, 6, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+		const __m128i rgb24OddMask = _mm_setr_epi8(3, 4, 5, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
 
 		for (int y = 0; y < targetHeight; ++y)
 		{
@@ -440,24 +504,34 @@ namespace AltaLuxKernels
 			const unsigned char* bottomRow = topRow + sourceStride;
 			unsigned char* dst = target + (y * targetStride);
 			int x = 0;
-			for (; x < vectorizedWidth; x += 4)
+			if (pixelStride == 4)
 			{
-				const __m128i topLeft = LoadFourBoxPixelsSSE2(topRow, x, 0, pixelStride);
-				const __m128i topRight = LoadFourBoxPixelsSSE2(topRow, x, 1, pixelStride);
-				const __m128i bottomLeft = LoadFourBoxPixelsSSE2(bottomRow, x, 0, pixelStride);
-				const __m128i bottomRight = LoadFourBoxPixelsSSE2(bottomRow, x, 1, pixelStride);
-				StoreFourDownscaledPixelsSSE2(dst + (x * pixelStride),
-					AverageBox2x2PixelsSSE2(topLeft, topRight, bottomLeft, bottomRight, includeFourthChannel),
-					pixelStride);
+				for (; x <= targetWidth - 2; x += 2)
+				{
+					const __m128i out = AverageBox2x2ShuffleSSSE3(
+						topRow + (x * 2 * 4), bottomRow + (x * 2 * 4),
+						rgb32EvenMask, rgb32OddMask);
+					_mm_storel_epi64(reinterpret_cast<__m128i*>(dst + (x * 4)), out);
+				}
+			}
+			else
+			{
+				for (; x <= targetWidth - 3; x += 2)
+				{
+					const __m128i out = AverageBox2x2ShuffleSSSE3(
+						topRow + (x * 2 * 3), bottomRow + (x * 2 * 3),
+						rgb24EvenMask, rgb24OddMask);
+					StoreLow6Bytes(dst + (x * 3), out);
+				}
 			}
 			ScaleDownBox2x2Tail(topRow, bottomRow, dst + (x * pixelStride), x, targetWidth, pixelStride);
 		}
 	}
 
-	// Builds a 256-bin luma histogram for one CLAHE tile. SSE2 cannot safely
+	// Builds a 256-bin luma histogram for one CLAHE tile. SSSE3 cannot safely
 	// vectorize pHistogram[pixel]++ because several lanes can target the same bin,
 	// so this entry point currently preserves the scalar conflict-free algorithm.
-	void MakeHistogramSSE2(const unsigned char* image, int imageStride, int regionWidth,
+	void MakeHistogramSSSE3(const unsigned char* image, int imageStride, int regionWidth,
 		int regionHeight, unsigned int* histogram)
 	{
 		MakeHistogramScalar(image, imageStride, regionWidth, regionHeight, histogram);
@@ -466,14 +540,14 @@ namespace AltaLuxKernels
 	// Clips and redistributes histogram bins. The early min/excess passes are
 	// SIMD-friendly, but the final redistribution loop is stateful; keep the
 	// scalar implementation until the full method is benchmarked and split safely.
-	void ClipHistogramSSE2(unsigned int* histogram, unsigned int clipLimit)
+	void ClipHistogramSSSE3(unsigned int* histogram, unsigned int clipLimit)
 	{
 		ClipHistogramScalar(histogram, clipLimit);
 	}
 
 	// Converts a histogram to an equalization map. This is a 256-element prefix
 	// sum, so each output depends on the preceding bins; scalar is the baseline.
-	void MapHistogramSSE2(unsigned int* histogram, unsigned int pixelCount)
+	void MapHistogramSSSE3(unsigned int* histogram, unsigned int pixelCount)
 	{
 		MapHistogramScalar(histogram, pixelCount);
 	}
@@ -481,7 +555,7 @@ namespace AltaLuxKernels
 	// Accumulates four RGB/RGBX pixels into the uint32 weighted-sum buffer. Source
 	// bytes are expanded into three vectors holding twelve channels, multiplied by
 	// the layer weight, then either assigned or added to the accumulator.
-	void AccumulateLayerSSE2(unsigned int* accum, const unsigned char* layer, int pixelStart,
+	void AccumulateLayerSSSE3(unsigned int* accum, const unsigned char* layer, int pixelStart,
 		int pixelEnd, int pixelStride, int weight, bool firstLayer)
 	{
 		const __m128i weightVec = _mm_set1_epi32(weight);
@@ -520,6 +594,37 @@ namespace AltaLuxKernels
 			return;
 		}
 
+		if (pixelStride == 3)
+		{
+			if (firstLayer)
+			{
+				for (; p <= pixelEnd - 6; p += 4, src += 12, dst += 12)
+				{
+					__m128i w0, w1, w2;
+					LoadWeightedRGB24Accum4(src, weightVec, w0, w1, w2);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst), w0);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4), w1);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 8), w2);
+				}
+			}
+			else
+			{
+				for (; p <= pixelEnd - 6; p += 4, src += 12, dst += 12)
+				{
+					__m128i w0, w1, w2;
+					LoadWeightedRGB24Accum4(src, weightVec, w0, w1, w2);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst),
+						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst)), w0));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4),
+						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 4)), w1));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 8),
+						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 8)), w2));
+				}
+			}
+			AccumulateLayerScalar(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			return;
+		}
+
 		const int sourceStep = pixelStride * 4;
 		if (firstLayer)
 		{
@@ -530,9 +635,9 @@ namespace AltaLuxKernels
 					src[pixelStride * 2], src[(pixelStride * 2) + 1]);
 				const __m128i v2 = _mm_setr_epi32(src[(pixelStride * 2) + 2],
 					src[pixelStride * 3], src[(pixelStride * 3) + 1], src[(pixelStride * 3) + 2]);
-				const __m128i w0 = MulloEpi32SSE2(v0, weightVec);
-				const __m128i w1 = MulloEpi32SSE2(v1, weightVec);
-				const __m128i w2 = MulloEpi32SSE2(v2, weightVec);
+				const __m128i w0 = MulloEpi32Compat(v0, weightVec);
+				const __m128i w1 = MulloEpi32Compat(v1, weightVec);
+				const __m128i w2 = MulloEpi32Compat(v2, weightVec);
 				_mm_storeu_si128(reinterpret_cast<__m128i*>(dst), w0);
 				_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4), w1);
 				_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 8), w2);
@@ -547,9 +652,9 @@ namespace AltaLuxKernels
 					src[pixelStride * 2], src[(pixelStride * 2) + 1]);
 				const __m128i v2 = _mm_setr_epi32(src[(pixelStride * 2) + 2],
 					src[pixelStride * 3], src[(pixelStride * 3) + 1], src[(pixelStride * 3) + 2]);
-				const __m128i w0 = MulloEpi32SSE2(v0, weightVec);
-				const __m128i w1 = MulloEpi32SSE2(v1, weightVec);
-				const __m128i w2 = MulloEpi32SSE2(v2, weightVec);
+				const __m128i w0 = MulloEpi32Compat(v0, weightVec);
+				const __m128i w1 = MulloEpi32Compat(v1, weightVec);
+				const __m128i w2 = MulloEpi32Compat(v2, weightVec);
 				_mm_storeu_si128(reinterpret_cast<__m128i*>(dst),
 					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst)), w0));
 				_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4),
@@ -564,7 +669,7 @@ namespace AltaLuxKernels
 	// Converts accumulated weighted sums back to RGB bytes four pixels at a time.
 	// Three vectors hold the twelve channel sums; each lane is rounded, shifted,
 	// saturated to bytes, and stored through RGB24 or RGB32 packing helpers.
-	void WriteAccumulatedImageSSE2(unsigned char* target, const unsigned int* accum, int pixelStart,
+	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int pixelStart,
 		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
 	{
 		const __m128i roundingVec = _mm_set1_epi32(weightHalf);
@@ -614,10 +719,10 @@ namespace AltaLuxKernels
 	}
 
 	// Interpolates CLAHE mapping regions using the scalar interleaved row-map
-	// kernel. SSE2 row-map construction was benchmarked, but it did not beat the
+	// kernel. SSSE3 row-map construction was benchmarked, but it did not beat the
 	// scalar implementation because the grey-value-indexed pixel lookup remains
-	// scalar and SSE2 has no integer gather instruction.
-	void InterpolateSSE2(unsigned char* image, int imageStride,
+	// scalar and SSSE3 has no integer gather instruction.
+	void InterpolateSSSE3(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
 		unsigned int matrixWidth, unsigned int matrixHeight)
