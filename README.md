@@ -9,7 +9,7 @@ Author: Stefano Tommesani
 
 Website: http://www.tommesani.com
 
-Version: 2.0.0.0
+Version: 2.0.2.0
 
 License: Microsoft Public License (MS-PL)
 
@@ -24,9 +24,10 @@ License: Microsoft Public License (MS-PL)
   reinjection to reduce hue and highlight drift.
 - Preserves RGB32 alpha and keeps RGB24/RGB32 behavior aligned for the same RGB
   content.
-- Adds SIMD accumulation/output and thresholded parallel layer processing for
-  large images.
-- Expands the Microsoft C++ unit test suite to 20 tests covering the v2 core.
+- Adds runtime kernel dispatch across scalar, SSSE3, and AVX2 implementations,
+  plus thresholded parallel layer processing for large images.
+- Expands the Microsoft C++ unit test suite to 25 tests covering the v2 core and
+  SIMD kernel equivalence.
 
 ## Installation
 
@@ -120,13 +121,13 @@ CLAHE pass to `100`.
 | User strength | Internal CLAHE layer strength |
 | ---: | ---: |
 | 0 | 0 |
-| 10 | 11 |
-| 25 | 15 |
-| 45 | 20 |
-| 60 | 26 |
-| 75 | 31 |
-| 90 | 38 |
-| 100 | 42 |
+| 10 | 3 |
+| 25 | 11 |
+| 45 | 25 |
+| 60 | 37 |
+| 75 | 50 |
+| 90 | 65 |
+| 100 | 75 |
 
 ### Blend Weights
 
@@ -165,7 +166,11 @@ channel ratios better while still enhancing local contrast.
 Version 2 does more work than the old single-scale path because it runs three
 CLAHE passes. The implementation adds several compensating optimizations:
 
-- SIMD accumulation and output paths for RGB24/RGB32 buffers.
+- Runtime selection of the best supported kernel path: AVX2, then SSSE3, then
+  scalar.
+- SIMD paths for RGB/BGR luma extraction and injection, packed YUV luma
+  extraction and injection, 2x box downscaling, multiscale accumulation, and
+  weighted output.
 - Sequential layer processing for smaller images to avoid task and allocation
   overhead.
 - Blocked parallel accumulation/output for images at or above 200,000 pixels.
@@ -173,8 +178,10 @@ CLAHE passes. The implementation adds several compensating optimizations:
   or above 1,000,000 pixels.
 - A 1 KiB reciprocal lookup table for color scaling, replacing the older 64 KiB
   two-dimensional scale table.
-- SSE intrinsic implementations for legacy packed YUV luma paths instead of
+- SSSE3 and AVX2 implementations for legacy packed YUV luma paths instead of
   32-bit inline assembly.
+- Scalar fallbacks for operations where SIMD is not a clear win or cannot safely
+  express the required memory access pattern.
 
 For RGB24/RGB32 multiscale processing, the main allocations are:
 
@@ -236,12 +243,15 @@ AltaLux/
     CAltaLuxFilterFactory.*   filter factory
     CSerialAltaLuxFilter.*    serial reference implementation
     CParallelSplitLoop*       default parallel implementation
-    CParallelEvent*           event-based implementation
-    CParallelActiveWait*      active-wait implementation
+  Kernels/
+    AltaLuxKernels.*          scalar/SSSE3/AVX2 dispatch layer
+    AltaLuxKernelsScalar.cpp  scalar baseline kernels
+    AltaLuxKernelsSSSE3.cpp   SSSE3 kernels and fallbacks
+    AltaLuxKernelsAvx2.cpp    AVX2 kernels and fallbacks
 AltaLuxUnitTest/
   TestStrategies.cpp          Microsoft C++ unit tests
 AltaLuxBench/
-  legacy benchmark project
+  kernel and filter benchmark project
 ```
 
 The root `README.md` is the current v2 guide. The older `AltaLux/README.md` file
@@ -297,12 +307,17 @@ version.
 
 ## Tests
 
-The current unit test suite contains 20 tests. Coverage includes:
+The current unit test suite contains 25 tests. Coverage includes:
 
 - Serial vs. parallel CLAHE strategy equivalence.
+- SSSE3 and AVX2 output equivalence against scalar kernels.
+- SSSE3 and AVX2 2x box downscale equivalence against scalar kernels.
 - Preset application and preset tolerance.
 - Blend-weight normalization and balanced-layer floor.
 - Conservative non-linear layer-strength mapping.
+- Monotonic layer-strength clamping.
+- Histogram clipping behavior when the requested clip limit is below the
+  feasible per-bin minimum.
 - Independent `Detail` and `Natural look` behavior.
 - Safe layer region clamping.
 - Fine/balanced/smooth layer ordering.
@@ -350,6 +365,18 @@ The current unit test suite contains 20 tests. Coverage includes:
 
 ## Changelog
 
+### Version 2.0.2.0
+
+- Raised the internal v2 layer-strength ceiling to `75` while keeping the
+  non-linear user-strength curve.
+- Stabilized histogram clipping for very low clip limits.
+- Replaced the SSE2 kernel tier with SSSE3 and added AVX2 dispatch coverage.
+- Expanded benchmarks to compare scalar, SSSE3, and AVX2 kernels and filter
+  paths.
+- Removed unsupported event, active-wait, and error-based filter implementations;
+  legacy strategy IDs now map to the default split-loop filter.
+- Expanded Microsoft C++ unit coverage to 25 tests.
+
 ### Version 2.0.0.0
 
 - Replaced the v1 `Intensity` and `Scale` UI with `Strength`, `Detail`, and
@@ -369,7 +396,7 @@ The current unit test suite contains 20 tests. Coverage includes:
 - Added hue-preserving scale capping for highlight handling.
 - Added SIMD accumulation/output and thresholded parallel multiscale work.
 - Replaced the older 64 KiB color scale table with a 1 KiB reciprocal table.
-- Modernized packed YUV luma copy/writeback paths with SSE intrinsics.
+- Modernized packed YUV luma copy/writeback paths with SIMD intrinsics.
 - Preserved RGB32 alpha in v2 processing.
 - Updated project files to include `AltaLuxCore` and newer MSVC toolsets.
 - Expanded Microsoft C++ unit coverage for core v2 behavior.
