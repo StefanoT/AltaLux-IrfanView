@@ -1,0 +1,48 @@
+name: Release x64
+
+on:
+  push:
+    tags:
+      - "*"
+
+env:
+  SOLUTION_FILE_PATH: ./AltaLux
+  BUILD_CONFIGURATION: Release
+  BUILD_PLATFORM: x64
+  RELEASE_ASSET_PATH: ./AltaLux/x64/Release/AltaLux.dll
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v4
+
+      - name: Set up Windows 10 SDK
+        uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
+        with:
+          sdk-version: 16299
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v1.0.2
+
+      - name: Build x64 DLL
+        run: >-
+          msbuild /m
+          /p:Configuration=${{ env.BUILD_CONFIGURATION }}
+          /p:Platform=${{ env.BUILD_PLATFORM }}
+          ${{ env.SOLUTION_FILE_PATH }}
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          "${{ env.RELEASE_ASSET_PATH }}"
+          --verify-tag
+          --generate-notes
+          --title "${{ github.ref_name }}"
