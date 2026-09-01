@@ -22,7 +22,11 @@ Microsoft Public License (MS-PL) [OSI Approved License]
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <atomic>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "Filter/CAltaLuxFilterFactory.h"
@@ -31,6 +35,8 @@ Microsoft Public License (MS-PL) [OSI Approved License]
 #include "ScopedBitmapHeader.h"
 #include "AltaLuxCore.h"
 #include "UIDraw/UIDraw.h"
+#include "Segmentation/SegmentationModule.h"
+#include "Segmentation/SelectionCore.h"
 
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
@@ -48,6 +54,8 @@ namespace
 	const int PRESET_TOLERANCE = 3;
 	const UINT_PTR PREVIEW_REFRESH_TIMER_ID = 1;
 	const UINT PREVIEW_REFRESH_DELAY_MS = 40;
+	const UINT WM_ALTALUX_SEGMENTATION_PREPARED = WM_APP + 42;
+	const UINT WM_ALTALUX_SEGMENTATION_COMPLETED = WM_APP + 43;
 
 	const std::array<Preset, 3> Presets = { {
 		{ IDC_PRESET_NATURAL, L"Natural", 35, 10, 55 },
@@ -67,9 +75,50 @@ namespace
 	int ScalingFactor = 1;
 	bool CroppedImage = false;
 	bool SkipProcessing = false;
+	bool SourceTopDown = false;
 
 	WeakImagePtr ScaledSrcImagePtr;
 	WeakImagePtr ScaledProcImagePtr;
+	WeakImagePtr FullSrcImagePtr;
+
+	struct SelectionPromptMarker
+	{
+		float x;
+		float y;
+		SelectionCombineMode mode;
+	};
+
+	struct SegmentationWorkerResult
+	{
+		std::uint32_t generation = 0;
+		SegmentationStatus status = SegmentationStatus::RuntimeError;
+		SelectionCombineMode mode = SelectionCombineMode::Add;
+		SegmentationPoint point = {};
+		std::vector<unsigned char> operationMask;
+		std::wstring error;
+	};
+
+	struct SelectionDialogSession
+	{
+		bool selectiveMode = false;
+		bool ready = false;
+		bool busy = false;
+		bool showMask = true;
+		int softness = 3;
+		SelectionCombineMode combineMode = SelectionCombineMode::Add;
+		std::vector<unsigned char> selectionMask;
+		std::vector<unsigned char> previewMask;
+		std::vector<unsigned char> previewOriginalDisplay;
+		std::vector<unsigned char> previewProcessedDisplay;
+		std::vector<SelectionPromptMarker> markers;
+		SelectionHistory history;
+		SegmentationModule module;
+		std::thread worker;
+		std::atomic<std::uint32_t> generation{ 0 };
+		std::mutex moduleMutex;
+	};
+
+	std::unique_ptr<SelectionDialogSession> gSelectionSession;
 
 	UiState gUiState = {
 		Constants::DefaultStrength,
@@ -108,6 +157,7 @@ namespace
 
 	ThemeMode gCurrentTheme = ThemeMode::Light;
 	std::unique_ptr<ScopedBrush> gBackgroundBrush = std::make_unique<ScopedBrush>(RGB(255, 255, 255));
+	HFONT gSectionFont = nullptr;
 
 	HHOOK gKeyboardHook = nullptr;
 	HWND gHookDlg = nullptr;
@@ -224,6 +274,59 @@ namespace
 		}
 
 		ProcessMultiscaleImage(scaledSrc->data(), scaledProc->data(), ScaledImageWidth, ScaledImageHeight, ImageBitDepth, gUiState);
+
+		if (gSelectionSession == nullptr || !gSelectionSession->selectiveMode ||
+			gSelectionSession->selectionMask.empty())
+		{
+			if (gSelectionSession != nullptr)
+			{
+				gSelectionSession->previewOriginalDisplay.clear();
+				gSelectionSession->previewProcessedDisplay.clear();
+			}
+			return;
+		}
+
+		const std::size_t previewPixelCount = static_cast<std::size_t>(ScaledImageWidth) * ScaledImageHeight;
+		gSelectionSession->previewMask.resize(previewPixelCount);
+		ResizeMaskNearest(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
+			gSelectionSession->previewMask.data(), ScaledImageWidth, ScaledImageHeight);
+
+		std::vector<unsigned char> previewAlpha;
+		const int previewSoftness = gSelectionSession->softness == 0 ? 0 :
+			(std::max)(1, gSelectionSession->softness / ScalingFactor);
+		if (!BuildFeatheredMask(gSelectionSession->previewMask.data(), ScaledImageWidth, ScaledImageHeight,
+			previewSoftness, previewAlpha))
+		{
+			return;
+		}
+		CompositeWithMask(scaledSrc->data(), scaledProc->data(), scaledProc->data(), previewAlpha.data(),
+			ScaledImageWidth, ScaledImageHeight, ImageBitDepth);
+
+		if (!gSelectionSession->showMask)
+		{
+			gSelectionSession->previewOriginalDisplay.clear();
+			gSelectionSession->previewProcessedDisplay.clear();
+			return;
+		}
+
+		const std::size_t byteCount = static_cast<std::size_t>(GetImageByteCount(ScaledImageWidth, ScaledImageHeight));
+		gSelectionSession->previewOriginalDisplay.assign(scaledSrc->begin(), scaledSrc->begin() + byteCount);
+		gSelectionSession->previewProcessedDisplay.assign(scaledProc->begin(), scaledProc->begin() + byteCount);
+		auto applyOverlay = [&](std::vector<unsigned char>& image)
+		{
+			for (std::size_t pixel = 0; pixel < previewPixelCount; ++pixel)
+			{
+				const unsigned int overlayAlpha = static_cast<unsigned int>(previewAlpha[pixel]) * 89U / 255U;
+				if (overlayAlpha == 0) continue;
+				const unsigned int inverse = 255U - overlayAlpha;
+				const std::size_t base = pixel * ImageBitDepth;
+				image[base] = static_cast<unsigned char>((image[base] * inverse + 255U * overlayAlpha + 127U) / 255U);
+				image[base + 1] = static_cast<unsigned char>((image[base + 1] * inverse + 220U * overlayAlpha + 127U) / 255U);
+				image[base + 2] = static_cast<unsigned char>((image[base + 2] * inverse + 127U) / 255U);
+			}
+		};
+		applyOverlay(gSelectionSession->previewOriginalDisplay);
+		applyOverlay(gSelectionSession->previewProcessedDisplay);
 	}
 
 	void ApplyPreset(const Preset& preset)
@@ -245,22 +348,102 @@ namespace
 	{
 		for (const auto& preset : Presets)
 		{
-			if (IsPresetActive(preset))
-			{
-				wchar_t activeLabel[32] = {};
-				swprintf_s(activeLabel, L"[%s]", preset.name);
-				SetButtonText(hwnd, preset.buttonId, activeLabel);
-			}
-			else
-			{
-				SetButtonText(hwnd, preset.buttonId, preset.name);
-			}
+			SetButtonText(hwnd, preset.buttonId, preset.name);
+			SendMessage(GetDlgItem(hwnd, preset.buttonId), BM_SETCHECK,
+				IsPresetActive(preset) ? BST_CHECKED : BST_UNCHECKED, 0);
 		}
 	}
 
 	void UpdateCommandLabels(HWND hwnd)
 	{
-		SetButtonText(hwnd, IDC_TOGGLEZOOM, gUiState.zoomToSelection ? L"Zoom: 1:1" : L"Zoom: Fit");
+		SendMessage(GetDlgItem(hwnd, IDC_VIEW_FIT), BM_SETCHECK,
+			gUiState.zoomToSelection ? BST_UNCHECKED : BST_CHECKED, 0);
+		SendMessage(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), BM_SETCHECK,
+			gUiState.zoomToSelection ? BST_CHECKED : BST_UNCHECKED, 0);
+		const bool selective = gSelectionSession != nullptr && gSelectionSession->selectiveMode;
+		SetButtonText(hwnd, IDC_MODE_ENTIRE_IMAGE, L"Entire image");
+		SetButtonText(hwnd, IDC_MODE_SELECT_OBJECTS, L"Select objects");
+		SendMessage(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), BM_SETCHECK,
+			selective ? BST_UNCHECKED : BST_CHECKED, 0);
+		SendMessage(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), BM_SETCHECK,
+			selective ? BST_CHECKED : BST_UNCHECKED, 0);
+	}
+
+	void ApplyPanelTypography(HWND hwnd)
+	{
+		if (gSectionFont != nullptr)
+		{
+			DeleteObject(gSectionFont);
+			gSectionFont = nullptr;
+		}
+		HFONT dialogFont = reinterpret_cast<HFONT>(SendMessage(hwnd, WM_GETFONT, 0, 0));
+		LOGFONTW sectionLogFont = {};
+		if (dialogFont != nullptr && GetObjectW(dialogFont, sizeof(sectionLogFont), &sectionLogFont) != 0)
+		{
+			sectionLogFont.lfWeight = FW_SEMIBOLD;
+			gSectionFont = CreateFontIndirectW(&sectionLogFont);
+		}
+		const int sectionIds[] = {
+			IDC_ENHANCEMENT_SECTION, IDC_VIEW_SECTION, IDC_APPLY_TO_SECTION, IDC_SELECTION_SECTION
+		};
+		for (const int controlId : sectionIds)
+		{
+			SendMessage(GetDlgItem(hwnd, controlId), WM_SETFONT,
+				reinterpret_cast<WPARAM>(gSectionFont != nullptr ? gSectionFont : dialogFont), TRUE);
+		}
+	}
+
+	void SetSelectionStatus(HWND hwnd, const wchar_t* text)
+	{
+		SetWindowTextW(GetDlgItem(hwnd, IDC_SELECTION_STATUS), text != nullptr ? text : L"");
+	}
+
+	void UpdateSelectionControls(HWND hwnd)
+	{
+		const int selectiveControls[] = {
+			IDC_SELECTION_ADD, IDC_SELECTION_REMOVE, IDC_SELECTION_UNDO, IDC_SELECTION_CLEAR,
+			IDC_SELECTION_SELECT_ALL, IDC_SELECTION_SHOW_MASK, IDC_EDGE_SOFTNESS_STATIC,
+			IDC_EDGE_SOFTNESS_SLIDER, IDC_SELECTION_STATUS, IDC_SELECTION_SECTION
+		};
+#if !defined(_WIN64)
+		ShowWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), SW_HIDE);
+		ShowWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), SW_HIDE);
+		ShowWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), SW_HIDE);
+		for (const int controlId : selectiveControls) ShowWindow(GetDlgItem(hwnd, controlId), SW_HIDE);
+		EnableWindow(GetDlgItem(hwnd, IDOK), TRUE);
+		UpdateCommandLabels(hwnd);
+		return;
+#else
+		ShowWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), SW_SHOW);
+		ShowWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), SW_SHOW);
+		ShowWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), SW_SHOW);
+		const bool selective = gSelectionSession != nullptr && gSelectionSession->selectiveMode;
+		const bool ready = selective && gSelectionSession->ready && !gSelectionSession->busy;
+		for (const int controlId : selectiveControls)
+		{
+			ShowWindow(GetDlgItem(hwnd, controlId), selective ? SW_SHOW : SW_HIDE);
+		}
+		EnableWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), ready);
+		EnableWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), ready);
+		EnableWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), ready && gSelectionSession->history.CanUndo());
+		EnableWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), ready && HasSelectedPixels(gSelectionSession->selectionMask));
+		EnableWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), ready);
+		EnableWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), ready);
+		EnableWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), ready);
+		EnableWindow(GetDlgItem(hwnd, IDOK), !selective || (ready && HasSelectedPixels(gSelectionSession->selectionMask)));
+		if (selective)
+		{
+			SendMessage(GetDlgItem(hwnd, IDC_SELECTION_ADD), BM_SETCHECK,
+				gSelectionSession->combineMode == SelectionCombineMode::Add ? BST_CHECKED : BST_UNCHECKED, 0);
+			SendMessage(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), BM_SETCHECK,
+				gSelectionSession->combineMode == SelectionCombineMode::Remove ? BST_CHECKED : BST_UNCHECKED, 0);
+			SendMessage(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), BM_SETCHECK,
+				gSelectionSession->showMask ? BST_CHECKED : BST_UNCHECKED, 0);
+			SendMessage(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), TBM_SETPOS, TRUE,
+				gSelectionSession->softness);
+		}
+		UpdateCommandLabels(hwnd);
+#endif
 	}
 
 	void UpdateSliders(HWND hwnd)
@@ -283,6 +466,11 @@ namespace
 			SendMessage(slider, TBM_SETPAGESIZE, 0, 10);
 			SendMessage(slider, TBM_SETLINESIZE, 0, 1);
 		}
+		HWND softness = GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER);
+		SendMessage(softness, TBM_SETRANGE, TRUE, MAKELONG(0, 20));
+		SendMessage(softness, TBM_SETTICFREQ, 2, 0);
+		SendMessage(softness, TBM_SETPAGESIZE, 0, 5);
+		SendMessage(softness, TBM_SETLINESIZE, 0, 1);
 	}
 
 	void LayoutControlsV2(HWND hwnd)
@@ -297,12 +485,14 @@ namespace
 		const int helperHeight = 12;
 		const int sliderHeight = 28;
 		const int buttonHeight = 20;
-		const int rowGap = 12;
+		const int rowGap = 10;
 		const int top = PREVIEW_MARGIN + 2;
-		const int strengthTop = top + 34;
-		const int detailTop = top + 112;
-		const int naturalTop = top + 204;
+		const int sectionHeight = 14;
+		const int strengthTop = top + 24;
+		const int detailTop = top + 78;
+		const int naturalTop = top + 148;
 
+		MoveWindow(GetDlgItem(hwnd, IDC_ENHANCEMENT_SECTION), panelLeft, top, panelWidth, sectionHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, strengthTop, panelWidth, labelHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), panelLeft, strengthTop + 14, panelWidth, sliderHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_STATIC), panelLeft, detailTop, panelWidth, labelHeight, TRUE);
@@ -313,18 +503,216 @@ namespace
 		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, naturalTop + 46, panelWidth, helperHeight, TRUE);
 
 		const int presetWidth = (panelWidth - (2 * rowGap)) / 3;
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + 304, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + 304, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + 304, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + 216, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + 216, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + 216, presetWidth, buttonHeight, TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_TOGGLEZOOM), panelLeft + presetWidth + rowGap, top + 344, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, top + 250, panelWidth, sectionHeight, TRUE);
+		const int viewWidth = (panelWidth - rowGap) / 2;
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, top + 270, viewWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + viewWidth + rowGap, top + 270,
+			viewWidth, buttonHeight + 2, TRUE);
 
-		const int actionWidth = presetWidth;
+		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, top + 302, panelWidth, sectionHeight, TRUE);
+		const int modeWidth = (panelWidth - rowGap) / 2;
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, top + 322, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + modeWidth + rowGap, top + 322, modeWidth, buttonHeight + 2, TRUE);
+
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, top + 360, panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, top + 380, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + modeWidth + rowGap, top + 380, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, top + 412, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + presetWidth + rowGap, top + 412, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (presetWidth + rowGap)), top + 412, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, top + 442, panelWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, top + 476, panelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, top + 490, panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, top + 524, panelWidth, 28, TRUE);
+
+		const int actionWidth = modeWidth;
 		const int actionTop = clientRect.bottom - PREVIEW_MARGIN - buttonHeight;
-		MoveWindow(GetDlgItem(hwnd, IDOK), panelLeft + panelWidth - (2 * actionWidth) - rowGap, actionTop, actionWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDCANCEL), panelLeft + panelWidth - actionWidth, actionTop, actionWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDCANCEL), panelLeft + panelWidth - (2 * actionWidth) - rowGap, actionTop, actionWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDOK), panelLeft + panelWidth - actionWidth, actionTop, actionWidth, buttonHeight, TRUE);
 
 		ClampSplitToPreview(hwnd);
+	}
+
+	void StopSelectionWorker()
+	{
+		if (gSelectionSession == nullptr) return;
+		++gSelectionSession->generation;
+		{
+			std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
+			if (gSelectionSession->module.GetEngine() != nullptr)
+			{
+				gSelectionSession->module.GetEngine()->Cancel();
+			}
+		}
+		if (gSelectionSession->worker.joinable())
+		{
+			gSelectionSession->worker.join();
+		}
+		gSelectionSession->busy = false;
+	}
+
+	void FinishSelectionWorker()
+	{
+		if (gSelectionSession != nullptr && gSelectionSession->worker.joinable())
+		{
+			gSelectionSession->worker.join();
+		}
+	}
+
+	void DiscardPendingSegmentationResults(HWND hwnd)
+	{
+		MSG message = {};
+		while (PeekMessage(&message, hwnd, WM_ALTALUX_SEGMENTATION_PREPARED,
+			WM_ALTALUX_SEGMENTATION_COMPLETED, PM_REMOVE))
+		{
+			delete reinterpret_cast<SegmentationWorkerResult*>(message.lParam);
+		}
+	}
+
+	bool PostSegmentationResult(HWND hwnd, UINT message, SegmentationWorkerResult* result)
+	{
+		if (PostMessage(hwnd, message, 0, reinterpret_cast<LPARAM>(result)) == FALSE)
+		{
+			delete result;
+			return false;
+		}
+		return true;
+	}
+
+	void StartSegmentationPreparation(HWND hwnd)
+	{
+		if (gSelectionSession == nullptr) return;
+		StopSelectionWorker();
+		auto source = FullSrcImagePtr.lock();
+		if (source == nullptr)
+		{
+			SetSelectionStatus(hwnd, L"Source image is unavailable.");
+			return;
+		}
+
+		gSelectionSession->selectiveMode = true;
+		gSelectionSession->ready = false;
+		gSelectionSession->busy = true;
+		gSelectionSession->selectionMask.assign(static_cast<std::size_t>(ImageWidth) * ImageHeight, 0);
+		gSelectionSession->history.Reset();
+		gSelectionSession->markers.clear();
+		const std::uint32_t generation = ++gSelectionSession->generation;
+		SetSelectionStatus(hwnd, L"Analyzing image...");
+		UpdateSelectionControls(hwnd);
+		InvalidatePreview(hwnd);
+
+		gSelectionSession->worker = std::thread([hwnd, generation, source]()
+		{
+			auto* result = new SegmentationWorkerResult();
+			result->generation = generation;
+			ISegmentationEngine* engine = nullptr;
+			{
+				std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
+				if (!gSelectionSession->module.Load(hDll))
+				{
+					result->status = SegmentationStatus::RuntimeError;
+					result->error = gSelectionSession->module.GetLastError();
+					PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
+					return;
+				}
+				engine = gSelectionSession->module.GetEngine();
+			}
+
+			const int rowStride = ImageWidth * ImageBitDepth;
+			SegmentationImageView image = {};
+			image.pixels = source->data();
+			image.width = static_cast<std::uint32_t>(ImageWidth);
+			image.height = static_cast<std::uint32_t>(ImageHeight);
+			image.stride = rowStride;
+			image.format = ImageBitDepth == Constants::RGB32PixelSize ?
+				SegmentationPixelFormat::Bgra32 : SegmentationPixelFormat::Bgr24;
+			if (!SourceTopDown)
+			{
+				image.pixels += static_cast<std::size_t>(ImageHeight - 1) * rowStride;
+				image.stride = -rowStride;
+			}
+			result->status = engine->PrepareImage(image);
+			if (result->status != SegmentationStatus::Ok && engine->GetLastError() != nullptr)
+			{
+				result->error = engine->GetLastError();
+			}
+			PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
+		});
+	}
+
+	bool MapClientPointToSource(HWND hwnd, int x, int y, float& sourceX, float& sourceY)
+	{
+		const RECT imageRect = GetActiveImageRect(hwnd);
+		float scaledX = 0.0f;
+		float scaledY = 0.0f;
+		if (!MapPreviewPointToImage(imageRect, x, y, ScaledImageWidth, ScaledImageHeight, scaledX, scaledY))
+		{
+			return false;
+		}
+		if (gUiState.zoomToSelection && ScaledImageWidth > RectWidth(imageRect) && ScaledImageHeight > RectHeight(imageRect))
+		{
+			scaledX = static_cast<float>((ScaledImageWidth - RectWidth(imageRect)) / 2 + (x - imageRect.left));
+			scaledY = static_cast<float>((ScaledImageHeight - RectHeight(imageRect)) / 2 + (y - imageRect.top));
+		}
+		sourceX = (scaledX + 0.5f) * ImageWidth / ScaledImageWidth - 0.5f;
+		sourceY = (scaledY + 0.5f) * ImageHeight / ScaledImageHeight - 0.5f;
+		sourceX = (std::max)(0.0f, (std::min)(sourceX, static_cast<float>(ImageWidth - 1)));
+		sourceY = (std::max)(0.0f, (std::min)(sourceY, static_cast<float>(ImageHeight - 1)));
+		return true;
+	}
+
+	void StartPointSegmentation(HWND hwnd, float sourceX, float sourceY)
+	{
+		if (gSelectionSession == nullptr || !gSelectionSession->ready || gSelectionSession->busy) return;
+		FinishSelectionWorker();
+		gSelectionSession->busy = true;
+		const std::uint32_t generation = ++gSelectionSession->generation;
+		const SelectionCombineMode mode = gSelectionSession->combineMode;
+		SetSelectionStatus(hwnd, L"Selecting...");
+		UpdateSelectionControls(hwnd);
+
+		gSelectionSession->worker = std::thread([hwnd, generation, sourceX, sourceY, mode]()
+		{
+			auto* result = new SegmentationWorkerResult();
+			result->generation = generation;
+			result->mode = mode;
+			result->point = { sourceX, sourceY };
+			result->operationMask.assign(static_cast<std::size_t>(ImageWidth) * ImageHeight, 0);
+			ISegmentationEngine* engine = nullptr;
+			{
+				std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
+				engine = gSelectionSession->module.GetEngine();
+			}
+			if (engine == nullptr)
+			{
+				result->status = SegmentationStatus::NotReady;
+				result->error = L"The segmentation engine is not ready.";
+				PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_COMPLETED, result);
+				return;
+			}
+
+			const int maskStride = ImageWidth;
+			SegmentationMaskView mask = {};
+			mask.pixels = result->operationMask.data();
+			mask.width = static_cast<std::uint32_t>(ImageWidth);
+			mask.height = static_cast<std::uint32_t>(ImageHeight);
+			mask.stride = maskStride;
+			if (!SourceTopDown)
+			{
+				mask.pixels += static_cast<std::size_t>(ImageHeight - 1) * maskStride;
+				mask.stride = -maskStride;
+			}
+			result->status = engine->SegmentPoint(result->point, mask);
+			if (result->status != SegmentationStatus::Ok && engine->GetLastError() != nullptr)
+			{
+				result->error = engine->GetLastError();
+			}
+			PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_COMPLETED, result);
+		});
 	}
 
 	void RefreshPreview(HWND hwnd)
@@ -346,6 +734,43 @@ namespace
 		const HBRUSH brush = CreateSolidBrush(RGB(r, g, b));
 		FillRect(hdc, &rect, brush);
 		DeleteObject(brush);
+	}
+
+	void DrawSelectionMarkers(HDC hdc, HWND hwnd)
+	{
+		if (gSelectionSession == nullptr || !gSelectionSession->selectiveMode) return;
+		const RECT imageRect = GetActiveImageRect(hwnd);
+		for (const SelectionPromptMarker& marker : gSelectionSession->markers)
+		{
+			const float scaledX = (marker.x + 0.5f) * ScaledImageWidth / ImageWidth - 0.5f;
+			const float scaledY = (marker.y + 0.5f) * ScaledImageHeight / ImageHeight - 0.5f;
+			int clientX = 0;
+			int clientY = 0;
+			if (gUiState.zoomToSelection && ScaledImageWidth > RectWidth(imageRect) && ScaledImageHeight > RectHeight(imageRect))
+			{
+				clientX = imageRect.left + static_cast<int>(scaledX) - (ScaledImageWidth - RectWidth(imageRect)) / 2;
+				clientY = imageRect.top + static_cast<int>(scaledY) - (ScaledImageHeight - RectHeight(imageRect)) / 2;
+			}
+			else
+			{
+				clientX = imageRect.left + static_cast<int>((scaledX + 0.5f) * RectWidth(imageRect) / ScaledImageWidth);
+				clientY = imageRect.top + static_cast<int>((scaledY + 0.5f) * RectHeight(imageRect) / ScaledImageHeight);
+			}
+			if (clientX < imageRect.left || clientX >= imageRect.right || clientY < imageRect.top || clientY >= imageRect.bottom)
+			{
+				continue;
+			}
+			const COLORREF color = marker.mode == SelectionCombineMode::Add ? RGB(20, 220, 80) : RGB(240, 70, 70);
+			HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+			HBRUSH brush = CreateSolidBrush(color);
+			HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
+			HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, brush));
+			Ellipse(hdc, clientX - 5, clientY - 5, clientX + 6, clientY + 6);
+			SelectObject(hdc, oldBrush);
+			SelectObject(hdc, oldPen);
+			DeleteObject(brush);
+			DeleteObject(pen);
+		}
 	}
 
 	void HandlePaintMessage(HWND hwnd)
@@ -376,9 +801,18 @@ namespace
 		auto scaledProc = ScaledProcImagePtr.lock();
 		if (scaledSrc != nullptr && scaledProc != nullptr)
 		{
-			DrawMainPreviewComparison(paintDc, &BmHdrCopy, scaledSrc->data(), scaledProc->data(),
+			unsigned char* originalToDraw = scaledSrc->data();
+			unsigned char* processedToDraw = scaledProc->data();
+			if (gSelectionSession != nullptr && !gSelectionSession->previewOriginalDisplay.empty() &&
+				!gSelectionSession->previewProcessedDisplay.empty())
+			{
+				originalToDraw = gSelectionSession->previewOriginalDisplay.data();
+				processedToDraw = gSelectionSession->previewProcessedDisplay.data();
+			}
+			DrawMainPreviewComparison(paintDc, &BmHdrCopy, originalToDraw, processedToDraw,
 			                          ScaledImageWidth, ScaledImageHeight, previewRect, gUiState.splitX,
 			                          gUiState.compareHoldOriginal, gUiState.zoomToSelection, darkMode);
+			DrawSelectionMarkers(paintDc, hwnd);
 		}
 
 		if (paintBuffer != nullptr)
@@ -620,11 +1054,13 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		AdjustForDarkMode(hwnd);
 		BOOL useDarkMode = IsDarkModeEnabled();
 		DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+		ApplyPanelTypography(hwnd);
 		SetSliderRanges(hwnd);
 		LayoutControlsV2(hwnd);
 		CenterSplitInPreview(hwnd);
 		UpdateSliders(hwnd);
 		DoPreviewProcessingV2();
+		UpdateSelectionControls(hwnd);
 		gHookDlg = hwnd;
 		gKeyboardHook = SetWindowsHookExW(WH_GETMESSAGE, CompareHoldHookProc, nullptr, GetCurrentThreadId());
 		return TRUE;
@@ -632,12 +1068,24 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 	case WM_DESTROY:
 		KillTimer(hwnd, PREVIEW_REFRESH_TIMER_ID);
+		StopSelectionWorker();
+		DiscardPendingSegmentationResults(hwnd);
+		if (gSelectionSession != nullptr)
+		{
+			std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
+			gSelectionSession->module.Unload();
+		}
 		if (gKeyboardHook != nullptr)
 		{
 			UnhookWindowsHookEx(gKeyboardHook);
 			gKeyboardHook = nullptr;
 		}
 		gHookDlg = nullptr;
+		if (gSectionFont != nullptr)
+		{
+			DeleteObject(gSectionFont);
+			gSectionFont = nullptr;
+		}
 		BufferedPaintUnInit();
 		return TRUE;
 
@@ -645,6 +1093,11 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		switch (LOWORD(wparam))
 		{
 		case IDOK:
+			if (gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+				(!gSelectionSession->ready || !HasSelectedPixels(gSelectionSession->selectionMask)))
+			{
+				return TRUE;
+			}
 			SkipProcessing = false;
 			SaveUiStateToSettings();
 			EndDialog(hwnd, IDOK);
@@ -673,10 +1126,88 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			RefreshPreview(hwnd);
 			return TRUE;
 
-		case IDC_TOGGLEZOOM:
-			gUiState.zoomToSelection = !gUiState.zoomToSelection;
+		case IDC_VIEW_FIT:
+			gUiState.zoomToSelection = false;
 			UpdateCommandLabels(hwnd);
 			InvalidatePreview(hwnd);
+			return TRUE;
+
+		case IDC_VIEW_ACTUAL:
+			gUiState.zoomToSelection = true;
+			UpdateCommandLabels(hwnd);
+			InvalidatePreview(hwnd);
+			return TRUE;
+
+		case IDC_MODE_ENTIRE_IMAGE:
+			if (gSelectionSession != nullptr)
+			{
+				if (gSelectionSession->busy) StopSelectionWorker();
+				gSelectionSession->selectiveMode = false;
+				SetSelectionStatus(hwnd, L"");
+				UpdateSelectionControls(hwnd);
+				RefreshPreview(hwnd);
+			}
+			return TRUE;
+
+		case IDC_MODE_SELECT_OBJECTS:
+			if (gSelectionSession != nullptr)
+			{
+				if (gSelectionSession->ready)
+				{
+					gSelectionSession->selectiveMode = true;
+					SetSelectionStatus(hwnd, L"Click an object to add it.");
+					UpdateSelectionControls(hwnd);
+					RefreshPreview(hwnd);
+				}
+				else if (!gSelectionSession->busy)
+				{
+					StartSegmentationPreparation(hwnd);
+				}
+			}
+			return TRUE;
+
+		case IDC_SELECTION_ADD:
+			gSelectionSession->combineMode = SelectionCombineMode::Add;
+			SetSelectionStatus(hwnd, L"Click an object to add it.");
+			UpdateSelectionControls(hwnd);
+			return TRUE;
+
+		case IDC_SELECTION_REMOVE:
+			gSelectionSession->combineMode = SelectionCombineMode::Remove;
+			SetSelectionStatus(hwnd, L"Click an object to remove it.");
+			UpdateSelectionControls(hwnd);
+			return TRUE;
+
+		case IDC_SELECTION_UNDO:
+			if (gSelectionSession->history.Undo(gSelectionSession->selectionMask))
+			{
+				if (!gSelectionSession->markers.empty()) gSelectionSession->markers.pop_back();
+				RefreshPreview(hwnd);
+			}
+			UpdateSelectionControls(hwnd);
+			return TRUE;
+
+		case IDC_SELECTION_CLEAR:
+			if (gSelectionSession->history.Fill(gSelectionSession->selectionMask, 0))
+			{
+				gSelectionSession->markers.clear();
+				RefreshPreview(hwnd);
+			}
+			UpdateSelectionControls(hwnd);
+			return TRUE;
+
+		case IDC_SELECTION_SELECT_ALL:
+			if (gSelectionSession->history.Fill(gSelectionSession->selectionMask, 255))
+			{
+				RefreshPreview(hwnd);
+			}
+			UpdateSelectionControls(hwnd);
+			return TRUE;
+
+		case IDC_SELECTION_SHOW_MASK:
+			gSelectionSession->showMask = SendMessage(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK),
+				BM_GETCHECK, 0, 0) == BST_CHECKED;
+			RefreshPreview(hwnd);
 			return TRUE;
 		}
 		break;
@@ -701,6 +1232,10 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		else if (slider == GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER))
 		{
 			gUiState.naturalLook = value;
+		}
+		else if (slider == GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER) && gSelectionSession != nullptr)
+		{
+			gSelectionSession->softness = value;
 		}
 
 		switch (LOWORD(wparam))
@@ -740,6 +1275,17 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			gUiState.splitX = x;
 			InvalidatePreview(hwnd);
 			return TRUE;
+		}
+		if (gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+			gSelectionSession->ready && !gSelectionSession->busy)
+		{
+			float sourceX = 0.0f;
+			float sourceY = 0.0f;
+			if (MapClientPointToSource(hwnd, x, y, sourceX, sourceY))
+			{
+				StartPointSegmentation(hwnd, sourceX, sourceY);
+				return TRUE;
+			}
 		}
 		break;
 	}
@@ -787,7 +1333,69 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
 			return TRUE;
 		}
+		const RECT activeImageRect = GetActiveImageRect(hwnd);
+		if (gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+			gSelectionSession->ready && PtInRect(&activeImageRect, cursor))
+		{
+			SetCursor(LoadCursor(nullptr, IDC_CROSS));
+			return TRUE;
+		}
 		break;
+	}
+
+	case WM_ALTALUX_SEGMENTATION_PREPARED:
+	{
+		std::unique_ptr<SegmentationWorkerResult> result(reinterpret_cast<SegmentationWorkerResult*>(lparam));
+		FinishSelectionWorker();
+		if (gSelectionSession == nullptr || result == nullptr || result->generation != gSelectionSession->generation)
+		{
+			return TRUE;
+		}
+		gSelectionSession->busy = false;
+		if (result->status == SegmentationStatus::Ok)
+		{
+			gSelectionSession->ready = true;
+			SetSelectionStatus(hwnd, L"Click an object to add it.");
+		}
+		else
+		{
+			gSelectionSession->ready = false;
+			gSelectionSession->selectiveMode = false;
+			const std::wstring message = result->error.empty() ?
+				L"The optional AltaLux AI selection package is unavailable." : result->error;
+			MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection", MB_OK | MB_ICONINFORMATION);
+		}
+		UpdateSelectionControls(hwnd);
+		RefreshPreview(hwnd);
+		return TRUE;
+	}
+
+	case WM_ALTALUX_SEGMENTATION_COMPLETED:
+	{
+		std::unique_ptr<SegmentationWorkerResult> result(reinterpret_cast<SegmentationWorkerResult*>(lparam));
+		FinishSelectionWorker();
+		if (gSelectionSession == nullptr || result == nullptr || result->generation != gSelectionSession->generation)
+		{
+			return TRUE;
+		}
+		gSelectionSession->busy = false;
+		if (result->status == SegmentationStatus::Ok &&
+			gSelectionSession->history.Apply(gSelectionSession->selectionMask, result->operationMask.data(),
+				result->operationMask.size(), result->mode))
+		{
+			gSelectionSession->markers.push_back({ result->point.x, result->point.y, result->mode });
+			SetSelectionStatus(hwnd, result->mode == SelectionCombineMode::Add ?
+				L"Object added. Click another object." : L"Object removed. Click another object.");
+		}
+		else if (result->status != SegmentationStatus::Ok)
+		{
+			const std::wstring message = result->error.empty() ? L"Object selection failed." : result->error;
+			MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection", MB_OK | MB_ICONWARNING);
+			SetSelectionStatus(hwnd, L"Selection failed; try another point.");
+		}
+		UpdateSelectionControls(hwnd);
+		RefreshPreview(hwnd);
+		return TRUE;
 	}
 
 	case WM_PAINT:
@@ -799,8 +1407,26 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_CTLCOLORBTN:
 	{
 		HDC hdc = reinterpret_cast<HDC>(wparam);
+		const HWND control = reinterpret_cast<HWND>(lparam);
+		const int controlId = control != nullptr ? GetDlgCtrlID(control) : 0;
+		const bool sectionHeader = controlId == IDC_ENHANCEMENT_SECTION ||
+			controlId == IDC_VIEW_SECTION || controlId == IDC_APPLY_TO_SECTION ||
+			controlId == IDC_SELECTION_SECTION;
+		const bool secondaryText = controlId == IDC_DETAIL_HELP_STATIC ||
+			controlId == IDC_NATURALLOOK_HELP_STATIC || controlId == IDC_SELECTION_STATUS;
 		SetBkMode(hdc, TRANSPARENT);
-		SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark ? RGB(245, 245, 245) : RGB(24, 24, 24));
+		if (sectionHeader)
+		{
+			SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark ? RGB(142, 190, 255) : RGB(0, 92, 184));
+		}
+		else if (secondaryText)
+		{
+			SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark ? RGB(184, 184, 184) : RGB(88, 88, 88));
+		}
+		else
+		{
+			SetTextColor(hdc, gCurrentTheme == ThemeMode::Dark ? RGB(245, 245, 245) : RGB(24, 24, 24));
+		}
 		return reinterpret_cast<INT_PTR>(gBackgroundBrush->get());
 	}
 
@@ -862,6 +1488,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 			return false;
 		}
 		memcpy(&BmHdrCopy, &(*bitmapHeader), sizeof(BITMAPINFOHEADER));
+		SourceTopDown = bitmapHeader->biHeight < 0;
 
 		if (bitmapHeader->biPlanes != 1 || !IsSupportedBitDepth(bitmapHeader))
 		{
@@ -897,6 +1524,8 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		auto scaledProcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
 		ScaledSrcImagePtr = scaledSrcImage;
 		ScaledProcImagePtr = scaledProcImage;
+		FullSrcImagePtr = srcImage;
+		gSelectionSession = std::make_unique<SelectionDialogSession>();
 
 		ScaleDownImage(srcImage->data(), ImageWidth, ImageHeight, scaledSrcImage->data(), ScalingFactor, ImageBitDepth);
 		CopyScaledSrcImage(scaledProcImage->data());
@@ -904,11 +1533,15 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		const INT_PTR dialogResult = DialogBox(hDll, MAKEINTRESOURCE(IDD_ALTALUX_DIALOG), hwnd, DlgProc);
 		if (dialogResult == -1)
 		{
+			gSelectionSession.reset();
+			FullSrcImagePtr.reset();
 			return false;
 		}
 
 		if (SkipProcessing)
 		{
+			gSelectionSession.reset();
+			FullSrcImagePtr.reset();
 			return true;
 		}
 	}
@@ -923,8 +1556,33 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		gUiState.splitX = 0;
 	}
 
-	if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+	const bool applySelection = gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+		gSelectionSession->ready && HasSelectedPixels(gSelectionSession->selectionMask);
+	if (applySelection)
 	{
+		std::vector<unsigned char> processedImage(srcImage->begin(),
+			srcImage->begin() + GetImageByteCount(ImageWidth, ImageHeight));
+		if (!ProcessMultiscaleImage(srcImage->data(), processedImage.data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+		{
+			gSelectionSession.reset();
+			FullSrcImagePtr.reset();
+			return false;
+		}
+		std::vector<unsigned char> alphaMask;
+		if (!BuildFeatheredMask(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
+			gSelectionSession->softness, alphaMask) ||
+			!CompositeWithMask(srcImage->data(), processedImage.data(), srcImage->data(), alphaMask.data(),
+				ImageWidth, ImageHeight, ImageBitDepth))
+		{
+			gSelectionSession.reset();
+			FullSrcImagePtr.reset();
+			return false;
+		}
+	}
+	else if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+	{
+		gSelectionSession.reset();
+		FullSrcImagePtr.reset();
 		return false;
 	}
 
@@ -938,6 +1596,8 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
 		CopyToSourceImage(imageBits, imageBitsStride, srcImage->data(), clipRect);
 	}
+	gSelectionSession.reset();
+	FullSrcImagePtr.reset();
 
 	return true;
 }

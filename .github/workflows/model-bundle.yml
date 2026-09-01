@@ -1,0 +1,36 @@
+name: Build MobileSAM model bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-models:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install exporter dependencies
+        run: pip install torch==2.5.1 torchvision==0.20.1 timm==1.0.29 onnx==1.17.0 onnxruntime==1.20.1
+      - name: Fetch pinned MobileSAM source and checkpoint
+        shell: pwsh
+        run: |
+          git clone https://github.com/ChaoningZhang/MobileSAM.git mobile-sam
+          git -C mobile-sam checkout f706ad9c4eb7f219c00d9050e46328518ffb65d2
+          Invoke-WebRequest -Uri https://raw.githubusercontent.com/ChaoningZhang/MobileSAM/f706ad9c4eb7f219c00d9050e46328518ffb65d2/weights/mobile_sam.pt -OutFile mobile_sam.pt
+      - name: Export and validate ONNX models
+        run: python tools/export_mobilesam_onnx.py --mobile-sam-root mobile-sam --checkpoint mobile_sam.pt --output model-bundle
+      - name: Package model licenses
+        shell: pwsh
+        run: |
+          Copy-Item mobile-sam/LICENSE model-bundle/MobileSAM-LICENSE.txt
+          Compress-Archive model-bundle/* AltaLux-MobileSAM-models-v1.zip
+      - name: Publish immutable model bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create ai-model-v1 AltaLux-MobileSAM-models-v1.zip --title "AltaLux MobileSAM models v1" --notes "Pinned MobileSAM ONNX model bundle for AltaLux selective enhancement."

@@ -1,0 +1,19 @@
+AltaLux AI selection add-on includes or uses the following third-party works:
+
+MobileSAM
+Copyright MobileSAM contributors
+Licensed under the Apache License, Version 2.0.
+https://github.com/ChaoningZhang/MobileSAM
+
+Segment Anything
+Copyright Meta Platforms, Inc. and affiliates
+Licensed under the Apache License, Version 2.0.
+https://github.com/facebookresearch/segment-anything
+
+ONNX Runtime
+Copyright Microsoft Corporation
+Licensed under the MIT License.
+https://github.com/microsoft/onnxruntime
+
+Redistributions must include the complete license texts supplied with the
+corresponding model and runtime release packages.

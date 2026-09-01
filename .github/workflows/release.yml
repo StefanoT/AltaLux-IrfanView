@@ -10,6 +10,7 @@ env:
   BUILD_CONFIGURATION: Release
   BUILD_PLATFORM: x64
   RELEASE_ASSET_PATH: ./AltaLux/x64/Release/AltaLux.dll
+  AI_RELEASE_ASSET_PATH: ./AltaLux-AI-x64.zip
 
 permissions:
   contents: write
@@ -32,10 +33,31 @@ jobs:
 
       - name: Build x64 DLL
         run: >-
-          msbuild /m
+          msbuild /m /restore
           /p:Configuration=${{ env.BUILD_CONFIGURATION }}
           /p:Platform=${{ env.BUILD_PLATFORM }}
           ${{ env.SOLUTION_FILE_PATH }}
+
+      - name: Download pinned MobileSAM model bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release download ai-model-v1
+          --repo "${{ github.repository }}"
+          --pattern "AltaLux-MobileSAM-models-v1.zip"
+          --dir model-download
+
+      - name: Assemble optional AI package
+        shell: pwsh
+        run: |
+          Expand-Archive model-download/AltaLux-MobileSAM-models-v1.zip -DestinationPath ai-package
+          python tools/verify_model_bundle.py ai-package
+          Copy-Item AltaLux/x64/Release/AltaLuxSegmentation.dll ai-package/
+          Copy-Item AltaLux/x64/Release/onnxruntime.dll ai-package/
+          Copy-Item AltaLux/x64/Release/onnxruntime_providers_shared.dll ai-package/
+          Copy-Item AltaLuxSegmentation/README.md ai-package/
+          Copy-Item AltaLuxSegmentation/AltaLuxSegmentation-THIRD-PARTY-NOTICES.txt ai-package/
+          Compress-Archive ai-package/* ${{ env.AI_RELEASE_ASSET_PATH }}
 
       - name: Publish GitHub release
         env:
@@ -43,6 +65,7 @@ jobs:
         run: >-
           gh release create "${{ github.ref_name }}"
           "${{ env.RELEASE_ASSET_PATH }}"
+          "${{ env.AI_RELEASE_ASSET_PATH }}"
           --verify-tag
           --generate-notes
           --title "${{ github.ref_name }}"

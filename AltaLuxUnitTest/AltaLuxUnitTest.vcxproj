@@ -161,6 +161,7 @@
     <ClInclude Include="..\AltaLux\Filter\CBaseAltaLuxFilter.h" />
     <ClInclude Include="..\AltaLux\Filter\CParallelSplitLoopAltaLuxFilter.h" />
     <ClInclude Include="..\AltaLux\Filter\CSerialAltaLuxFilter.h" />
+    <ClInclude Include="..\AltaLux\Segmentation\SelectionCore.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
@@ -179,6 +180,7 @@
     <ClCompile Include="..\AltaLux\Filter\CBaseAltaLuxFilter.cpp" />
     <ClCompile Include="..\AltaLux\Filter\CParallelSplitLoopAltaLuxFilter.cpp" />
     <ClCompile Include="..\AltaLux\Filter\CSerialAltaLuxFilter.cpp" />
+    <ClCompile Include="..\AltaLux\Segmentation\SelectionCore.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>

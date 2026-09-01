@@ -5,6 +5,7 @@
 #include "..\AltaLux\Kernels\AltaLuxKernels.h"
 #include "..\AltaLux\Filter\CBaseAltaLuxFilter.h"
 #include "..\AltaLux\Filter\CAltaLuxFilterFactory.h"
+#include "..\AltaLux\Segmentation\SelectionCore.h"
 
 #include <memory>
 #include <vector>
@@ -641,6 +642,70 @@ namespace AltaLuxUnitTest
 
 			Assert::IsTrue(processed);
 			Assert::IsTrue(SumAbsoluteRGBDifference(input, output, bitDepth) > 0);
+		}
+
+		TEST_METHOD(SelectionAddRemoveAndUndo)
+		{
+			std::vector<unsigned char> selection(8, 0);
+			const unsigned char addMask[8] = { 0, 255, 255, 0, 0, 255, 0, 0 };
+			const unsigned char removeMask[8] = { 0, 0, 255, 0, 0, 0, 0, 0 };
+			SelectionHistory history;
+
+			Assert::IsTrue(history.Apply(selection, addMask, selection.size(), SelectionCombineMode::Add));
+			Assert::AreEqual(255, static_cast<int>(selection[1]));
+			Assert::AreEqual(255, static_cast<int>(selection[2]));
+			Assert::IsTrue(history.Apply(selection, removeMask, selection.size(), SelectionCombineMode::Remove));
+			Assert::AreEqual(0, static_cast<int>(selection[2]));
+			Assert::IsTrue(history.Undo(selection));
+			Assert::AreEqual(255, static_cast<int>(selection[2]));
+			Assert::IsTrue(history.Undo(selection));
+			Assert::IsFalse(HasSelectedPixels(selection));
+		}
+
+		TEST_METHOD(SelectionFillIsUndoable)
+		{
+			std::vector<unsigned char> selection(6, 0);
+			SelectionHistory history;
+			Assert::IsTrue(history.Fill(selection, 255));
+			Assert::IsTrue(HasSelectedPixels(selection));
+			Assert::IsTrue(history.Undo(selection));
+			Assert::IsFalse(HasSelectedPixels(selection));
+		}
+
+		TEST_METHOD(CompositeMaskPreservesAlphaAndEndpoints)
+		{
+			const unsigned char original[8] = { 10, 20, 30, 77, 40, 50, 60, 88 };
+			const unsigned char processed[8] = { 110, 120, 130, 1, 140, 150, 160, 2 };
+			const unsigned char mask[2] = { 0, 255 };
+			unsigned char output[8] = {};
+
+			Assert::IsTrue(CompositeWithMask(original, processed, output, mask, 2, 1, 4));
+			Assert::AreEqual(10, static_cast<int>(output[0]));
+			Assert::AreEqual(77, static_cast<int>(output[3]));
+			Assert::AreEqual(140, static_cast<int>(output[4]));
+			Assert::AreEqual(88, static_cast<int>(output[7]));
+		}
+
+		TEST_METHOD(FeatheredMaskExpandsOnePixel)
+		{
+			const unsigned char binary[9] = { 0, 0, 0, 0, 255, 0, 0, 0, 0 };
+			std::vector<unsigned char> alpha;
+			Assert::IsTrue(BuildFeatheredMask(binary, 3, 3, 0, alpha));
+			for (unsigned char value : alpha)
+			{
+				Assert::AreEqual(255, static_cast<int>(value));
+			}
+		}
+
+		TEST_METHOD(PreviewPointMapsToImageCoordinates)
+		{
+			const RECT rect = { 10, 20, 210, 120 };
+			float imageX = 0.0f;
+			float imageY = 0.0f;
+			Assert::IsTrue(MapPreviewPointToImage(rect, 110, 70, 400, 200, imageX, imageY));
+			Assert::IsTrue(imageX > 199.0f && imageX < 202.0f);
+			Assert::IsTrue(imageY > 99.0f && imageY < 102.0f);
+			Assert::IsFalse(MapPreviewPointToImage(rect, 9, 70, 400, 200, imageX, imageY));
 		}
 	};
 }

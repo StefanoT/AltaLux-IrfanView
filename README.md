@@ -40,6 +40,16 @@ License: Microsoft Public License (MS-PL)
 
 Use a DLL build that matches the IrfanView architecture.
 
+### Optional AI object selection
+
+The x64 plug-in can apply AltaLux through MobileSAM-generated object masks. The
+base `AltaLux.dll` remains fully functional without the AI files. To enable
+object selection, extract every file from `AltaLux-AI-x64.zip` directly into
+the same IrfanView `Plugins` folder as `AltaLux.dll`; do not create a subfolder.
+
+The add-on runs locally through ONNX Runtime's CPU provider. No image data is
+uploaded and AltaLux does not download models at runtime.
+
 ## Interactive Usage
 
 1. Open an image in IrfanView.
@@ -51,6 +61,10 @@ Use a DLL build that matches the IrfanView architecture.
 7. Use `Natural`, `Balanced`, or `Detail` as starting presets.
 8. Use `Zoom` to switch between fit preview and 1:1 crop preview.
 9. Press `OK` to apply or `Cancel` to discard.
+
+When the optional AI package is installed, use `Select objects`, choose `Add`
+or `Remove`, and click objects in the preview. `Undo`, `Clear`, `Select all`,
+the mask overlay, and `Edge softness` refine how the filtered result is blended.
 
 If an IrfanView selection is active, AltaLux processes only the selected area.
 
