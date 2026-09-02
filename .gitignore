@@ -1,0 +1,40 @@
+# Visual Studio / MSBuild outputs
+AltaLux/.vs/
+AltaLux/Debug/
+AltaLux/Release/
+AltaLux/x64/Debug/
+AltaLux/x64/Release/
+AltaLux/AltaLux/x64/Debug/
+AltaLux/AltaLux/x64/Release/
+AltaLux/AltaLux/Release/
+AltaLux/AltaLux.aps
+AltaLuxBench/Debug/
+AltaLuxBench/Release/
+AltaLuxBench/x64/
+AltaLuxBench/AltaLuxBench/Release/
+AltaLuxBench/AltaLuxBench/x64/
+AltaLuxUnitTest/Debug/
+AltaLuxUnitTest/Release/
+AltaLuxUnitTest/x64/
+AltaLuxUnitTest/AltaLuxUnitTest/Release/
+AltaLuxUnitTest/AltaLuxUnitTest/Release/AltaLuxKernelsScalar.obj
+AltaLuxUnitTest/AltaLuxUnitTest/x64/
+AltaLuxUnitTest/AltaLuxUnitTest/x64/Release/AltaLuxKernelsScalar.obj
+AltaLuxSegmentation/x64/
+AltaLuxSegmentation/obj/
+
+# Local scratch / tooling directories
+.build-out/
+.test-out/
+.codex-temp/
+.codegraph/
+.codegraph/.gitignore
+
+# Intentionally local-only documents (not distributed with the repository)
+CLAUDE.md
+BLOG_ALTALUX_V2.md
+
+# Local-only release notes and images
+AltaLux/RELEASE_NOTES_v1.9.1.92.md
+docs/images/altalux-v2-optimization-loop.png
+docs/images/altalux-v2-optimization-loop-v2.png
