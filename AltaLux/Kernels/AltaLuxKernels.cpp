@@ -219,53 +219,27 @@ namespace AltaLuxKernels
 		}
 	}
 
+	// Scalar-only operation: conflicting histogram increments (multiple lanes
+	// targeting the same bin) cannot be vectorized without scatter/conflict
+	// detection, which neither SSSE3 nor AVX2 provides.
 	void MakeHistogram(const unsigned char* image, int imageStride, int regionWidth,
-		int regionHeight, unsigned int* histogram, KernelImplementation implementation)
+		int regionHeight, unsigned int* histogram)
 	{
-		switch (NormalizeImplementation(implementation))
-		{
-		case KernelImplementation::AVX2:
-			MakeHistogramAVX2(image, imageStride, regionWidth, regionHeight, histogram);
-			break;
-		case KernelImplementation::SSSE3:
-			MakeHistogramSSSE3(image, imageStride, regionWidth, regionHeight, histogram);
-			break;
-		default:
-			MakeHistogramScalar(image, imageStride, regionWidth, regionHeight, histogram);
-			break;
-		}
+		MakeHistogramScalar(image, imageStride, regionWidth, regionHeight, histogram);
 	}
 
-	void ClipHistogram(unsigned int* histogram, unsigned int clipLimit, KernelImplementation implementation)
+	// Scalar-only operation: the redistribution loop is stateful, so the whole
+	// clip-and-redistribute pass stays scalar.
+	void ClipHistogram(unsigned int* histogram, unsigned int clipLimit)
 	{
-		switch (NormalizeImplementation(implementation))
-		{
-		case KernelImplementation::AVX2:
-			ClipHistogramAVX2(histogram, clipLimit);
-			break;
-		case KernelImplementation::SSSE3:
-			ClipHistogramSSSE3(histogram, clipLimit);
-			break;
-		default:
-			ClipHistogramScalar(histogram, clipLimit);
-			break;
-		}
+		ClipHistogramScalar(histogram, clipLimit);
 	}
 
-	void MapHistogram(unsigned int* histogram, unsigned int pixelCount, KernelImplementation implementation)
+	// Scalar-only operation: the equalization map is a 256-bin prefix sum with
+	// a loop-carried dependency.
+	void MapHistogram(unsigned int* histogram, unsigned int pixelCount)
 	{
-		switch (NormalizeImplementation(implementation))
-		{
-		case KernelImplementation::AVX2:
-			MapHistogramAVX2(histogram, pixelCount);
-			break;
-		case KernelImplementation::SSSE3:
-			MapHistogramSSSE3(histogram, pixelCount);
-			break;
-		default:
-			MapHistogramScalar(histogram, pixelCount);
-			break;
-		}
+		MapHistogramScalar(histogram, pixelCount);
 	}
 
 	void AccumulateLayer(unsigned int* accum, const unsigned char* layer, int pixelStart,
@@ -306,25 +280,16 @@ namespace AltaLuxKernels
 		}
 	}
 
+	// Scalar-only operation: row-map construction was benchmarked against both
+	// SIMD tiers and lost, because the grey-value-indexed pixel lookup stays
+	// scalar and neither tier has an integer gather fast enough to compensate.
+	// Revisit only with a gather-based design that beats the scalar loop.
 	void Interpolate(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
-		unsigned int matrixWidth, unsigned int matrixHeight, KernelImplementation implementation)
+		unsigned int matrixWidth, unsigned int matrixHeight)
 	{
-		switch (NormalizeImplementation(implementation))
-		{
-		case KernelImplementation::AVX2:
-			InterpolateAVX2(image, imageStride, mapLeftUp, mapRightUp,
-				mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
-			break;
-		case KernelImplementation::SSSE3:
-			InterpolateSSSE3(image, imageStride, mapLeftUp, mapRightUp,
-				mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
-			break;
-		default:
-			InterpolateScalar(image, imageStride, mapLeftUp, mapRightUp,
-				mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
-			break;
-		}
+		InterpolateScalar(image, imageStride, mapLeftUp, mapRightUp,
+			mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 	}
 }

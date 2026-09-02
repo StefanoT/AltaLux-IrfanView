@@ -73,18 +73,10 @@ namespace AltaLuxKernels
 		const int* reciprocalLut);
 	void ScaleDownBoxSSSE3(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride);
-	void MakeHistogramSSSE3(const unsigned char* image, int imageStride, int regionWidth,
-		int regionHeight, unsigned int* histogram);
-	void ClipHistogramSSSE3(unsigned int* histogram, unsigned int clipLimit);
-	void MapHistogramSSSE3(unsigned int* histogram, unsigned int pixelCount);
 	void AccumulateLayerSSSE3(unsigned int* accum, const unsigned char* layer, int pixelStart,
 		int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int pixelStart,
 		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
-	void InterpolateSSSE3(unsigned char* image, int imageStride,
-		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
-		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
-		unsigned int matrixWidth, unsigned int matrixHeight);
 
 	void ExtractPackedYUVLumaAVX2(const unsigned char* source, unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition);
@@ -100,16 +92,8 @@ namespace AltaLuxKernels
 		const int* reciprocalLut);
 	void ScaleDownBoxAVX2(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride);
-	void MakeHistogramAVX2(const unsigned char* image, int imageStride, int regionWidth,
-		int regionHeight, unsigned int* histogram);
-	void ClipHistogramAVX2(unsigned int* histogram, unsigned int clipLimit);
-	void MapHistogramAVX2(unsigned int* histogram, unsigned int pixelCount);
 	void AccumulateLayerAVX2(unsigned int* accum, const unsigned char* layer, int pixelStart,
 		int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int pixelStart,
 		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
-	void InterpolateAVX2(unsigned char* image, int imageStride,
-		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
-		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
-		unsigned int matrixWidth, unsigned int matrixHeight);
 }

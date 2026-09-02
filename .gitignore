@@ -26,6 +26,7 @@ AltaLuxSegmentation/obj/
 # Local scratch / tooling directories
 .build-out/
 .test-out/
+.bench-out/
 .codex-temp/
 .codegraph/
 .codegraph/.gitignore

@@ -528,30 +528,6 @@ namespace AltaLuxKernels
 		}
 	}
 
-	// Builds a 256-bin luma histogram for one CLAHE tile. SSSE3 cannot safely
-	// vectorize pHistogram[pixel]++ because several lanes can target the same bin,
-	// so this entry point currently preserves the scalar conflict-free algorithm.
-	void MakeHistogramSSSE3(const unsigned char* image, int imageStride, int regionWidth,
-		int regionHeight, unsigned int* histogram)
-	{
-		MakeHistogramScalar(image, imageStride, regionWidth, regionHeight, histogram);
-	}
-
-	// Clips and redistributes histogram bins. The early min/excess passes are
-	// SIMD-friendly, but the final redistribution loop is stateful; keep the
-	// scalar implementation until the full method is benchmarked and split safely.
-	void ClipHistogramSSSE3(unsigned int* histogram, unsigned int clipLimit)
-	{
-		ClipHistogramScalar(histogram, clipLimit);
-	}
-
-	// Converts a histogram to an equalization map. This is a 256-element prefix
-	// sum, so each output depends on the preceding bins; scalar is the baseline.
-	void MapHistogramSSSE3(unsigned int* histogram, unsigned int pixelCount)
-	{
-		MapHistogramScalar(histogram, pixelCount);
-	}
-
 	// Accumulates four RGB/RGBX pixels into the uint32 weighted-sum buffer. Source
 	// bytes are expanded into three vectors holding twelve channels, multiplied by
 	// the layer weight, then either assigned or added to the accumulator.
@@ -716,18 +692,5 @@ namespace AltaLuxKernels
 		}
 
 		WriteAccumulatedImageScalar(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
-	}
-
-	// Interpolates CLAHE mapping regions using the scalar interleaved row-map
-	// kernel. SSSE3 row-map construction was benchmarked, but it did not beat the
-	// scalar implementation because the grey-value-indexed pixel lookup remains
-	// scalar and SSSE3 has no integer gather instruction.
-	void InterpolateSSSE3(unsigned char* image, int imageStride,
-		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
-		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
-		unsigned int matrixWidth, unsigned int matrixHeight)
-	{
-		InterpolateScalar(image, imageStride, mapLeftUp, mapRightUp,
-			mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 	}
 }

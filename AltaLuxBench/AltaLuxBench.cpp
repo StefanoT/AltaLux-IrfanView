@@ -302,6 +302,14 @@ void BenchmarkAllImplementations(const char *KernelName, Fn operation)
 	});
 }
 
+template<typename Fn>
+void BenchmarkScalarOnlyKernel(const char *KernelName, Fn operation)
+{
+	// Scalar-only kernels (histogram work, interpolation) run the same code in
+	// every tier, so there is one timing instead of three identical ones.
+	BenchmarkOperation((string(KernelName) + " Scalar (all tiers)").c_str(), operation);
+}
+
 void BenchmarkCriticalKernels()
 {
 	vector<unsigned char> rgb24(RGB24_SAMPLE_SIZE);
@@ -391,7 +399,7 @@ void BenchmarkCriticalKernels()
 		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), 0, SAMPLE_PIXELS, 4,
 			WEIGHT_SCALE_LOG2, WEIGHT_HALF, implementation);
 	});
-	BenchmarkAllImplementations("CLAHE Make Histogram", [&](AltaLuxKernels::KernelImplementation implementation)
+	BenchmarkScalarOnlyKernel("CLAHE Make Histogram", [&]()
 	{
 		const int tileWidth = SAMPLE_WIDTH / 8;
 		const int tileHeight = SAMPLE_HEIGHT / 8;
@@ -403,30 +411,30 @@ void BenchmarkCriticalKernels()
 					+ (tileY * tileHeight * SAMPLE_WIDTH)
 					+ (tileX * tileWidth);
 				AltaLuxKernels::MakeHistogram(tile, SAMPLE_WIDTH, tileWidth, tileHeight,
-					histogram.data(), implementation);
+					histogram.data());
 			}
 		}
 	});
-	BenchmarkAllImplementations("CLAHE Clip Histogram", [&](AltaLuxKernels::KernelImplementation implementation)
+	BenchmarkScalarOnlyKernel("CLAHE Clip Histogram", [&]()
 	{
 		memcpy(clipHistogramBatch.data(), clipHistogramBatchSource.data(),
 			clipHistogramBatch.size() * sizeof(unsigned int));
 		for (size_t offset = 0; offset < clipHistogramBatch.size(); offset += 256)
 		{
-			AltaLuxKernels::ClipHistogram(clipHistogramBatch.data() + offset, 700, implementation);
+			AltaLuxKernels::ClipHistogram(clipHistogramBatch.data() + offset, 700);
 		}
 	});
-	BenchmarkAllImplementations("CLAHE Map Histogram", [&](AltaLuxKernels::KernelImplementation implementation)
+	BenchmarkScalarOnlyKernel("CLAHE Map Histogram", [&]()
 	{
 		memcpy(mapHistogramBatch.data(), mapHistogramBatchSource.data(),
 			mapHistogramBatch.size() * sizeof(unsigned int));
 		for (size_t offset = 0; offset < mapHistogramBatch.size(); offset += 256)
 		{
 			AltaLuxKernels::MapHistogram(mapHistogramBatch.data() + offset,
-				(SAMPLE_WIDTH / 8) * (SAMPLE_HEIGHT / 8), implementation);
+				(SAMPLE_WIDTH / 8) * (SAMPLE_HEIGHT / 8));
 		}
 	});
-	BenchmarkAllImplementations("CLAHE Interpolate", [&](AltaLuxKernels::KernelImplementation implementation)
+	BenchmarkScalarOnlyKernel("CLAHE Interpolate", [&]()
 	{
 		const unsigned int tileWidth = SAMPLE_WIDTH / 8;
 		const unsigned int tileHeight = SAMPLE_HEIGHT / 8;
@@ -440,7 +448,7 @@ void BenchmarkCriticalKernels()
 					+ (tileX * tileWidth);
 				AltaLuxKernels::Interpolate(tile, SAMPLE_WIDTH,
 					mapLeftUp.data(), mapRightUp.data(), mapLeftBottom.data(), mapRightBottom.data(),
-					tileWidth, tileHeight, implementation);
+					tileWidth, tileHeight);
 			}
 		}
 	});

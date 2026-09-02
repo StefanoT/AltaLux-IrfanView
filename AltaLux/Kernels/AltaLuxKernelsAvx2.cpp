@@ -619,28 +619,6 @@ namespace AltaLuxKernels
 		}
 	}
 
-	// Builds a 256-bin luma histogram for one CLAHE tile. AVX2 lacks scatter and
-	// conflict detection, so pHistogram[pixel]++ is not a safe direct SIMD loop.
-	void MakeHistogramAVX2(const unsigned char* image, int imageStride, int regionWidth,
-		int regionHeight, unsigned int* histogram)
-	{
-		MakeHistogramScalar(image, imageStride, regionWidth, regionHeight, histogram);
-	}
-
-	// Clips and redistributes histogram bins. AVX2 can accelerate some contiguous
-	// passes, but the final redistribution is stateful and remains scalar for now.
-	void ClipHistogramAVX2(unsigned int* histogram, unsigned int clipLimit)
-	{
-		ClipHistogramScalar(histogram, clipLimit);
-	}
-
-	// Converts a histogram to an equalization map. The 256-bin prefix sum has a
-	// loop-carried dependency, so scalar remains the benchmark baseline.
-	void MapHistogramAVX2(unsigned int* histogram, unsigned int pixelCount)
-	{
-		MapHistogramScalar(histogram, pixelCount);
-	}
-
 	// Accumulates eight RGB/RGBX pixels into the uint32 weighted-sum buffer. Source
 	// bytes are expanded into three AVX2 vectors holding twenty-four channels,
 	// multiplied by the weight, then assigned or added to the accumulator.
@@ -799,18 +777,5 @@ namespace AltaLuxKernels
 		}
 
 		WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
-	}
-
-	// Interpolates CLAHE mapping regions using the scalar interleaved row-map
-	// kernel. AVX2 row-map construction alone benchmarked slower; AVX2 should be
-	// reintroduced here only if the grey-value-indexed pixel loop also proves
-	// faster, most likely through a gather-based design.
-	void InterpolateAVX2(unsigned char* image, int imageStride,
-		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
-		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
-		unsigned int matrixWidth, unsigned int matrixHeight)
-	{
-		InterpolateScalar(image, imageStride, mapLeftUp, mapRightUp,
-			mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 	}
 }

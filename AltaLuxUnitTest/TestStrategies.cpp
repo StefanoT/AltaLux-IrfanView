@@ -361,7 +361,7 @@ namespace AltaLuxUnitTest
 				const unsigned int expectedMaxBin =
 					requestedClipLimit > minimumFeasibleClipLimit ? requestedClipLimit : minimumFeasibleClipLimit;
 
-				AltaLuxKernels::ClipHistogram(histogram, requestedClipLimit, AltaLuxKernels::KernelImplementation::Scalar);
+				AltaLuxKernels::ClipHistogram(histogram, requestedClipLimit);
 
 				unsigned int actualPixelCount = 0;
 				unsigned int actualMaxBin = 0;

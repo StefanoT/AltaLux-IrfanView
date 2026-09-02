@@ -354,18 +354,17 @@ int CBaseAltaLuxFilter::ProcessBGR32(void* Image)
 
 void CBaseAltaLuxFilter::ClipHistogram(unsigned int* pHistogram, unsigned int ClipLimit)
 {
-	AltaLuxKernels::ClipHistogram(pHistogram, ClipLimit, KernelImplementationMode);
+	AltaLuxKernels::ClipHistogram(pHistogram, ClipLimit);
 }
 
 void CBaseAltaLuxFilter::MakeHistogram(PixelType* pImage, unsigned int* pHistogram)
 {
-	AltaLuxKernels::MakeHistogram(pImage, OriginalImageWidth, RegionWidth, RegionHeight,
-		pHistogram, KernelImplementationMode);
+	AltaLuxKernels::MakeHistogram(pImage, OriginalImageWidth, RegionWidth, RegionHeight, pHistogram);
 }
 
 void CBaseAltaLuxFilter::MapHistogram(unsigned int* pHistogram, unsigned int NumOfPixels)
 {
-	AltaLuxKernels::MapHistogram(pHistogram, NumOfPixels, KernelImplementationMode);
+	AltaLuxKernels::MapHistogram(pHistogram, NumOfPixels);
 }
 
 void CBaseAltaLuxFilter::Interpolate(PixelType* pImage,
@@ -375,5 +374,5 @@ void CBaseAltaLuxFilter::Interpolate(PixelType* pImage,
 {
 	AltaLuxKernels::Interpolate(pImage, OriginalImageWidth,
 		pMapLeftUp, pMapRightUp, pMapLeftBottom, pMapRightBottom,
-		MatrixWidth, MatrixHeight, KernelImplementationMode);
+		MatrixWidth, MatrixHeight);
 }
