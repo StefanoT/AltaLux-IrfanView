@@ -5,7 +5,7 @@
 #---------------------------------------------------------------------------
 DOXYFILE_ENCODING      = UTF-8
 PROJECT_NAME           = "AltaLux"
-PROJECT_NUMBER         = 2.00
+PROJECT_NUMBER         = 3.00
 PROJECT_BRIEF          = "Advanced CLAHE Image Enhancement Plugin for IrfanView"
 PROJECT_LOGO           = 
 OUTPUT_DIRECTORY       = ./Documentation

@@ -63,6 +63,9 @@
     <ClInclude Include="AltaLuxCore.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="AltaLuxVersion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Kernels\AltaLuxKernels.h">
       <Filter>Header Files\Kernels</Filter>
     </ClInclude>

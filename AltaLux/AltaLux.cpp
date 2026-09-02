@@ -4,6 +4,7 @@ Author: Stefano Tommesani
 Website: http://www.tommesani.com
 
 Microsoft Public License (MS-PL) [OSI Approved License]
+The full license text is in the LICENSE file at the root of the repository.
 */
 
 #include "stdafx.h"
@@ -29,11 +30,10 @@ Microsoft Public License (MS-PL) [OSI Approved License]
 #include <thread>
 #include <vector>
 
-#include "Filter/CAltaLuxFilterFactory.h"
-#include "Filter/CBaseAltaLuxFilter.h"
 #include "Kernels/AltaLuxKernels.h"
 #include "ScopedBitmapHeader.h"
 #include "AltaLuxCore.h"
+#include "AltaLuxVersion.h"
 #include "UIDraw/UIDraw.h"
 #include "Segmentation/SegmentationModule.h"
 #include "Segmentation/SelectionCore.h"
@@ -1604,7 +1604,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)
 {
-	sprintf_s(versionString, 64, "2.00");
+	sprintf_s(versionString, 64, ALTALUX_VERSION_DISPLAY_STRING);
 	sprintf_s(fileFormats, 256, "AltaLux image enhancement filter");
 	return 0;
 }

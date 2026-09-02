@@ -9,7 +9,7 @@ Author: Stefano Tommesani
 
 Website: http://www.tommesani.com
 
-Version: 2.0.2.0
+Version: 3.0.0.0
 
 License: Microsoft Public License (MS-PL)
 
@@ -26,7 +26,7 @@ License: Microsoft Public License (MS-PL)
   content.
 - Adds runtime kernel dispatch across scalar, SSSE3, and AVX2 implementations,
   plus thresholded parallel layer processing for large images.
-- Expands the Microsoft C++ unit test suite to 25 tests covering the v2 core and
+- Expands the Microsoft C++ unit test suite to 30 tests covering the v2 core and
   SIMD kernel equivalence.
 
 ## Installation
@@ -321,7 +321,7 @@ version.
 
 ## Tests
 
-The current unit test suite contains 25 tests. Coverage includes:
+The current unit test suite contains 30 tests. Coverage includes:
 
 - Serial vs. parallel CLAHE strategy equivalence.
 - SSSE3 and AVX2 output equivalence against scalar kernels.
@@ -378,6 +378,19 @@ The current unit test suite contains 25 tests. Coverage includes:
 - Final apply processes the selected/full-resolution region.
 
 ## Changelog
+
+### Version 3.0.0.0
+
+- Added the optional AI object selection add-on: MobileSAM-generated object
+  masks applied through a feathered blend, shipped as the separate
+  `AltaLux-AI-x64.zip` package (x64 only).
+- Unified version reporting: the version resource and the version string
+  reported to IrfanView now derive from a single header
+  (`AltaLux/AltaLuxVersion.h`).
+- Removed stale v1 documentation (Intensity/Scale parameter model, removed
+  parallelization strategies) and the dead `ENABLE_LOGGING` code path.
+- Standardized source license headers on a short form pointing at the root
+  `LICENSE` file.
 
 ### Version 2.0.2.0
 

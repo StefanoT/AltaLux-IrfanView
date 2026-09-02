@@ -262,52 +262,10 @@ CParallelSplitLoopAltaLuxFilter(
 - General-purpose processing
 - Best balance of performance and complexity
 
-### CParallelEventAltaLuxFilter
-
-Event-based synchronization using Windows kernel objects.
-
-```cpp
-CParallelEventAltaLuxFilter(
-    int Width,
-    int Height,
-    int HorSlices = DEFAULT_HOR_REGIONS,
-    int VerSlices = DEFAULT_VERT_REGIONS
-);
-```
-
-**Characteristics**:
-- Explicit thread coordination using events
-- Moderate performance (~0.35s for Full HD)
-- Higher overhead (kernel transitions)
-- Complex implementation
-
-**Use Cases**:
-- Educational (understanding synchronization)
-- Experimentation with explicit coordination
-
-### CParallelActiveWaitAltaLuxFilter
-
-Busy-waiting synchronization (spin locks).
-
-```cpp
-CParallelActiveWaitAltaLuxFilter(
-    int Width,
-    int Height,
-    int HorSlices = DEFAULT_HOR_REGIONS,
-    int VerSlices = DEFAULT_VERT_REGIONS
-);
-```
-
-**Characteristics**:
-- Lowest latency synchronization
-- Good performance (~0.3s for Full HD)
-- Consumes CPU while waiting
-- Best with dedicated cores
-
-**Use Cases**:
-- Real-time processing requirements
-- Systems with dedicated CPU cores
-- Low-latency applications
+> **Note**: The former `CParallelEventAltaLuxFilter` and
+> `CParallelActiveWaitAltaLuxFilter` strategies were removed in v2.0.2.0.
+> Their legacy factory ids are still accepted but map to the default
+> split-loop filter.
 
 ---
 
@@ -407,7 +365,7 @@ ALTALUX_API bool __cdecl StartEffects2(
     int filter,         // Reserved (unused)
     RECT rect,          // Selection: {left, top, WIDTH, HEIGHT}
     int param1,         // Strength (0-100) or -1 for GUI
-    int param2,         // Scale (2-16) or -1 for GUI
+    int param2,         // -1 for GUI; unused in direct mode
     char* iniFile,      // INI file path
     char* szAppName,    // Application name
     int regID           // Reserved (unused)
@@ -420,8 +378,10 @@ ALTALUX_API bool __cdecl StartEffects2(
 - `filter`: Reserved for future use (currently unused)
 - `rect`: **Special format** - {X_offset, Y_offset, WIDTH, HEIGHT}
   - Note: `.right` is WIDTH, `.bottom` is HEIGHT (not coordinates!)
-- `param1`: Enhancement strength or -1 to show GUI
-- `param2`: Tile grid size or -1 to show GUI
+- `param1`: Strength (0-100) or -1 to show GUI
+- `param2`: -1 to show GUI; in direct mode it is accepted for signature
+  compatibility and no longer controls processing (the v1 tile-scale meaning
+  was removed in v2)
 - `iniFile`: Path to IrfanView INI file for settings
 - `szAppName`: Application name (typically "IrfanView")
 - `regID`: Reserved for future registration system
@@ -450,7 +410,7 @@ ALTALUX_API int __cdecl GetPlugInInfo(
 ```
 
 **Parameters**:
-- `versionString`: Buffer for version (e.g., "2.00")
+- `versionString`: Buffer for version (e.g., "3.00", from ALTALUX_VERSION_DISPLAY_STRING)
 - `fileFormats`: Buffer for description (e.g., "AltaLux image enhancement filter")
 
 **Returns**: Always 0 (success)

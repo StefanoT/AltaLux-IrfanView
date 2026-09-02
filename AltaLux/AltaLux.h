@@ -4,25 +4,7 @@ Author: Stefano Tommesani
 Website: http://www.tommesani.com
 
 Microsoft Public License (MS-PL) [OSI Approved License]
-
-This license governs use of the accompanying software. If you use the software, you accept this license. If you do not accept the license, do not use the software.
-
-1. Definitions
-The terms "reproduce," "reproduction," "derivative works," and "distribution" have the same meaning here as under U.S. copyright law.
-A "contribution" is the original software, or any additions or changes to the software.
-A "contributor" is any person that distributes its contribution under this license.
-"Licensed patents" are a contributor's patent claims that read directly on its contribution.
-
-2. Grant of Rights
-(A) Copyright Grant- Subject to the terms of this license, including the license conditions and limitations in section 3, each contributor grants you a non-exclusive, worldwide, royalty-free copyright license to reproduce its contribution, prepare derivative works of its contribution, and distribute its contribution or any derivative works that you create.
-(B) Patent Grant- Subject to the terms of this license, including the license conditions and limitations in section 3, each contributor grants you a non-exclusive, worldwide, royalty-free license under its licensed patents to make, have made, use, sell, offer for sale, import, and/or otherwise dispose of its contribution in the software or derivative works of the contribution in the software.
-
-3. Conditions and Limitations
-(A) No Trademark License- This license does not grant you rights to use any contributors' name, logo, or trademarks.
-(B) If you bring a patent claim against any contributor over patents that you claim are infringed by the software, your patent license from such contributor to the software ends automatically.
-(C) If you distribute any portion of the software, you must retain all copyright, patent, trademark, and attribution notices that are present in the software.
-(D) If you distribute any portion of the software in source code form, you may do so only under this license by including a complete copy of this license with your distribution. If you distribute any portion of the software in compiled or object code form, you may only do so under a license that complies with this license.
-(E) The software is licensed "as-is." You bear the risk of using it. The contributors give no express warranties, guarantees or conditions. You may have additional consumer rights under your local laws which this license cannot change. To the extent permitted under your local laws, the contributors exclude the implied warranties of merchantability, fitness for a particular purpose and non-infringement.
+The full license text is in the LICENSE file at the root of the repository.
 */
 
 //=============================================================================
@@ -40,17 +22,19 @@ A "contributor" is any person that distributes its contribution under this licen
 /// over-amplification of noise.
 ///
 /// @section features_sec Features
-/// - **Advanced Enhancement**: CLAHE algorithm for superior local contrast
-/// - **High Performance**: Parallel processing utilizing multi-core CPUs
-/// - **Multiple Formats**: Supports RGB24, RGB32, BGR24, BGR32, and YUV formats
-/// - **Configurable**: Adjustable strength (0-100) and tile size (2x2 to 16x16)
-/// - **Interactive Preview**: Real-time preview with multiple parameter variations
+/// - **Advanced Enhancement**: Multiscale CLAHE pipeline for local contrast
+/// - **High Performance**: Parallel layer processing with runtime scalar/SSSE3/AVX2 kernel dispatch
+/// - **Multiple Formats**: Processes BGR24 and BGR32 data (Windows DIB order)
+/// - **Configurable**: Strength, Detail, and Natural look controls, plus presets
+/// - **Interactive Preview**: Draggable before/after split preview with fit and 1:1 modes
 /// - **Dark Mode Support**: Native Windows dark mode integration
-/// - **Selection Support**: Process entire image or selected region
+/// - **Selection Support**: Process entire image, selected region, or AI-assisted object selection (x64)
 ///
 /// @section algorithm_sec Algorithm Overview
-/// CLAHE enhances images by:
-/// 1. Dividing the image into small tiles (contextual regions)
+/// The v2 pipeline runs CLAHE at three tile scales (fine 16x16, balanced 8x8,
+/// smooth 4x4 regions), blends the three layer outputs by weight, and lerps the
+/// result against the original using Strength. Each CLAHE layer:
+/// 1. Divides the luminance image into tiles (contextual regions)
 /// 2. Computing histogram for each tile independently
 /// 3. Clipping histogram to prevent noise amplification
 /// 4. Equalizing each tile using its own histogram
@@ -59,10 +43,10 @@ A "contributor" is any person that distributes its contribution under this licen
 /// @section usage_sec Usage
 /// The plugin is loaded by IrfanView and appears in the Effects menu.
 /// Users can:
-/// - Adjust enhancement strength (0-100, default 25)
-/// - Configure tile grid size (2-16 tiles per dimension, default 8)
-/// - Preview changes in real-time
-/// - See variations with different parameters
+/// - Adjust Strength, Detail, and Natural look (0-100 each)
+/// - Start from the Natural, Balanced, or Detail presets
+/// - Compare original and processed halves in the split preview
+/// - Process the whole image or only the active selection
 ///
 /// @section performance_sec Performance
 /// Processing uses the parallel split-loop CLAHE filter and the best supported
@@ -108,8 +92,10 @@ extern "C" {
 /// @param hwnd Parent window handle for dialogs
 /// @param filter Filter selection (currently unused, reserved for future)
 /// @param rect Selection rectangle or full image dimensions
-/// @param param1 Enhancement strength (0-100) or -1 to show GUI
-/// @param param2 Tile grid size (2-16) or -1 to show GUI
+/// @param param1 Strength (0-100) or -1 to show GUI
+/// @param param2 Accepted for IrfanView signature compatibility; -1 shows the
+///               GUI. In direct (batch) mode it no longer controls processing:
+///               Detail and Natural look use their default value of 25.
 /// @param iniFile Path to IrfanView INI file for settings persistence
 /// @param szAppName Application name (typically "IrfanView")
 /// @param regID Registration ID (reserved for future use)
@@ -120,9 +106,9 @@ extern "C" {
 ///          IrfanView's plugin interface specification.
 ///
 /// @par Image Format Requirements:
-/// - **Bit Depth**: IrfanView converts all images to 24-bit RGB before calling
-/// - **Alignment**: Width and height should be multiples of 8 for best performance
-/// - **Color Space**: RGB format (Red, Green, Blue)
+/// - **Bit Depth**: 24 or 32 bits per pixel, single plane
+/// - **Alignment**: Width and height are normalized to multiples of 8
+/// - **Color Space**: BGR/BGRA byte order (standard Windows DIB layout)
 ///
 /// @par Parameter Interpretation:
 /// - **param1 and param2 both -1**: Show GUI dialog, load settings from INI
@@ -140,13 +126,14 @@ extern "C" {
 ///
 /// @par Processing Modes:
 /// 1. **GUI Mode** (param1 == -1 or param2 == -1):
-///    - Display interactive dialog with preview
-///    - Load previous settings from INI file
-///    - Allow user to adjust strength and grid size
-///    - Show multiple preview variations
+///    - Display interactive dialog with before/after split preview
+///    - Load previous settings from INI
+///    - Let the user adjust Strength, Detail, and Natural look
+///    - Offer Natural / Balanced / Detail presets
 ///    - Save settings to INI on OK
 /// 2. **Direct Mode** (param1 >= 0 and param2 >= 0):
-///    - Apply filter immediately with specified parameters
+///    - Apply filter immediately with param1 as Strength
+///    - Detail and Natural look use their default value (25)
 ///    - No GUI, no user interaction
 ///    - Useful for batch processing or automation
 ///
@@ -154,9 +141,13 @@ extern "C" {
 /// Settings are stored in IrfanView's INI file under [AltaLux] section:
 /// @code
 /// [AltaLux]
-/// Intensity=25    ; Enhancement strength (0-100)
-/// Scale=8         ; Tile grid size (2-16)
+/// Strength=45     ; Overall strength (0-100)
+/// Detail=25       ; Blend toward the fine CLAHE layer (0-100)
+/// NaturalLook=25  ; Blend toward the smooth CLAHE layer (0-100)
+/// Zoom=0          ; 1 = open in 1:1 preview mode
 /// @endcode
+/// The legacy v1 key Intensity is read as a fallback when Strength is absent.
+/// The v1 Scale key is no longer used.
 ///
 /// @par Error Handling:
 /// - Returns false if image pointer is null
@@ -229,8 +220,9 @@ ALTALUX_API bool __cdecl AltaLux_Effects(
 ///
 /// @par Version String Format:
 /// Version follows semantic versioning: "Major.Minor"
-/// - Current version: "2.00"
+/// - Current version: defined by ALTALUX_VERSION_DISPLAY_STRING in AltaLuxVersion.h
 /// - Format: "X.YZ" where X is major, YZ is minor
+/// - The same header drives the FILEVERSION/PRODUCTVERSION in AltaLux.rc
 ///
 /// @par Description String:
 /// Brief description of plugin functionality shown in IrfanView menus:

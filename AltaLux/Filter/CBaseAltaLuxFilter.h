@@ -4,25 +4,7 @@ Author: Stefano Tommesani
 Website: http://www.tommesani.com
 
 Microsoft Public License (MS-PL) [OSI Approved License]
-
-This license governs use of the accompanying software. If you use the software, you accept this license. If you do not accept the license, do not use the software.
-
-1. Definitions
-The terms "reproduce," "reproduction," "derivative works," and "distribution" have the same meaning here as under U.S. copyright law.
-A "contribution" is the original software, or any additions or changes to the software.
-A "contributor" is any person that distributes its contribution under this license.
-"Licensed patents" are a contributor's patent claims that read directly on its contribution.
-
-2. Grant of Rights
-(A) Copyright Grant- Subject to the terms of this license, including the license conditions and limitations in section 3, each contributor grants you a non-exclusive, worldwide, royalty-free copyright license to reproduce its contribution, prepare derivative works of its contribution, and distribute its contribution or any derivative works that you create.
-(B) Patent Grant- Subject to the terms of this license, including the license conditions and limitations in section 3, each contributor grants you a non-exclusive, worldwide, royalty-free license under its licensed patents to make, have made, use, sell, offer for sale, import, and/or otherwise dispose of its contribution in the software or derivative works of the contribution in the software.
-
-3. Conditions and Limitations
-(A) No Trademark License- This license does not grant you rights to use any contributors' name, logo, or trademarks.
-(B) If you bring a patent claim against any contributor over patents that you claim are infringed by the software, your patent license from such contributor to the software ends automatically.
-(C) If you distribute any portion of the software, you must retain all copyright, patent, trademark, and attribution notices that are present in the software.
-(D) If you distribute any portion of the software in source code form, you may do so only under this license by including a complete copy of this license with your distribution. If you distribute any portion of the software in compiled or object code form, you may only do so under a license that complies with this license.
-(E) The software is licensed "as-is." You bear the risk of using it. The contributors give no express warranties, guarantees or conditions. You may have additional consumer rights under your local laws which this license cannot change. To the extent permitted under your local laws, the contributors exclude the implied warranties of merchantability, fitness for a particular purpose and non-infringement.
+The full license text is in the LICENSE file at the root of the repository.
 */
 
 #pragma once
@@ -195,9 +177,7 @@ const float MAX_CLIP_LIMIT = 5.0f;
 ///          for all CLAHE filter implementations. Derived classes implement
 ///          the Run() method with different parallelization strategies:
 ///          - Serial (single-threaded reference implementation)
-///          - Parallel Split Loop (recommended for most use cases)
-///          - Parallel with Events
-///          - Parallel split-loop strategy
+///          - Parallel Split Loop (default for production use)
 ///
 /// @par Memory Management:
 /// The class manages an internal buffer (ImageBuffer) for intermediate processing.
@@ -489,13 +469,15 @@ public:
 	/// @param ThirdFactor Scale factor for third channel (B or R)
 	/// @param PixelOffset Bytes per pixel (3 for 24-bit, 4 for 32-bit)
 	/// @return AL_OK on success, error code on failure
-	/// @note Converts RGB to luminance (Y), processes Y, then adjusts RGB
+	/// @note Converts RGB to luminance (Y), processes Y, then reinjects Y
 	/// @note Color ratios are preserved to avoid hue shifts
 	/// @par Luminance Calculation:
 	/// Y = 0.2126*R + 0.7152*G + 0.0722*B (ITU-R BT.709 / sRGB standard)
 	/// @par Color Preservation:
-	/// After processing Y to Y', each RGB component is adjusted:
-	/// R' = R + (Y' - Y), clamped to [0, 255]
+	/// After processing Y to Y', each channel is rescaled multiplicatively:
+	/// scale = min((Y'/Y) capped, 255/max(R,G,B)); R' = R * scale (likewise
+	/// for G and B). This preserves channel ratios and clamps saturated
+	/// highlights so they do not drift in hue.
 	int ProcessGeneric(void* Image, int FirstFactor, int SecondFactor,
 	                   int ThirdFactor, int PixelOffset);
 
@@ -514,10 +496,8 @@ public:
 
 	/// @brief Injects processed Y component back into RGB image using multiplicative scaling
 	/// @param Image Pointer to RGB image data to modify (must not be null)
-	/// @param FirstFactor Scaling factor for first color component (same as ExtractYComponent)
-	/// @param SecondFactor Scaling factor for second color component
-	/// @param ThirdFactor Scaling factor for third color component
 	/// @param PixelOffset Bytes per pixel (3 for RGB24, 4 for RGB32)
+	/// @param OriginalLuma Luminance cached before CLAHE processing
 	/// @details Preserves color (hue and saturation) while applying luminance enhancement:
 	///          1. Reuse original Y cached during RGB/BGR extraction
 	///          2. Lookup pre-computed scale factor from table (eliminates division)
@@ -527,8 +507,8 @@ public:
 	///          Uses a lookup table to avoid per-pixel division.
 	/// @note Called after CLAHE processing to apply enhancement to color image
 	/// @note Black pixels (Y=0) are handled specially to avoid division by zero
-	/// @note Lookup table initialized once on first call (one-time cost)
-	void InjectYComponent(void* Image, int FirstFactor, int SecondFactor, int ThirdFactor,
-		int PixelOffset, const unsigned char* OriginalLuma);
+	/// @note The reciprocal lookup table is a namespace-scope constant built
+	///       once at DLL load; there is no per-instance or first-call cost
+	void InjectYComponent(void* Image, int PixelOffset, const unsigned char* OriginalLuma);
 
 };

@@ -4,6 +4,7 @@ Author: Stefano Tommesani
 Website: http://www.tommesani.com
 
 Microsoft Public License (MS-PL) [OSI Approved License]
+The full license text is in the LICENSE file at the root of the repository.
 */
 
 #include "UIDraw.h"

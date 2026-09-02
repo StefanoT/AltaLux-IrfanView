@@ -152,6 +152,7 @@
   <ItemGroup>
     <ClInclude Include="AltaLux.h" />
     <ClInclude Include="AltaLuxCore.h" />
+    <ClInclude Include="AltaLuxVersion.h" />
     <ClInclude Include="Kernels\AltaLuxKernels.h" />
     <ClInclude Include="Kernels\AltaLuxKernelsInternal.h" />
     <ClInclude Include="Filter\CBaseAltaLuxFilter.h" />

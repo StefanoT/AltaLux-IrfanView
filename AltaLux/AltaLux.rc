@@ -1,6 +1,7 @@
 // Microsoft Visual C++ generated resource script.
 //
 #include "resource.h"
+#include "AltaLuxVersion.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -61,8 +62,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 3,0,0,0
- PRODUCTVERSION 3,0,0,0
+ FILEVERSION ALTALUX_VERSION_MAJOR,ALTALUX_VERSION_MINOR,ALTALUX_VERSION_PATCH,ALTALUX_VERSION_REVISION
+ PRODUCTVERSION ALTALUX_VERSION_MAJOR,ALTALUX_VERSION_MINOR,ALTALUX_VERSION_PATCH,ALTALUX_VERSION_REVISION
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -79,12 +80,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Stefano Tommesani"
             VALUE "FileDescription", "AltaLux Image Enhancement Filter"
-            VALUE "FileVersion", "3.0.0.0"
+            VALUE "FileVersion", ALTALUX_VERSION_FILE_STRING
             VALUE "InternalName", "AltaLux.dll"
             VALUE "LegalCopyright", "Copyright Stefano Tommesani 2005/2026  All rights reserved."
             VALUE "OriginalFilename", "AltaLux.dll"
             VALUE "ProductName", "AltaLux Image Enhancement Filter"
-            VALUE "ProductVersion", "3.0.0.0"
+            VALUE "ProductVersion", ALTALUX_VERSION_FILE_STRING
         END
     END
     BLOCK "VarFileInfo"
