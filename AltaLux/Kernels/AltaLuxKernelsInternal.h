@@ -58,6 +58,14 @@ namespace AltaLuxKernels
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
 		unsigned int matrixWidth, unsigned int matrixHeight);
+	void ComputeLocalActivity3x3Scalar(const unsigned char* luma, unsigned char* activity,
+		int width, int height);
+	void BlurRiskMapScalar(unsigned char* risk, unsigned char* temp, int width, int height);
+	void ComputeChromaRiskScalar(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
+		const unsigned char* activity, unsigned char* risk, int pixelCount,
+		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8);
+	void ApplyChromaAttenuationScalar(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 
 	void ExtractPackedYUVLumaSSSE3(const unsigned char* source, unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition);
@@ -77,6 +85,8 @@ namespace AltaLuxKernels
 		int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int pixelStart,
 		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void ApplyChromaAttenuationSSSE3(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 
 	void ExtractPackedYUVLumaAVX2(const unsigned char* source, unsigned char* luma,
 		int pixelCount, PackedYUVLumaPosition lumaPosition);
@@ -96,4 +106,6 @@ namespace AltaLuxKernels
 		int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int pixelStart,
 		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void ApplyChromaAttenuationAVX2(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 }

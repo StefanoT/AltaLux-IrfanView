@@ -292,6 +292,40 @@ namespace
 			static_cast<unsigned short>(_mm_extract_epi16(value, 2));
 	}
 
+	// Interleaves three channel-pure 32-bit vectors (four pixels each) into
+	// twelve contiguous pixel bytes: c0 c1 c2 c0 c1 c2 ... Packing is lane-major,
+	// so a PSHUFB pass reorders the three 4-byte blocks into pixel triplets.
+	inline __m128i InterleaveChannels3x4(__m128i e0, __m128i e1, __m128i e2)
+	{
+		const __m128i interleaveMask = _mm_setr_epi8(
+			0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11, -1, -1, -1, -1);
+		const __m128i packed16 = _mm_packs_epi32(e0, e1);
+		const __m128i packed2 = _mm_packs_epi32(e2, _mm_setzero_si128());
+		return _mm_shuffle_epi8(_mm_packus_epi16(packed16, packed2), interleaveMask);
+	}
+
+	// Moves one 256-bit channel vector toward the enhanced luma:
+	// y + ((c - y) * A) >> 8. The shift is arithmetic because (c - y) * A can
+	// be negative; the result always lies between y and c, so it stays in
+	// byte range without saturation.
+	inline __m256i AttenuateChannel256(__m256i channel, __m256i luma, __m256i attenuation,
+		__m256i rounding, __m128i shiftCount)
+	{
+		const __m256i diff = _mm256_sub_epi32(channel, luma);
+		const __m256i scaled = _mm256_mullo_epi32(diff, attenuation);
+		return _mm256_add_epi32(luma, _mm256_sra_epi32(_mm256_add_epi32(scaled, rounding), shiftCount));
+	}
+
+	// 128-bit variant of AttenuateChannel256, used by the RGB24 path where
+	// pixels are processed in groups of four through PSHUFB loads.
+	inline __m128i AttenuateChannel128(__m128i channel, __m128i luma, __m128i attenuation,
+		__m128i rounding, __m128i shiftCount)
+	{
+		const __m128i diff = _mm_sub_epi32(channel, luma);
+		const __m128i scaled = _mm_mullo_epi32(diff, attenuation);
+		return _mm_add_epi32(luma, _mm_sra_epi32(_mm_add_epi32(scaled, rounding), shiftCount));
+	}
+
 	inline void StoreFourRGB24DownscaledPixelsAVX2(unsigned char* target, __m256i pixels)
 	{
 		StoreLow6BytesAVX2(target, _mm256_castsi256_si128(pixels));
@@ -777,5 +811,84 @@ namespace AltaLuxKernels
 		}
 
 		WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+	}
+
+	// Attenuates chroma toward the enhanced luma. RGB32 processes eight pixels
+	// per iteration with channel lanes rebuilt directly into dwords (alpha
+	// preserved by mask); RGB24 reuses the 128-bit four-pixel groups of the
+	// luma kernels, stopping six pixels short of the end so the 16-byte RGBX
+	// loads never read past the buffer.
+	void ApplyChromaAttenuationAVX2(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8)
+	{
+		if (pixelStride != 3 && pixelStride != 4)
+		{
+			ApplyChromaAttenuationScalar(target, enhancedLuma, risk, pixelStart, pixelEnd,
+				pixelStride, maxStrengthQ8);
+			return;
+		}
+
+		const __m256i channelMask = _mm256_set1_epi32(0xFF);
+		const __m256i alphaMask = _mm256_set1_epi32(static_cast<int>(0xFF000000u));
+		const __m256i maxStrengthVec = _mm256_set1_epi32(maxStrengthQ8);
+		const __m256i fullAttenuation = _mm256_set1_epi32(256);
+		const __m256i strengthRounding = _mm256_set1_epi32(127);
+		const __m256i channelRounding256 = _mm256_set1_epi32(128);
+		const __m128i channelRounding128 = _mm_set1_epi32(128);
+		const __m128i shiftCount = _mm_cvtsi32_si128(8);
+		int i = pixelStart;
+		if (pixelStride == 4)
+		{
+			for (; i <= pixelEnd - 8; i += 8)
+			{
+				const __m256i pixels = _mm256_loadu_si256(
+					reinterpret_cast<const __m256i*>(target + (i * 4)));
+				const __m256i riskVec = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(risk + i)));
+				const __m256i lumaVec = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(enhancedLuma + i)));
+				const __m256i strength = _mm256_srli_epi32(_mm256_add_epi32(
+					_mm256_mullo_epi32(riskVec, maxStrengthVec), strengthRounding), 8);
+				const __m256i attenuation = _mm256_sub_epi32(fullAttenuation, strength);
+
+				const __m256i c0 = _mm256_and_si256(pixels, channelMask);
+				const __m256i c1 = _mm256_and_si256(_mm256_srli_epi32(pixels, 8), channelMask);
+				const __m256i c2 = _mm256_and_si256(_mm256_srli_epi32(pixels, 16), channelMask);
+				const __m256i out0 = AttenuateChannel256(c0, lumaVec, attenuation, channelRounding256, shiftCount);
+				const __m256i out1 = AttenuateChannel256(c1, lumaVec, attenuation, channelRounding256, shiftCount);
+				const __m256i out2 = AttenuateChannel256(c2, lumaVec, attenuation, channelRounding256, shiftCount);
+				__m256i output = _mm256_or_si256(_mm256_and_si256(pixels, alphaMask), out0);
+				output = _mm256_or_si256(output, _mm256_slli_epi32(out1, 8));
+				output = _mm256_or_si256(output, _mm256_slli_epi32(out2, 16));
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(target + (i * 4)), output);
+			}
+		}
+		else
+		{
+			const __m128i channelMask128 = _mm_set1_epi32(0xFF);
+			const __m128i maxStrengthVec128 = _mm_set1_epi32(maxStrengthQ8);
+			const __m128i fullAttenuation128 = _mm_set1_epi32(256);
+			const __m128i strengthRounding128 = _mm_set1_epi32(127);
+			for (; i <= pixelEnd - 6; i += 4)
+			{
+				const __m128i pixels = LoadRGB24AsRGBX4(target + (i * 3));
+				const __m128i riskVec = _mm_cvtepu8_epi32(
+					_mm_cvtsi32_si128(*reinterpret_cast<const int*>(risk + i)));
+				const __m128i lumaVec = _mm_cvtepu8_epi32(
+					_mm_cvtsi32_si128(*reinterpret_cast<const int*>(enhancedLuma + i)));
+				const __m128i strength = _mm_srli_epi32(_mm_add_epi32(
+					_mm_mullo_epi32(riskVec, maxStrengthVec128), strengthRounding128), 8);
+				const __m128i attenuation = _mm_sub_epi32(fullAttenuation128, strength);
+
+				const __m128i c0 = _mm_and_si128(pixels, channelMask128);
+				const __m128i c1 = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask128);
+				const __m128i c2 = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask128);
+				const __m128i out0 = AttenuateChannel128(c0, lumaVec, attenuation, channelRounding128, shiftCount);
+				const __m128i out1 = AttenuateChannel128(c1, lumaVec, attenuation, channelRounding128, shiftCount);
+				const __m128i out2 = AttenuateChannel128(c2, lumaVec, attenuation, channelRounding128, shiftCount);
+				StoreRGB24Pixels4(target + (i * 3), InterleaveChannels3x4(out0, out1, out2));
+			}
+		}
+		ApplyChromaAttenuationSSSE3(target, enhancedLuma, risk, i, pixelEnd, pixelStride, maxStrengthQ8);
 	}
 }

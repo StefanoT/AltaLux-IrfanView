@@ -124,6 +124,7 @@ namespace
 		Constants::DefaultStrength,
 		Constants::DefaultDetail,
 		Constants::DefaultNatural,
+		Constants::DefaultChromaProtection,
 		false,
 		false,
 		false,
@@ -451,13 +452,15 @@ namespace
 		SendMessage(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), TBM_SETPOS, TRUE, gUiState.strength);
 		SendMessage(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), TBM_SETPOS, TRUE, gUiState.detail);
 		SendMessage(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), TBM_SETPOS, TRUE, gUiState.naturalLook);
+		SendMessage(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), TBM_SETPOS, TRUE, gUiState.chromaProtection);
 		UpdatePresetButtons(hwnd);
 		UpdateCommandLabels(hwnd);
 	}
 
 	void SetSliderRanges(HWND hwnd)
 	{
-		const int sliderIds[] = { IDC_STRENGTH_SLIDER, IDC_DETAIL_SLIDER, IDC_NATURALLOOK_SLIDER };
+		const int sliderIds[] = { IDC_STRENGTH_SLIDER, IDC_DETAIL_SLIDER, IDC_NATURALLOOK_SLIDER,
+			IDC_CHROMA_SLIDER };
 		for (const int sliderId : sliderIds)
 		{
 			HWND slider = GetDlgItem(hwnd, sliderId);
@@ -491,6 +494,7 @@ namespace
 		const int strengthTop = top + 24;
 		const int detailTop = top + 78;
 		const int naturalTop = top + 148;
+		const int chromaTop = top + 218;
 
 		MoveWindow(GetDlgItem(hwnd, IDC_ENHANCEMENT_SECTION), panelLeft, top, panelWidth, sectionHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, strengthTop, panelWidth, labelHeight, TRUE);
@@ -501,33 +505,36 @@ namespace
 		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_STATIC), panelLeft, naturalTop, panelWidth, labelHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), panelLeft, naturalTop + 14, panelWidth, sliderHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, naturalTop + 46, panelWidth, helperHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_STATIC), panelLeft, chromaTop, panelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), panelLeft, chromaTop + 14, panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_HELP_STATIC), panelLeft, chromaTop + 46, panelWidth, helperHeight, TRUE);
 
 		const int presetWidth = (panelWidth - (2 * rowGap)) / 3;
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + 216, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + 216, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + 216, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + 286, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + 286, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + 286, presetWidth, buttonHeight, TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, top + 250, panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, top + 320, panelWidth, sectionHeight, TRUE);
 		const int viewWidth = (panelWidth - rowGap) / 2;
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, top + 270, viewWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + viewWidth + rowGap, top + 270,
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, top + 340, viewWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + viewWidth + rowGap, top + 340,
 			viewWidth, buttonHeight + 2, TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, top + 302, panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, top + 372, panelWidth, sectionHeight, TRUE);
 		const int modeWidth = (panelWidth - rowGap) / 2;
-		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, top + 322, modeWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + modeWidth + rowGap, top + 322, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, top + 392, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + modeWidth + rowGap, top + 392, modeWidth, buttonHeight + 2, TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, top + 360, panelWidth, sectionHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, top + 380, modeWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + modeWidth + rowGap, top + 380, modeWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, top + 412, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + presetWidth + rowGap, top + 412, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (presetWidth + rowGap)), top + 412, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, top + 442, panelWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, top + 476, panelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, top + 490, panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, top + 524, panelWidth, 28, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, top + 430, panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, top + 450, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + modeWidth + rowGap, top + 450, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, top + 482, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + presetWidth + rowGap, top + 482, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (presetWidth + rowGap)), top + 482, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, top + 512, panelWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, top + 546, panelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, top + 560, panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, top + 594, panelWidth, 28, TRUE);
 
 		const int actionWidth = modeWidth;
 		const int actionTop = clientRect.bottom - PREVIEW_MARGIN - buttonHeight;
@@ -833,6 +840,8 @@ namespace
 
 		gUiState.detail = GetPrivateProfileIntA("AltaLux", "Detail", Constants::DefaultDetail, SetupIniFile);
 		gUiState.naturalLook = GetPrivateProfileIntA("AltaLux", "NaturalLook", Constants::DefaultNatural, SetupIniFile);
+		gUiState.chromaProtection = GetPrivateProfileIntA("AltaLux", "ChromaProtection",
+			Constants::DefaultChromaProtection, SetupIniFile);
 		gUiState.zoomToSelection = GetPrivateProfileIntA("AltaLux", "Zoom", 0, SetupIniFile) != 0;
 		gUiState.compareHoldOriginal = false;
 		gUiState.draggingSplit = false;
@@ -841,6 +850,7 @@ namespace
 		gUiState.strength = ClampInt(gUiState.strength, 0, 100);
 		gUiState.detail = ClampInt(gUiState.detail, 0, 100);
 		gUiState.naturalLook = ClampInt(gUiState.naturalLook, 0, 100);
+		gUiState.chromaProtection = ClampInt(gUiState.chromaProtection, 0, 100);
 	}
 
 	void SaveUiStateToSettings()
@@ -852,6 +862,8 @@ namespace
 		WritePrivateProfileStringA("AltaLux", "Detail", valueBuffer, SetupIniFile);
 		sprintf_s(valueBuffer, "%d", gUiState.naturalLook);
 		WritePrivateProfileStringA("AltaLux", "NaturalLook", valueBuffer, SetupIniFile);
+		sprintf_s(valueBuffer, "%d", gUiState.chromaProtection);
+		WritePrivateProfileStringA("AltaLux", "ChromaProtection", valueBuffer, SetupIniFile);
 		sprintf_s(valueBuffer, "%d", gUiState.zoomToSelection ? 1 : 0);
 		WritePrivateProfileStringA("AltaLux", "Zoom", valueBuffer, SetupIniFile);
 	}
@@ -1233,6 +1245,10 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		{
 			gUiState.naturalLook = value;
 		}
+		else if (slider == GetDlgItem(hwnd, IDC_CHROMA_SLIDER))
+		{
+			gUiState.chromaProtection = value;
+		}
 		else if (slider == GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER) && gSelectionSession != nullptr)
 		{
 			gSelectionSession->softness = value;
@@ -1413,7 +1429,8 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			controlId == IDC_VIEW_SECTION || controlId == IDC_APPLY_TO_SECTION ||
 			controlId == IDC_SELECTION_SECTION;
 		const bool secondaryText = controlId == IDC_DETAIL_HELP_STATIC ||
-			controlId == IDC_NATURALLOOK_HELP_STATIC || controlId == IDC_SELECTION_STATUS;
+			controlId == IDC_NATURALLOOK_HELP_STATIC || controlId == IDC_CHROMA_HELP_STATIC ||
+			controlId == IDC_SELECTION_STATUS;
 		SetBkMode(hdc, TRANSPARENT);
 		if (sectionHeader)
 		{
@@ -1550,6 +1567,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		gUiState.strength = ClampInt(param1, 0, 100);
 		gUiState.detail = Constants::DefaultDetail;
 		gUiState.naturalLook = Constants::DefaultNatural;
+		gUiState.chromaProtection = Constants::DefaultChromaProtection;
 		gUiState.zoomToSelection = false;
 		gUiState.compareHoldOriginal = false;
 		gUiState.draggingSplit = false;

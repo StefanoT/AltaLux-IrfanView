@@ -13,6 +13,12 @@ namespace AltaLuxKernels
 			unsigned int left;
 			unsigned int right;
 		};
+
+		inline int AbsDiff(int a, int b)
+		{
+			const int diff = a - b;
+			return diff < 0 ? -diff : diff;
+		}
 	}
 
 	void ExtractPackedYUVLumaScalar(const unsigned char* source, unsigned char* luma,
@@ -341,6 +347,128 @@ namespace AltaLuxKernels
 					*pixel = static_cast<unsigned char>(((xInvCoef * map.left) + (xCoef * map.right) + rounding) / matrixArea);
 				}
 			}
+		}
+	}
+
+	// Mean absolute deviation of the center pixel from its 3x3 neighborhood on a
+	// packed luma plane, scaled to 0..255. Edges replicate so border pixels use
+	// their own row/column twice. Flat luma yields 0, texture and noise yield
+	// higher values; the chroma risk stage treats only the low end as flat.
+	// Interior columns run without per-pixel edge clamps; the two border
+	// columns keep the replicated-edge rule with their clamped duplicates.
+	void ComputeLocalActivity3x3Scalar(const unsigned char* luma, unsigned char* activity,
+		int width, int height)
+	{
+		if (luma == nullptr || activity == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		const int last = width - 1;
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* rowUp = luma + ((y > 0 ? y - 1 : 0) * width);
+			const unsigned char* row = luma + (y * width);
+			const unsigned char* rowDown = luma + ((y < height - 1 ? y + 1 : height - 1) * width);
+			unsigned char* out = activity + (y * width);
+			for (int x = 1; x < last; ++x)
+			{
+				const int center = row[x];
+				int sum = AbsDiff(rowUp[x - 1], center) + AbsDiff(rowUp[x], center) + AbsDiff(rowUp[x + 1], center);
+				sum += AbsDiff(row[x - 1], center) + AbsDiff(row[x + 1], center);
+				sum += AbsDiff(rowDown[x - 1], center) + AbsDiff(rowDown[x], center) + AbsDiff(rowDown[x + 1], center);
+				out[x] = static_cast<unsigned char>((sum + 4) >> 3);
+			}
+
+			const int centerFirst = row[0];
+			const int sumFirst = AbsDiff(rowUp[0], centerFirst) + AbsDiff(rowUp[1], centerFirst)
+				+ AbsDiff(row[0], centerFirst) + AbsDiff(row[1], centerFirst)
+				+ AbsDiff(rowDown[0], centerFirst) + AbsDiff(rowDown[1], centerFirst);
+			out[0] = static_cast<unsigned char>((sumFirst + 4) >> 3);
+			const int centerLast = row[last];
+			const int sumLast = AbsDiff(rowUp[last - 1], centerLast) + AbsDiff(rowUp[last], centerLast)
+				+ AbsDiff(row[last - 1], centerLast) + AbsDiff(row[last], centerLast)
+				+ AbsDiff(rowDown[last - 1], centerLast) + AbsDiff(rowDown[last], centerLast);
+			out[last] = static_cast<unsigned char>((sumLast + 4) >> 3);
+		}
+	}
+
+	// Blurs the Q8 risk map with a separable [1 2 1]/4 kernel and clamped edges,
+	// in place: the horizontal pass writes to temp, the vertical pass writes back
+	// to risk. temp must hold width*height bytes and may alias the activity map
+	// once that input is no longer needed. Interior columns avoid per-pixel
+	// clamps; the border columns fold their replicated neighbor in directly.
+	void BlurRiskMapScalar(unsigned char* risk, unsigned char* temp, int width, int height)
+	{
+		if (risk == nullptr || temp == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		const int last = width - 1;
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* row = risk + (y * width);
+			unsigned char* outRow = temp + (y * width);
+			for (int x = 1; x < last; ++x)
+			{
+				outRow[x] = static_cast<unsigned char>((row[x - 1] + (row[x] << 1) + row[x + 1] + 2) >> 2);
+			}
+			outRow[0] = static_cast<unsigned char>(((row[0] * 3) + row[1] + 2) >> 2);
+			outRow[last] = static_cast<unsigned char>((row[last - 1] + (row[last] * 3) + 2) >> 2);
+		}
+
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* rowUp = temp + ((y > 0 ? y - 1 : 0) * width);
+			const unsigned char* row = temp + (y * width);
+			const unsigned char* rowDown = temp + ((y < height - 1 ? y + 1 : height - 1) * width);
+			unsigned char* outRow = risk + (y * width);
+			for (int x = 0; x < width; ++x)
+			{
+				outRow[x] = static_cast<unsigned char>((rowUp[x] + (row[x] << 1) + rowDown[x] + 2) >> 2);
+			}
+		}
+	}
+
+	// Combines the luma-gain/darkness table with the local-activity table into
+	// the final Q8 risk: full risk on flat pixels, textureFloorQ8 of it on
+	// textured pixels, zero where the gain or darkness term already vanished.
+	void ComputeChromaRiskScalar(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
+		const unsigned char* activity, unsigned char* risk, int pixelCount,
+		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8)
+	{
+		for (int i = 0; i < pixelCount; ++i)
+		{
+			const unsigned int gainRisk = gainRiskLut[(originalLuma[i] << 8) | enhancedLuma[i]];
+			const unsigned int activityRisk = activityRiskLut[activity[i]];
+			const unsigned int textureBlend = textureFloorQ8 +
+				(((255 - textureFloorQ8) * activityRisk + 127) >> 8);
+			risk[i] = static_cast<unsigned char>((gainRisk * textureBlend + 127) >> 8);
+		}
+	}
+
+	// Attenuates chroma toward the neutral gray of the enhanced luma. The
+	// per-pixel strength S = maxStrengthQ8 * risk >> 8 becomes a Q8 attenuation
+	// A = 256 - S, and every color channel moves from its current value toward
+	// the enhanced luma by that factor: c' = y' + ((c - y') * A) >> 8. A = 256
+	// (zero risk) reproduces c exactly, and the result always stays between y'
+	// and c, so no saturation can occur. The alpha/padding byte is untouched.
+	void ApplyChromaAttenuationScalar(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8)
+	{
+		int targetBase = pixelStart * pixelStride;
+		for (int i = pixelStart; i < pixelEnd; ++i)
+		{
+			const int strength = (maxStrengthQ8 * risk[i] + 127) >> 8;
+			const int attenuation = 256 - strength;
+			const int newY = enhancedLuma[i];
+			for (int c = 0; c < 3; ++c)
+			{
+				const int diff = target[targetBase + c] - newY;
+				target[targetBase + c] = ClampToByte(newY + ((diff * attenuation + 128) >> 8));
+			}
+			targetBase += pixelStride;
 		}
 	}
 }

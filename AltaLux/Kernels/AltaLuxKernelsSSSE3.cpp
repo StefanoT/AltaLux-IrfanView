@@ -271,6 +271,29 @@ namespace
 		*reinterpret_cast<unsigned short*>(target + 4) =
 			static_cast<unsigned short>(_mm_extract_epi16(value, 2));
 	}
+
+	// Interleaves three channel-pure 32-bit vectors (four pixels each) into
+	// twelve contiguous pixel bytes: c0 c1 c2 c0 c1 c2 ... Packing is lane-major,
+	// so a PSHUFB pass reorders the three 4-byte blocks into pixel triplets.
+	inline __m128i InterleaveChannels3x4(__m128i e0, __m128i e1, __m128i e2)
+	{
+		const __m128i interleaveMask = _mm_setr_epi8(
+			0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11, -1, -1, -1, -1);
+		const __m128i packed16 = _mm_packs_epi32(e0, e1);
+		const __m128i packed2 = _mm_packs_epi32(e2, _mm_setzero_si128());
+		return _mm_shuffle_epi8(_mm_packus_epi16(packed16, packed2), interleaveMask);
+	}
+
+	// Moves one channel vector toward the enhanced luma: y + ((c - y) * A) >> 8.
+	// The shift is arithmetic because (c - y) * A can be negative; the result
+	// always lies between y and c, so it is already a valid byte.
+	inline __m128i AttenuateChannelSSSE3(__m128i channel, __m128i luma, __m128i attenuation,
+		__m128i rounding, __m128i shiftCount)
+	{
+		const __m128i diff = _mm_sub_epi32(channel, luma);
+		const __m128i scaled = MulloEpi32Compat(diff, attenuation);
+		return _mm_add_epi32(luma, _mm_sra_epi32(_mm_add_epi32(scaled, rounding), shiftCount));
+	}
 }
 
 namespace AltaLuxKernels
@@ -692,5 +715,72 @@ namespace AltaLuxKernels
 		}
 
 		WriteAccumulatedImageScalar(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+	}
+
+	// Attenuates chroma toward the enhanced luma four pixels at a time. The
+	// per-channel math runs in 32-bit lanes with the SSSE3-compatible mullo
+	// emulation; RGB24 is expanded to RGBX dwords with PSHUFB and, like the
+	// luma extraction kernel, stops six pixels short of the end so the 16-byte
+	// loads never read past the buffer.
+	void ApplyChromaAttenuationSSSE3(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8)
+	{
+		if (pixelStride != 3 && pixelStride != 4)
+		{
+			ApplyChromaAttenuationScalar(target, enhancedLuma, risk, pixelStart, pixelEnd,
+				pixelStride, maxStrengthQ8);
+			return;
+		}
+
+		const __m128i channelMask = _mm_set1_epi32(0xFF);
+		const __m128i maxStrengthVec = _mm_set1_epi32(maxStrengthQ8);
+		const __m128i fullAttenuation = _mm_set1_epi32(256);
+		const __m128i strengthRounding = _mm_set1_epi32(127);
+		const __m128i channelRounding = _mm_set1_epi32(128);
+		const __m128i shiftCount = _mm_cvtsi32_si128(8);
+		int i = pixelStart;
+		if (pixelStride == 4)
+		{
+			for (; i <= pixelEnd - 4; i += 4)
+			{
+				const __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(target + (i * 4)));
+				const __m128i riskVec = _mm_setr_epi32(risk[i], risk[i + 1], risk[i + 2], risk[i + 3]);
+				const __m128i lumaVec = _mm_setr_epi32(enhancedLuma[i], enhancedLuma[i + 1],
+					enhancedLuma[i + 2], enhancedLuma[i + 3]);
+				const __m128i strength = _mm_srli_epi32(_mm_add_epi32(
+					MulloEpi32Compat(riskVec, maxStrengthVec), strengthRounding), 8);
+				const __m128i attenuation = _mm_sub_epi32(fullAttenuation, strength);
+
+				const __m128i c0 = _mm_and_si128(pixels, channelMask);
+				const __m128i c1 = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask);
+				const __m128i c2 = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask);
+				const __m128i out0 = AttenuateChannelSSSE3(c0, lumaVec, attenuation, channelRounding, shiftCount);
+				const __m128i out1 = AttenuateChannelSSSE3(c1, lumaVec, attenuation, channelRounding, shiftCount);
+				const __m128i out2 = AttenuateChannelSSSE3(c2, lumaVec, attenuation, channelRounding, shiftCount);
+				StoreRGB32Pixels4(target + (i * 4), InterleaveChannels3x4(out0, out1, out2));
+			}
+		}
+		else
+		{
+			for (; i <= pixelEnd - 6; i += 4)
+			{
+				const __m128i pixels = LoadRGB24AsRGBX4(target + (i * 3));
+				const __m128i riskVec = _mm_setr_epi32(risk[i], risk[i + 1], risk[i + 2], risk[i + 3]);
+				const __m128i lumaVec = _mm_setr_epi32(enhancedLuma[i], enhancedLuma[i + 1],
+					enhancedLuma[i + 2], enhancedLuma[i + 3]);
+				const __m128i strength = _mm_srli_epi32(_mm_add_epi32(
+					MulloEpi32Compat(riskVec, maxStrengthVec), strengthRounding), 8);
+				const __m128i attenuation = _mm_sub_epi32(fullAttenuation, strength);
+
+				const __m128i c0 = _mm_and_si128(pixels, channelMask);
+				const __m128i c1 = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask);
+				const __m128i c2 = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask);
+				const __m128i out0 = AttenuateChannelSSSE3(c0, lumaVec, attenuation, channelRounding, shiftCount);
+				const __m128i out1 = AttenuateChannelSSSE3(c1, lumaVec, attenuation, channelRounding, shiftCount);
+				const __m128i out2 = AttenuateChannelSSSE3(c2, lumaVec, attenuation, channelRounding, shiftCount);
+				StoreRGB24Pixels4(target + (i * 3), InterleaveChannels3x4(out0, out1, out2));
+			}
+		}
+		ApplyChromaAttenuationScalar(target, enhancedLuma, risk, i, pixelEnd, pixelStride, maxStrengthQ8);
 	}
 }

@@ -9,6 +9,7 @@ struct UiState
 	int strength;
 	int detail;
 	int naturalLook;
+	int chromaProtection;
 	bool zoomToSelection;
 	bool compareHoldOriginal;
 	bool draggingSplit;
@@ -43,6 +44,11 @@ struct Constants
 	static constexpr int DefaultStrength = 45;
 	static constexpr int DefaultDetail = 25;
 	static constexpr int DefaultNatural = 25;
+	static constexpr int DefaultChromaProtection = 50;
+
+	// Ceiling of the shadow chroma attenuation at slider 100, in Q8 (128 = 50%
+	// chroma reduction): the stage is corrective and never fully desaturates.
+	static constexpr int MaxChromaAttenuationQ8 = 128;
 
 	static constexpr int MinLayerStrength = 0;
 	static constexpr int MaxLayerStrength = 75;

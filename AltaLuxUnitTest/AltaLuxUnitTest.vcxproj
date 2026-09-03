@@ -155,6 +155,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\AltaLux\AltaLuxCore.h" />
+    <ClInclude Include="..\AltaLux\ChromaCorrection.h" />
     <ClInclude Include="..\AltaLux\Kernels\AltaLuxKernels.h" />
     <ClInclude Include="..\AltaLux\Kernels\AltaLuxKernelsInternal.h" />
     <ClInclude Include="..\AltaLux\Filter\CAltaLuxFilterFactory.h" />
@@ -167,6 +168,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\AltaLux\AltaLuxCore.cpp" />
+    <ClCompile Include="..\AltaLux\ChromaCorrection.cpp" />
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernels.cpp" />
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsScalar.cpp" />
     <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSSSE3.cpp">

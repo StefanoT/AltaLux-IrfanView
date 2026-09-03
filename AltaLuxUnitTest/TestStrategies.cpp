@@ -2,6 +2,7 @@
 #include "CppUnitTest.h"
 
 #include "..\AltaLux\AltaLuxCore.h"
+#include "..\AltaLux\ChromaCorrection.h"
 #include "..\AltaLux\Kernels\AltaLuxKernels.h"
 #include "..\AltaLux\Filter\CBaseAltaLuxFilter.h"
 #include "..\AltaLux\Filter\CAltaLuxFilterFactory.h"
@@ -68,9 +69,9 @@ namespace AltaLuxUnitTest
 	TEST_CLASS(CoreTests)
 	{
 	public:
-		static UiState MakeProcessingState(int strength, int detail, int naturalLook)
+		static UiState MakeProcessingState(int strength, int detail, int naturalLook, int chromaProtection = 0)
 		{
-			UiState state = { strength, detail, naturalLook, false, false, false, 0 };
+			UiState state = { strength, detail, naturalLook, chromaProtection, false, false, false, 0 };
 			return state;
 		}
 
@@ -294,7 +295,7 @@ namespace AltaLuxUnitTest
 
 		TEST_METHOD(ApplyPresetSetsExpectedValues)
 		{
-			UiState state = { 0, 0, 0, false, false, false, 0 };
+			UiState state = { 0, 0, 0, 0, false, false, false, 0 };
 			Preset preset = { 0, L"Detail", 55, 60, 10 };
 
 			ApplyPreset(state, preset);
@@ -306,7 +307,7 @@ namespace AltaLuxUnitTest
 
 		TEST_METHOD(PresetToleranceDetectionWorks)
 		{
-			UiState state = { 46, 24, 27, false, false, false, 0 };
+			UiState state = { 46, 24, 27, 0, false, false, false, 0 };
 			Preset preset = { 0, L"Balanced", 45, 25, 25 };
 
 			Assert::IsTrue(IsPresetActive(state, preset, 3));
@@ -315,7 +316,7 @@ namespace AltaLuxUnitTest
 
 		TEST_METHOD(BlendWeightsNormalizeAndRespectBalancedFloor)
 		{
-			UiState state = { 45, 100, 100, false, false, false, 0 };
+			UiState state = { 45, 100, 100, 0, false, false, false, 0 };
 			BlendWeights weights = ComputeBlendWeights(state);
 			const float sum = weights.fine + weights.balanced + weights.smooth;
 
@@ -410,10 +411,10 @@ namespace AltaLuxUnitTest
 
 		TEST_METHOD(DetailAndNaturalAreIndependent)
 		{
-			UiState baselineState = { 45, 0, 0, false, false, false, 0 };
-			UiState detailState = { 45, 100, 0, false, false, false, 0 };
-			UiState naturalState = { 45, 0, 100, false, false, false, 0 };
-			UiState combinedState = { 45, 100, 100, false, false, false, 0 };
+			UiState baselineState = { 45, 0, 0, 0, false, false, false, 0 };
+			UiState detailState = { 45, 100, 0, 0, false, false, false, 0 };
+			UiState naturalState = { 45, 0, 100, 0, false, false, false, 0 };
+			UiState combinedState = { 45, 100, 100, 0, false, false, false, 0 };
 
 			BlendWeights baselineWeights = ComputeBlendWeights(baselineState);
 			BlendWeights detailWeights = ComputeBlendWeights(detailState);
@@ -706,6 +707,382 @@ namespace AltaLuxUnitTest
 			Assert::IsTrue(imageX > 199.0f && imageX < 202.0f);
 			Assert::IsTrue(imageY > 99.0f && imageY < 102.0f);
 			Assert::IsFalse(MapPreviewPointToImage(rect, 9, 70, 400, 200, imageX, imageY));
+		}
+	};
+
+	TEST_CLASS(ChromaCorrectionTests)
+	{
+	public:
+		static std::vector<unsigned char> MakeShadowTestImageRGB24(int width, int height,
+			bool textureRightHalf)
+		{
+			// Left half: flat dark red (luma ~17, far below the darkness threshold).
+			// Right half: either a dark red checkerboard of two levels (texture) or
+			// a bright neutral gray, per textureRightHalf.
+			std::vector<unsigned char> image(static_cast<size_t>(width * height * Constants::RGB24PixelSize), 0);
+			for (int y = 0; y < height; ++y)
+			{
+				for (int x = 0; x < width; ++x)
+				{
+					const int base = ((y * width) + x) * Constants::RGB24PixelSize;
+					if (x < width / 2)
+					{
+						image[base] = 5;
+						image[base + 1] = 5;
+						image[base + 2] = 60;
+					}
+					else if (textureRightHalf)
+					{
+						const unsigned char red = (((x + y) & 1) == 0) ? 30 : 90;
+						image[base] = 3;
+						image[base + 1] = 3;
+						image[base + 2] = red;
+					}
+					else
+					{
+						image[base] = 200;
+						image[base + 1] = 200;
+						image[base + 2] = 200;
+					}
+				}
+			}
+			return image;
+		}
+
+		// Chroma magnitude of a pixel measured as the sum of absolute channel
+		// distances from its own luma. The chroma stage attenuates exactly this
+		// quantity while leaving the luma itself alone.
+		static double SumChromaDistance(const std::vector<unsigned char>& image, int width, int height,
+			int bitDepth, int x0, int x1)
+		{
+			const double kr = 0.2126;
+			const double kg = 0.7152;
+			const double kb = 0.0722;
+			double sum = 0.0;
+			for (int y = 0; y < height; ++y)
+			{
+				for (int x = x0; x < x1; ++x)
+				{
+					const int base = ((y * width) + x) * bitDepth;
+					// Buffers are BGR-ordered.
+					const double b = image[base];
+					const double g = image[base + 1];
+					const double r = image[base + 2];
+					const double luma = (kb * b) + (kg * g) + (kr * r);
+					sum += std::abs(b - luma) + std::abs(g - luma) + std::abs(r - luma);
+				}
+			}
+			return sum;
+		}
+
+		static std::vector<unsigned char> MakePatternImageForChroma(int width, int height, int bitDepth)
+		{
+			std::vector<unsigned char> image(static_cast<size_t>(width * height * bitDepth), 0);
+			for (int pixelIndex = 0; pixelIndex < width * height; ++pixelIndex)
+			{
+				const int base = pixelIndex * bitDepth;
+				image[base] = static_cast<unsigned char>((pixelIndex * 13 + 17) & 0xFF);
+				image[base + 1] = static_cast<unsigned char>((pixelIndex * 29 + 41) & 0xFF);
+				image[base + 2] = static_cast<unsigned char>((pixelIndex * 53 + 73) & 0xFF);
+				if (bitDepth == Constants::RGB32PixelSize)
+				{
+					image[base + 3] = static_cast<unsigned char>((pixelIndex * 7 + 197) & 0xFF);
+				}
+			}
+			return image;
+		}
+
+		TEST_METHOD(ChromaCorrectionSkippedAtZeroStrength)
+		{
+			const int width = 16;
+			const int height = 16;
+			const int bitDepth = Constants::RGB24PixelSize;
+			std::vector<unsigned char> input(static_cast<size_t>(width * height * bitDepth));
+			for (size_t i = 0; i < input.size(); ++i)
+			{
+				input[i] = static_cast<unsigned char>((i * 37U) % 251U);
+			}
+
+			std::vector<unsigned char> output(input.size(), 0);
+			Assert::IsTrue(ProcessMultiscaleImage(input.data(), output.data(), width, height, bitDepth,
+				CoreTests::MakeProcessingState(0, 60, 40, 100)));
+			Assert::IsTrue(memcmp(input.data(), output.data(), input.size()) == 0);
+		}
+
+		TEST_METHOD(ChromaProtectionAttenuatesLiftedFlatShadowsOnly)
+		{
+			const int width = 96;
+			const int height = 96;
+			const int bitDepth = Constants::RGB24PixelSize;
+			const std::vector<unsigned char> input = MakeShadowTestImageRGB24(width, height, false);
+
+			std::vector<unsigned char> withoutProtection(input.size(), 0);
+			std::vector<unsigned char> withProtection(input.size(), 0);
+			Assert::IsTrue(ProcessMultiscaleImage(input.data(), withoutProtection.data(), width, height,
+				bitDepth, CoreTests::MakeProcessingState(45, 25, 25, 0)));
+			Assert::IsTrue(ProcessMultiscaleImage(input.data(), withProtection.data(), width, height,
+				bitDepth, CoreTests::MakeProcessingState(45, 25, 25, 50)));
+
+			// Bright half must stay byte-identical: its darkness risk is zero, so
+			// the attenuation is an exact no-op there. The half is per-column, so
+			// compare the right-hand segment of every row.
+			const int rowBytes = width * bitDepth;
+			const int brightStart = (width / 2) * bitDepth;
+			for (int y = 0; y < height; ++y)
+			{
+				const size_t rowOffset = static_cast<size_t>(y) * rowBytes + brightStart;
+				Assert::IsTrue(memcmp(withoutProtection.data() + rowOffset,
+					withProtection.data() + rowOffset, rowBytes - brightStart) == 0);
+			}
+
+			// Flat, strongly lifted, originally dark left half must lose chroma.
+			const double before = SumChromaDistance(withoutProtection, width, height, bitDepth, 0, width / 2 - 2);
+			const double after = SumChromaDistance(withProtection, width, height, bitDepth, 0, width / 2 - 2);
+			Assert::IsTrue(before > 0.0);
+			Assert::IsTrue(after < before * 0.95, L"flat shadow chroma was not attenuated");
+		}
+
+		TEST_METHOD(ChromaProtectionAffectsTexturedShadowsLessThanFlatOnes)
+		{
+			const int width = 96;
+			const int height = 96;
+			const int bitDepth = Constants::RGB24PixelSize;
+			const std::vector<unsigned char> input = MakeShadowTestImageRGB24(width, height, true);
+
+			std::vector<unsigned char> withoutProtection(input.size(), 0);
+			std::vector<unsigned char> withProtection(input.size(), 0);
+			Assert::IsTrue(ProcessMultiscaleImage(input.data(), withoutProtection.data(), width, height,
+				bitDepth, CoreTests::MakeProcessingState(45, 25, 25, 0)));
+			Assert::IsTrue(ProcessMultiscaleImage(input.data(), withProtection.data(), width, height,
+				bitDepth, CoreTests::MakeProcessingState(45, 25, 25, 100)));
+
+			const double flatBefore = SumChromaDistance(withoutProtection, width, height, bitDepth, 2, width / 2 - 2);
+			const double flatAfter = SumChromaDistance(withProtection, width, height, bitDepth, 2, width / 2 - 2);
+			const double texturedBefore = SumChromaDistance(withoutProtection, width, height, bitDepth, width / 2 + 2, width - 2);
+			const double texturedAfter = SumChromaDistance(withProtection, width, height, bitDepth, width / 2 + 2, width - 2);
+
+			Assert::IsTrue(flatBefore > 0.0);
+			Assert::IsTrue(texturedBefore > 0.0);
+			const double flatReduction = 1.0 - (flatAfter / flatBefore);
+			const double texturedReduction = 1.0 - (texturedAfter / texturedBefore);
+			Assert::IsTrue(flatReduction > texturedReduction,
+				L"flat shadows must lose more chroma than textured ones");
+			Assert::IsTrue(flatReduction > 0.05, L"flat shadow chroma was not attenuated");
+			Assert::IsTrue(texturedReduction < flatReduction * 0.9,
+				L"texture floor did not protect textured shadows");
+		}
+
+		TEST_METHOD(GainRiskLutIsMonotonicInGainAndDarkness)
+		{
+			// More lift means more risk for a dark pixel.
+			int previous = ComputeGainRiskQ8(4, 0);
+			for (int enhanced = 1; enhanced < 256; ++enhanced)
+			{
+				const int current = ComputeGainRiskQ8(4, enhanced);
+				Assert::IsTrue(current >= previous);
+				previous = current;
+			}
+			Assert::AreEqual(255, ComputeGainRiskQ8(0, 255));
+
+			// Brighter originals mean less risk, vanishing at the darkness band.
+			previous = ComputeGainRiskQ8(0, 255);
+			for (int original = 1; original < 256; ++original)
+			{
+				const int current = ComputeGainRiskQ8(original, 255);
+				Assert::IsTrue(current <= previous);
+				previous = current;
+			}
+			Assert::AreEqual(0, ComputeGainRiskQ8(64, 255));
+
+			// No lift, no risk: identical luma and a sub-half-stop lift both stay
+			// at zero (the +1 epsilon makes (0, 1) a full stop, which is risky).
+			Assert::AreEqual(0, ComputeGainRiskQ8(100, 100));
+			Assert::AreEqual(0, ComputeGainRiskQ8(50, 52));
+			Assert::AreEqual(0, ComputeGainRiskQ8(0, 0));
+		}
+
+		TEST_METHOD(ActivityRiskLutFavorsFlatAreas)
+		{
+			Assert::AreEqual(255, ComputeActivityRiskQ8(0));
+			Assert::AreEqual(255, ComputeActivityRiskQ8(1));
+			Assert::AreEqual(0, ComputeActivityRiskQ8(6));
+			Assert::AreEqual(0, ComputeActivityRiskQ8(255));
+
+			for (int activity = 1; activity < 6; ++activity)
+			{
+				Assert::IsTrue(ComputeActivityRiskQ8(activity) >= ComputeActivityRiskQ8(activity + 1));
+			}
+		}
+
+		TEST_METHOD(LocalActivityAndBlurKernelsBehave)
+		{
+			const int width = 5;
+			const int height = 5;
+			const int pixelCount = width * height;
+			std::vector<unsigned char> flat(pixelCount, 42);
+			std::vector<unsigned char> activity(pixelCount, 0);
+			AltaLuxKernels::ComputeLocalActivity3x3(flat.data(), activity.data(), width, height);
+			for (int i = 0; i < pixelCount; ++i)
+			{
+				Assert::AreEqual(0, static_cast<int>(activity[i]));
+			}
+
+			std::vector<unsigned char> spike(pixelCount, 0);
+			spike[(pixelCount - 1) / 2] = 255;
+			AltaLuxKernels::ComputeLocalActivity3x3(spike.data(), activity.data(), width, height);
+			Assert::IsTrue(activity[(pixelCount - 1) / 2] == 255);
+			Assert::IsTrue(activity[0] < activity[(pixelCount - 1) / 2]);
+
+			// Blur of a constant map is the same constant...
+			std::vector<unsigned char> constant(pixelCount, 77);
+			std::vector<unsigned char> temp(pixelCount, 0);
+			AltaLuxKernels::BlurRiskMap(constant.data(), temp.data(), width, height);
+			for (int i = 0; i < pixelCount; ++i)
+			{
+				Assert::AreEqual(77, static_cast<int>(constant[i]));
+			}
+
+			// ...and a spike bleeds into its neighbors while losing height.
+			std::vector<unsigned char> spikeRisk(pixelCount, 0);
+			spikeRisk[(pixelCount - 1) / 2] = 255;
+			AltaLuxKernels::BlurRiskMap(spikeRisk.data(), temp.data(), width, height);
+			const int center = (pixelCount - 1) / 2;
+			Assert::IsTrue(spikeRisk[center] > 0 && spikeRisk[center] < 255);
+			Assert::IsTrue(spikeRisk[center + 1] > 0);
+			Assert::IsTrue(spikeRisk[center - 1] > 0);
+		}
+
+		static void AssertChromaKernelsMatchScalar(AltaLuxKernels::KernelImplementation implementation)
+		{
+			if (!AltaLuxKernels::IsImplementationSupported(implementation))
+			{
+				Logger::WriteMessage(L"Requested SIMD kernels are not supported on this CPU; skipping chroma equality checks.");
+				return;
+			}
+
+			// Odd dimensions exercise the SIMD tails and the scalar fallbacks.
+			const int width = 13;
+			const int height = 7;
+			const int pixelCount = width * height;
+
+			// The risk-combination kernel is scalar-only (its 64K-entry table
+			// lookup measured slower with AVX2 gathers), so the parity surface is
+			// the attenuation kernel; a deterministic risk plane drives it.
+			std::vector<unsigned char> enhancedLuma(pixelCount);
+			for (int i = 0; i < pixelCount; ++i)
+			{
+				enhancedLuma[i] = static_cast<unsigned char>((i * 13 + 5) & 0xFF);
+			}
+
+			std::vector<unsigned char> riskScalar(pixelCount);
+			for (int i = 0; i < pixelCount; ++i)
+			{
+				riskScalar[i] = static_cast<unsigned char>((i * 3) & 0xFF);
+			}
+
+			for (int bitDepth = Constants::RGB24PixelSize; bitDepth <= Constants::RGB32PixelSize; ++bitDepth)
+			{
+				const std::vector<unsigned char> baseImage = MakePatternImageForChroma(width, height, bitDepth);
+				std::vector<unsigned char> scalarImage = baseImage;
+				std::vector<unsigned char> simdImage = baseImage;
+
+				AltaLuxKernels::ApplyChromaAttenuation(scalarImage.data(), enhancedLuma.data(), riskScalar.data(),
+					0, pixelCount, bitDepth, 100, AltaLuxKernels::KernelImplementation::Scalar);
+				AltaLuxKernels::ApplyChromaAttenuation(simdImage.data(), enhancedLuma.data(), riskScalar.data(),
+					0, pixelCount, bitDepth, 100, implementation);
+				Assert::IsTrue(memcmp(scalarImage.data(), simdImage.data(), scalarImage.size()) == 0);
+
+				// Sub-range to mirror the parallel block split; pixels outside
+				// the range stay untouched.
+				std::vector<unsigned char> partialScalar = baseImage;
+				std::vector<unsigned char> partialSimd = baseImage;
+				AltaLuxKernels::ApplyChromaAttenuation(partialScalar.data(), enhancedLuma.data(), riskScalar.data(),
+					10, 81, bitDepth, 100, AltaLuxKernels::KernelImplementation::Scalar);
+				AltaLuxKernels::ApplyChromaAttenuation(partialSimd.data(), enhancedLuma.data(), riskScalar.data(),
+					10, 81, bitDepth, 100, implementation);
+				Assert::IsTrue(memcmp(partialScalar.data(), partialSimd.data(), partialScalar.size()) == 0);
+				Assert::IsTrue(memcmp(baseImage.data(), partialScalar.data(), 10 * bitDepth) == 0);
+				Assert::IsTrue(memcmp(baseImage.data() + (81 * bitDepth),
+					partialScalar.data() + (81 * bitDepth), baseImage.size() - (81 * bitDepth)) == 0);
+			}
+
+			// End-to-end parity through the full pipeline with the stage active.
+			const int pipelineWidth = 64;
+			const int pipelineHeight = 48;
+			const UiState state = CoreTests::MakeProcessingState(45, 25, 25, 50);
+			for (int bitDepth = Constants::RGB24PixelSize; bitDepth <= Constants::RGB32PixelSize; ++bitDepth)
+			{
+				const std::vector<unsigned char> pattern = MakePatternImageForChroma(pipelineWidth, pipelineHeight, bitDepth);
+				std::vector<unsigned char> scalarOutput(pattern.size(), 0);
+				std::vector<unsigned char> simdOutput(pattern.size(), 0);
+				Assert::IsTrue(ProcessMultiscaleImageWithKernels(pattern.data(), scalarOutput.data(),
+					pipelineWidth, pipelineHeight, bitDepth, state, AltaLuxKernels::KernelImplementation::Scalar));
+				Assert::IsTrue(ProcessMultiscaleImageWithKernels(pattern.data(), simdOutput.data(),
+					pipelineWidth, pipelineHeight, bitDepth, state, implementation));
+				Assert::IsTrue(memcmp(scalarOutput.data(), simdOutput.data(), scalarOutput.size()) == 0);
+			}
+		}
+
+		TEST_METHOD(SSSE3ChromaKernelsMatchScalar)
+		{
+			AssertChromaKernelsMatchScalar(AltaLuxKernels::KernelImplementation::SSSE3);
+		}
+
+		TEST_METHOD(AVX2ChromaKernelsMatchScalar)
+		{
+			AssertChromaKernelsMatchScalar(AltaLuxKernels::KernelImplementation::AVX2);
+		}
+
+		TEST_METHOD(ChromaProtectionPreservesAlphaAndWorksInPlace)
+		{
+			const int width = 24;
+			const int height = 16;
+			const int bitDepth = Constants::RGB32PixelSize;
+			std::vector<unsigned char> inPlace = MakePatternImageForChroma(width, height, bitDepth);
+			Assert::IsTrue(ProcessMultiscaleImage(inPlace.data(), inPlace.data(), width, height, bitDepth,
+				CoreTests::MakeProcessingState(45, 25, 25, 50)));
+
+			const std::vector<unsigned char> original = MakePatternImageForChroma(width, height, bitDepth);
+			for (int pixelIndex = 0; pixelIndex < width * height; ++pixelIndex)
+			{
+				const int alphaOffset = (pixelIndex * bitDepth) + 3;
+				Assert::AreEqual(static_cast<int>(original[alphaOffset]), static_cast<int>(inPlace[alphaOffset]));
+			}
+		}
+
+		TEST_METHOD(ChromaProtectionMatchesAcrossBitDepths)
+		{
+			const int width = 24;
+			const int height = 16;
+			const std::vector<unsigned char> rgb24 = MakePatternImageForChroma(width, height, Constants::RGB24PixelSize);
+			std::vector<unsigned char> rgb24WithAlpha;
+			rgb24WithAlpha.reserve(rgb24.size() / Constants::RGB24PixelSize * Constants::RGB32PixelSize);
+			for (int pixelIndex = 0; pixelIndex < width * height; ++pixelIndex)
+			{
+				const int srcBase = pixelIndex * Constants::RGB24PixelSize;
+				rgb24WithAlpha.push_back(rgb24[srcBase]);
+				rgb24WithAlpha.push_back(rgb24[srcBase + 1]);
+				rgb24WithAlpha.push_back(rgb24[srcBase + 2]);
+				rgb24WithAlpha.push_back(197);
+			}
+
+			std::vector<unsigned char> out24(rgb24.size(), 0);
+			std::vector<unsigned char> out32(rgb24WithAlpha.size(), 0);
+			const UiState state = CoreTests::MakeProcessingState(45, 25, 25, 50);
+			Assert::IsTrue(ProcessMultiscaleImage(rgb24.data(), out24.data(), width, height,
+				Constants::RGB24PixelSize, state));
+			Assert::IsTrue(ProcessMultiscaleImage(rgb24WithAlpha.data(), out32.data(), width, height,
+				Constants::RGB32PixelSize, state));
+
+			for (int pixelIndex = 0; pixelIndex < width * height; ++pixelIndex)
+			{
+				const int base24 = pixelIndex * Constants::RGB24PixelSize;
+				const int base32 = pixelIndex * Constants::RGB32PixelSize;
+				Assert::AreEqual(static_cast<int>(out24[base24]), static_cast<int>(out32[base32]));
+				Assert::AreEqual(static_cast<int>(out24[base24 + 1]), static_cast<int>(out32[base32 + 1]));
+				Assert::AreEqual(static_cast<int>(out24[base24 + 2]), static_cast<int>(out32[base32 + 2]));
+				Assert::AreEqual(197, static_cast<int>(out32[base32 + 3]));
+			}
 		}
 	};
 }

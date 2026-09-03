@@ -6,7 +6,8 @@
 3. [Filter Implementations](#filter-implementations)
 4. [Helper Classes](#helper-classes)
 5. [Constants and Enumerations](#constants-and-enumerations)
-6. [Plugin Interface](#plugin-interface)
+6. [Shadow Chroma Correction](#shadow-chroma-correction)
+7. [Plugin Interface](#plugin-interface)
 
 ---
 
@@ -350,6 +351,48 @@ const float MIN_CLIP_LIMIT = 1.0f;      // Conservative
 const float DEFAULT_CLIP_LIMIT = 2.0f;  // Balanced
 const float MAX_CLIP_LIMIT = 5.0f;      // Aggressive
 ```
+
+---
+
+## Shadow Chroma Correction
+
+The `ChromaCorrection` module (`AltaLux/ChromaCorrection.h`) implements the
+post-blend stage driven by the `Chroma protection` setting. It is called from
+`ProcessMultiscaleImageWithKernels()` after the weighted multiscale write-back.
+
+```cpp
+// Attenuates chroma of targetImage toward the neutral gray of its enhanced
+// luma, guided by a risk map derived from targetImage and the cached original
+// luma plane. chromaProtection is the 0..100 UI slider (0 = documented no-op).
+bool ApplyChromaCorrection(unsigned char* targetImage, const unsigned char* originalLuma,
+    int width, int height, int bitDepth, int chromaProtection,
+    AltaLuxKernels::KernelImplementation implementation);
+
+// BT.709 luma extraction from BGR24/BGR32 into a packed plane; used to cache
+// the original luma before the in-place write-back destroys it.
+void ExtractBgrLuma(const unsigned char* image, unsigned char* luma, int pixelCount,
+    int bitDepth, AltaLuxKernels::KernelImplementation implementation);
+
+// Q8 test hooks into the prebuilt risk tables.
+int ComputeGainRiskQ8(int originalLuma, int enhancedLuma);
+int ComputeActivityRiskQ8(int activity);
+```
+
+Related kernel API additions in `AltaLuxKernels`:
+
+- `ComputeLocalActivity3x3(luma, activity, width, height)` — scalar-only 3x3
+  mean absolute deviation on a luma plane.
+- `BlurRiskMap(risk, temp, width, height)` — scalar-only separable [1 2 1] blur
+  of the Q8 risk map, in place.
+- `ComputeChromaRisk(...)` — scalar-only combination of the 65536-entry
+  gain/darkness table and the 256-entry activity table into the final Q8 risk.
+- `ApplyChromaAttenuation(target, enhancedLuma, risk, pixelStart, pixelEnd,
+  pixelStride, maxStrengthQ8, implementation)` — vectorized (scalar/SSSE3/AVX2)
+  chroma attenuation toward the enhanced luma, parallel-block friendly.
+
+Related settings in `AltaLuxCore.h`: `UiState::chromaProtection`,
+`Constants::DefaultChromaProtection` (50), and
+`Constants::MaxChromaAttenuationQ8` (128, i.e. 50% cap at slider 100).
 
 ---
 

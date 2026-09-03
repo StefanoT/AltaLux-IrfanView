@@ -292,4 +292,53 @@ namespace AltaLuxKernels
 		InterpolateScalar(image, imageStride, mapLeftUp, mapRightUp,
 			mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 	}
+
+	// Scalar-only operation: the 3x3 row-halo access pattern spends more time
+	// shuffling cross-lane data into position than the eight subtract/abs
+	// operations cost at either SIMD tier.
+	void ComputeLocalActivity3x3(const unsigned char* luma, unsigned char* activity,
+		int width, int height)
+	{
+		ComputeLocalActivity3x3Scalar(luma, activity, width, height);
+	}
+
+	// Scalar-only operation: a separable [1 2 1] blur is three adds and a shift
+	// per pixel; the cross-lane transposes needed to vectorize the vertical pass
+	// exceed the arithmetic at both SIMD tiers.
+	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height)
+	{
+		BlurRiskMapScalar(risk, temp, width, height);
+	}
+
+	// Scalar-only operation: the combination is dominated by a randomly indexed
+	// 64K-entry gain table; an AVX2 gather version measured 2.3x slower than
+	// these scalar loads on random 4K data, so every tier runs this loop.
+	void ComputeChromaRisk(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
+		const unsigned char* activity, unsigned char* risk, int pixelCount,
+		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8)
+	{
+		ComputeChromaRiskScalar(originalLuma, enhancedLuma, activity, risk, pixelCount,
+			gainRiskLut, activityRiskLut, textureFloorQ8);
+	}
+
+	void ApplyChromaAttenuation(unsigned char* target, const unsigned char* enhancedLuma,
+		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride,
+		int maxStrengthQ8, KernelImplementation implementation)
+	{
+		switch (NormalizeImplementation(implementation))
+		{
+		case KernelImplementation::AVX2:
+			ApplyChromaAttenuationAVX2(target, enhancedLuma, risk, pixelStart, pixelEnd,
+				pixelStride, maxStrengthQ8);
+			break;
+		case KernelImplementation::SSSE3:
+			ApplyChromaAttenuationSSSE3(target, enhancedLuma, risk, pixelStart, pixelEnd,
+				pixelStride, maxStrengthQ8);
+			break;
+		default:
+			ApplyChromaAttenuationScalar(target, enhancedLuma, risk, pixelStart, pixelEnd,
+				pixelStride, maxStrengthQ8);
+			break;
+		}
+	}
 }

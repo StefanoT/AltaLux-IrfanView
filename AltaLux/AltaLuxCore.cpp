@@ -9,6 +9,7 @@
 
 #include <ppl.h>
 
+#include "ChromaCorrection.h"
 #include "Filter/CAltaLuxFilterFactory.h"
 #include "Filter/CBaseAltaLuxFilter.h"
 
@@ -327,11 +328,31 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 		return false;
 	}
 
+	// The chroma correction stage needs the original luma, so cache it before
+	// the accumulated write-back: StartEffects2 applies in place (src == dst)
+	// and WriteAccumulatedImage overwrites the only remaining original pixels.
+	std::unique_ptr<unsigned char[]> originalLuma;
+	const bool chromaCorrectionEnabled = state.chromaProtection > 0;
+	if (chromaCorrectionEnabled)
+	{
+		originalLuma.reset(new unsigned char[static_cast<size_t>(pixelCount)]);
+		ExtractBgrLuma(sourceImage, originalLuma.get(), pixelCount, bitDepth, implementation);
+	}
+
 	RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 	{
 		AltaLuxKernels::WriteAccumulatedImage(targetImage, accum.get(), pStart, pEnd, bitDepth,
 			kWeightScaleLog2, kWeightHalf, implementation);
 	});
+
+	if (chromaCorrectionEnabled)
+	{
+		if (!ApplyChromaCorrection(targetImage, originalLuma.get(), width, height, bitDepth,
+			state.chromaProtection, implementation))
+		{
+			return false;
+		}
+	}
 
 	return true;
 }

@@ -322,6 +322,8 @@ void BenchmarkCriticalKernels()
 	vector<unsigned char> downscaledRGB32((SAMPLE_WIDTH / 2) * (SAMPLE_HEIGHT / 2) * 4);
 	vector<unsigned char> interpolationSource(SAMPLE_PIXELS);
 	vector<unsigned char> interpolationTarget(SAMPLE_PIXELS);
+	vector<unsigned char> activityPlane(SAMPLE_PIXELS);
+	vector<unsigned char> riskPlane(SAMPLE_PIXELS);
 	vector<unsigned int> accum(ACCUM_SAMPLE_SIZE);
 	vector<unsigned int> mapLeftUp(256);
 	vector<unsigned int> mapRightUp(256);
@@ -332,6 +334,8 @@ void BenchmarkCriticalKernels()
 	vector<unsigned int> clipHistogramBatchSource(HISTOGRAM_CLIP_BENCHMARK_BATCH * 256);
 	vector<unsigned int> mapHistogramBatch(HISTOGRAM_MAP_BENCHMARK_BATCH * 256);
 	vector<unsigned int> mapHistogramBatchSource(HISTOGRAM_MAP_BENCHMARK_BATCH * 256);
+	vector<unsigned int> gainRiskLut(256 * 256);
+	vector<unsigned int> activityRiskLut(256);
 	int reciprocalLut[256] = {};
 
 	FillRandomBuffer(rgb24.data(), static_cast<int>(rgb24.size()));
@@ -340,10 +344,16 @@ void BenchmarkCriticalKernels()
 	FillRandomBuffer(luma.data(), static_cast<int>(luma.size()));
 	FillRandomBuffer(target.data(), static_cast<int>(target.size()));
 	FillRandomBuffer(interpolationSource.data(), static_cast<int>(interpolationSource.size()));
+	FillRandomBuffer(activityPlane.data(), static_cast<int>(activityPlane.size()));
+	FillRandomBuffer(riskPlane.data(), static_cast<int>(riskPlane.size()));
 	for (int i = 1; i < 256; ++i)
 		reciprocalLut[i] = (1 << 16) / i;
 	for (int i = 0; i < ACCUM_SAMPLE_SIZE; ++i)
 		accum[i] = static_cast<unsigned int>((i * 37) & 0x3FFFF);
+	for (size_t k = 0; k < gainRiskLut.size(); ++k)
+		gainRiskLut[k] = static_cast<unsigned int>((k * 2654435761U) >> 24) & 0xFFU;
+	for (size_t k = 0; k < activityRiskLut.size(); ++k)
+		activityRiskLut[k] = static_cast<unsigned int>(((k * 97U) + 13U) & 0xFFU);
 	for (int i = 0; i < 256; ++i)
 	{
 		mapLeftUp[i] = static_cast<unsigned int>((i * 17 + 3) & 0xFF);
@@ -398,6 +408,36 @@ void BenchmarkCriticalKernels()
 	{
 		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), 0, SAMPLE_PIXELS, 4,
 			WEIGHT_SCALE_LOG2, WEIGHT_HALF, implementation);
+	});
+	BenchmarkScalarOnlyKernel("Chroma Compute Risk", [&]()
+	{
+		// Two luma planes from the same random source stand in for original and
+		// enhanced luma; the risk map itself lands in the activity scratch plane
+		// because only timing matters here.
+		AltaLuxKernels::ComputeChromaRisk(luma.data(), luma.data(), activityPlane.data(),
+			riskPlane.data(), SAMPLE_PIXELS, gainRiskLut.data(), activityRiskLut.data(), 77);
+	});
+	BenchmarkAllImplementations("RGB32 Chroma Attenuate", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		memcpy(target.data(), rgb32.data(), target.size());
+		AltaLuxKernels::ApplyChromaAttenuation(target.data(), luma.data(), riskPlane.data(),
+			0, SAMPLE_PIXELS, 4, 64, implementation);
+	});
+	BenchmarkAllImplementations("RGB24 Chroma Attenuate", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		memcpy(target.data(), rgb24.data(), rgb24.size());
+		AltaLuxKernels::ApplyChromaAttenuation(target.data(), luma.data(), riskPlane.data(),
+			0, SAMPLE_PIXELS, 3, 64, implementation);
+	});
+	BenchmarkScalarOnlyKernel("Chroma Activity 3x3", [&]()
+	{
+		AltaLuxKernels::ComputeLocalActivity3x3(luma.data(), activityPlane.data(),
+			SAMPLE_WIDTH, SAMPLE_HEIGHT);
+	});
+	BenchmarkScalarOnlyKernel("Chroma Blur Risk Map", [&]()
+	{
+		AltaLuxKernels::BlurRiskMap(riskPlane.data(), activityPlane.data(),
+			SAMPLE_WIDTH, SAMPLE_HEIGHT);
 	});
 	BenchmarkScalarOnlyKernel("CLAHE Make Histogram", [&]()
 	{

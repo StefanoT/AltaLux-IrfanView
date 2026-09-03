@@ -22,11 +22,13 @@ License: Microsoft Public License (MS-PL)
 - Introduces a fixed three-layer multiscale pipeline: fine, balanced, and smooth.
 - Uses BT.709 luminance, BGR/BGRA-aware processing, and multiplicative color
   reinjection to reduce hue and highlight drift.
+- Adds `Chroma protection`: a confidence map derived from the luminance
+  processing attenuates colored shadow noise where shadows were lifted hard.
 - Preserves RGB32 alpha and keeps RGB24/RGB32 behavior aligned for the same RGB
   content.
 - Adds runtime kernel dispatch across scalar, SSSE3, and AVX2 implementations,
   plus thresholded parallel layer processing for large images.
-- Expands the Microsoft C++ unit test suite to 30 tests covering the v2 core and
+- Expands the Microsoft C++ unit test suite to 40 tests covering the v2 core and
   SIMD kernel equivalence.
 
 ## Installation
@@ -54,7 +56,7 @@ uploaded and AltaLux does not download models at runtime.
 
 1. Open an image in IrfanView.
 2. Launch AltaLux from the effects menu.
-3. Adjust `Strength`, `Detail`, and `Natural look`.
+3. Adjust `Strength`, `Detail`, `Natural look`, and `Chroma protection`.
 4. Drag the vertical divider to compare original and processed output.
 5. Hold `Space` to temporarily show the original.
 6. Double-click the divider to recenter it.
@@ -93,6 +95,20 @@ image starts looking too busy, gritty, or locally over-processed.
 `Detail` and `Natural look` are independent controls. They are not opposites, and
 both can be raised at the same time.
 
+### Chroma Protection
+
+Attenuates chroma toward neutral in shadows that AltaLux lifted aggressively, so
+opened-up shadows stay free of the purple/green speckles that shadow recovery
+makes conspicuous.
+
+- `0` disables the stage entirely.
+- The default `50` maps to a conservative maximum attenuation of 25%.
+- `100` maps to 50%; the stage can never fully desaturate a pixel.
+- Only originally dark, strongly lifted, flat pixels are touched: bright or
+  barely lifted areas keep their color byte-for-byte, and textured shadows keep
+  most of theirs.
+- The stage is corrective, not an enhancement: it never changes luminance.
+
 ## Presets
 
 | Preset | Strength | Detail | Natural look |
@@ -124,7 +140,9 @@ The processing order in `ProcessMultiscaleImage()` is:
 3. Compute blend weights from `Detail` and `Natural look`.
 4. Accumulate weighted BGR channels into an integer accumulator.
 5. Write the weighted multiscale enhancement to the output image.
-6. Preserve alpha for RGB32/BGRA images.
+6. Attenuate chroma in aggressively lifted flat shadows, when `Chroma protection`
+   is above zero (see below).
+7. Preserve alpha for RGB32/BGRA images.
 
 ### Layer Strength Curve
 
@@ -156,6 +174,40 @@ CLAHE pass to `100`.
 `Detail` can shift up to `0.35` toward the fine layer. `Natural look` can shift up
 to `0.35` toward the smooth layer. The balanced layer is floored at `0.20`, and
 weights are normalized before processing.
+
+### Shadow Chroma Correction
+
+After the multiscale blend, `Chroma protection` runs a corrective pass that
+suppresses colored shadow noise. It derives a per-pixel risk map from the
+luminance processing itself — comparing the original luma `Y` with the enhanced
+luma `Y'` of the finished image — and attenuates chroma only where that map says
+the original color is unreliable. The map is deliberately decoupled from the
+CLAHE internals: it sees only `Y` and `Y'`, so it stays valid if the enhancement
+changes.
+
+The risk per pixel is the product of three terms:
+
+| Term | Meaning | Range |
+| --- | --- | --- |
+| Gain risk | `log2((Y'+1)/(Y+1))` in stops, smoothstepped from +0.5 to +2 stops | strong lift means questionable chroma |
+| Darkness risk | `1 - smoothstep(8, 64, Y)` | near-black colors are unreliable, midtones are not |
+| Activity risk | `1 - smoothstep(1, 6, T)`, `T` = 3x3 mean absolute deviation of the original luma | flat areas show chroma noise, edges read as structure |
+
+The combined risk is `R = R_gain * R_darkness * (0.3 + 0.7 * R_activity)`, so
+textured areas keep 30% of the risk, then blurred with a separable `[1 2 1]`
+kernel to avoid visible per-pixel variation. The final strength
+`S = S_max * R` with `S_max = Chroma protection / 200` (capped at 0.5) moves every
+color channel toward the neutral gray of its enhanced luma:
+
+```text
+c' = Y' + (c - Y') * (1 - S)
+```
+
+This is luma-neutral (it preserves `Y'` exactly) and provably stays inside byte
+range. Zero-risk pixels — bright, barely lifted, or strongly textured — are
+reproduced byte-for-byte. The stage costs roughly 50 ms per 4K image, dominated
+by three scalar table/2D passes; the attenuation kernel itself runs 3-4x faster
+under AVX2.
 
 ## Color And Format Handling
 
@@ -215,11 +267,14 @@ Settings are stored under the `[AltaLux]` section:
 Strength=45
 Detail=25
 NaturalLook=25
+ChromaProtection=50
 Zoom=0
 ```
 
 The old `Intensity` key is read as a fallback only when `Strength` is absent. The
-old `Scale` setting is not surfaced in the v2 UI or parameter model.
+old `Scale` setting is not surfaced in the v2 UI or parameter model. A missing
+`ChromaProtection` key falls back to the default `50`; set it to `0` to keep the
+pre-3.0 output byte-identical.
 
 ## Direct Invocation And Batch Parameters
 
@@ -231,6 +286,7 @@ When AltaLux is invoked with parameters instead of opening the dialog:
 - `param1` initializes `Strength`.
 - `Detail` uses the default value `25`.
 - `Natural look` uses the default value `25`.
+- `Chroma protection` uses the default value `50`.
 - `param2` is accepted by the IrfanView effect signature but no longer controls
   CLAHE scale or tile count.
 
@@ -249,6 +305,7 @@ scale value.
 AltaLux/
   AltaLux.cpp                 IrfanView plugin entry points and Win32 dialog
   AltaLuxCore.cpp/.h          v2 UI state, presets, geometry, and processing core
+  ChromaCorrection.cpp/.h     shadow chroma correction stage (risk map + attenuation)
   ScopedBitmapHeader.h        RAII wrapper around DIB GlobalLock/GlobalUnlock
   UIDraw/
     UIDraw.cpp/.h             preview rendering and split comparison drawing
@@ -321,11 +378,13 @@ version.
 
 ## Tests
 
-The current unit test suite contains 30 tests. Coverage includes:
+The current unit test suite contains 40 tests. Coverage includes:
 
 - Serial vs. parallel CLAHE strategy equivalence.
 - SSSE3 and AVX2 output equivalence against scalar kernels.
 - SSSE3 and AVX2 2x box downscale equivalence against scalar kernels.
+- SSSE3 and AVX2 chroma attenuation equivalence against scalar kernels, including
+  sub-ranges, both pixel strides, and the full pipeline with the stage active.
 - Preset application and preset tolerance.
 - Blend-weight normalization and balanced-layer floor.
 - Conservative non-linear layer-strength mapping.
@@ -337,8 +396,14 @@ The current unit test suite contains 30 tests. Coverage includes:
 - Fine/balanced/smooth layer ordering.
 - Preview rectangle fitting and 1:1 crop mode.
 - Zero-strength no-op behavior.
-- RGB32 alpha preservation.
-- RGB24/RGB32 consistency for identical RGB content.
+- Chroma correction skipped at zero strength.
+- Chroma attenuation in lifted flat shadows, with bright areas byte-identical.
+- Textured shadows retaining more chroma than flat ones.
+- Gain and activity risk table monotonicity.
+- Local activity and risk blur kernel behavior.
+- RGB32 alpha preservation, including with chroma correction active and in-place.
+- RGB24/RGB32 consistency for identical RGB content, including with chroma
+  correction active.
 - Flat-image grayscale behavior.
 - Detail sensitivity on checkerboard input.
 - Natural-look sensitivity on gradient input.
@@ -356,6 +421,7 @@ The current unit test suite contains 30 tests. Coverage includes:
 
 - Lower `Strength`.
 - Lower `Detail`.
+- Raise `Chroma protection` if the noise is colored speckles in shadows.
 - Use the `Natural` preset as a starting point.
 - Apply noise reduction before AltaLux for high-ISO images.
 
@@ -381,6 +447,13 @@ The current unit test suite contains 30 tests. Coverage includes:
 
 ### Version 3.0.0.0
 
+- Added `Chroma protection`: a corrective post-blend stage that derives a
+  per-pixel risk map from the original and enhanced luminance (stops-based gain,
+  original darkness, 3x3 local activity) and attenuates chroma toward the
+  enhanced luma in aggressively lifted flat shadows, suppressing colored shadow
+  noise without touching luminance, bright areas, or textured detail. Exposed as
+  a 0-100 slider (default 50 = 25% max attenuation), persisted as
+  `ChromaProtection` in the INI file; `0` keeps prior output byte-identical.
 - Added the optional AI object selection add-on: MobileSAM-generated object
   masks applied through a feathered blend, shipped as the separate
   `AltaLux-AI-x64.zip` package (x64 only).

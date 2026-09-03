@@ -128,12 +128,12 @@ extern "C" {
 /// 1. **GUI Mode** (param1 == -1 or param2 == -1):
 ///    - Display interactive dialog with before/after split preview
 ///    - Load previous settings from INI
-///    - Let the user adjust Strength, Detail, and Natural look
+///    - Let the user adjust Strength, Detail, Natural look, and Chroma protection
 ///    - Offer Natural / Balanced / Detail presets
 ///    - Save settings to INI on OK
 /// 2. **Direct Mode** (param1 >= 0 and param2 >= 0):
 ///    - Apply filter immediately with param1 as Strength
-///    - Detail and Natural look use their default value (25)
+///    - Detail, Natural look, and Chroma protection use their default values
 ///    - No GUI, no user interaction
 ///    - Useful for batch processing or automation
 ///
@@ -141,13 +141,15 @@ extern "C" {
 /// Settings are stored in IrfanView's INI file under [AltaLux] section:
 /// @code
 /// [AltaLux]
-/// Strength=45     ; Overall strength (0-100)
-/// Detail=25       ; Blend toward the fine CLAHE layer (0-100)
-/// NaturalLook=25  ; Blend toward the smooth CLAHE layer (0-100)
-/// Zoom=0          ; 1 = open in 1:1 preview mode
+/// Strength=45          ; Overall strength (0-100)
+/// Detail=25            ; Blend toward the fine CLAHE layer (0-100)
+/// NaturalLook=25       ; Blend toward the smooth CLAHE layer (0-100)
+/// ChromaProtection=50  ; Shadow chroma noise suppression (0-100, 0 = off)
+/// Zoom=0               ; 1 = open in 1:1 preview mode
 /// @endcode
 /// The legacy v1 key Intensity is read as a fallback when Strength is absent.
-/// The v1 Scale key is no longer used.
+/// The v1 Scale key is no longer used. A missing ChromaProtection key falls
+/// back to the default 50; set 0 to disable the shadow chroma stage.
 ///
 /// @par Error Handling:
 /// - Returns false if image pointer is null
