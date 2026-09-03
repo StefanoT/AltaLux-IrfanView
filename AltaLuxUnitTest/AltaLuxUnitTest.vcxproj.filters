@@ -86,7 +86,7 @@
     <ClCompile Include="..\AltaLux\Kernels\KernelsSSSE3.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Kernels\KernelsAvx2.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\KernelsAVX2.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
   </ItemGroup>

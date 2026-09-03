@@ -178,7 +178,7 @@
     <ClCompile Include="Kernels\KernelsSSSE3.cpp">
       <EnableEnhancedInstructionSet Condition="'$(Platform)'=='Win32'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
-    <ClCompile Include="Kernels\KernelsAvx2.cpp">
+    <ClCompile Include="Kernels\KernelsAVX2.cpp">
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <ClCompile Include="Filter\CBaseAltaLuxFilter.cpp" />

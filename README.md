@@ -318,7 +318,7 @@ AltaLux/
     Kernels.*          scalar/SSSE3/AVX2 dispatch layer
     KernelsScalar.cpp  scalar baseline kernels
     KernelsSSSE3.cpp   SSSE3 kernels and fallbacks
-    KernelsAvx2.cpp    AVX2 kernels and fallbacks
+    KernelsAVX2.cpp    AVX2 kernels and fallbacks
 AltaLuxUnitTest/
   TestStrategies.cpp          Microsoft C++ unit tests
 AltaLuxBench/

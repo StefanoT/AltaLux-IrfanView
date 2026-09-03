@@ -107,7 +107,7 @@
     <ClCompile Include="Kernels\KernelsSSSE3.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="Kernels\KernelsAvx2.cpp">
+    <ClCompile Include="Kernels\KernelsAVX2.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
   </ItemGroup>
