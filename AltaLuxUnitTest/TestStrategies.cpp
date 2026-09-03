@@ -3,7 +3,7 @@
 
 #include "..\AltaLux\AltaLuxCore.h"
 #include "..\AltaLux\ChromaCorrection.h"
-#include "..\AltaLux\Kernels\AltaLuxKernels.h"
+#include "..\AltaLux\Kernels\Kernels.h"
 #include "..\AltaLux\Filter\CBaseAltaLuxFilter.h"
 #include "..\AltaLux\Filter\CAltaLuxFilterFactory.h"
 #include "..\AltaLux\Segmentation\SelectionCore.h"

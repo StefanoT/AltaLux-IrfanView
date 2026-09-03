@@ -66,10 +66,10 @@
     <ClInclude Include="AltaLuxVersion.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Kernels\AltaLuxKernels.h">
+    <ClInclude Include="Kernels\Kernels.h">
       <Filter>Header Files\Kernels</Filter>
     </ClInclude>
-    <ClInclude Include="Kernels\AltaLuxKernelsInternal.h">
+    <ClInclude Include="Kernels\KernelsInternal.h">
       <Filter>Header Files\Kernels</Filter>
     </ClInclude>
   </ItemGroup>
@@ -98,16 +98,16 @@
     <ClCompile Include="AltaLuxCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Kernels\AltaLuxKernels.cpp">
+    <ClCompile Include="Kernels\Kernels.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="Kernels\AltaLuxKernelsScalar.cpp">
+    <ClCompile Include="Kernels\KernelsScalar.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="Kernels\AltaLuxKernelsSSSE3.cpp">
+    <ClCompile Include="Kernels\KernelsSSSE3.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="Kernels\AltaLuxKernelsAvx2.cpp">
+    <ClCompile Include="Kernels\KernelsAvx2.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
   </ItemGroup>

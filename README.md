@@ -315,10 +315,10 @@ AltaLux/
     CSerialAltaLuxFilter.*    serial reference implementation
     CParallelSplitLoop*       default parallel implementation
   Kernels/
-    AltaLuxKernels.*          scalar/SSSE3/AVX2 dispatch layer
-    AltaLuxKernelsScalar.cpp  scalar baseline kernels
-    AltaLuxKernelsSSSE3.cpp   SSSE3 kernels and fallbacks
-    AltaLuxKernelsAvx2.cpp    AVX2 kernels and fallbacks
+    Kernels.*          scalar/SSSE3/AVX2 dispatch layer
+    KernelsScalar.cpp  scalar baseline kernels
+    KernelsSSSE3.cpp   SSSE3 kernels and fallbacks
+    KernelsAvx2.cpp    AVX2 kernels and fallbacks
 AltaLuxUnitTest/
   TestStrategies.cpp          Microsoft C++ unit tests
 AltaLuxBench/

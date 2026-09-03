@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Kernels/AltaLuxKernels.h"
+#include "Kernels/Kernels.h"
 
 // Shadow chroma correction, driven by a confidence map derived from the Y
 // processing. The stage compares the original luma Y with the enhanced luma

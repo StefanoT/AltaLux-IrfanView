@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AltaLuxKernels.h"
+#include "Kernels.h"
 
 namespace AltaLuxKernels
 {

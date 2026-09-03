@@ -15,7 +15,7 @@ The full license text is in the LICENSE file at the root of the repository.
 #include <malloc.h>
 #include <memory>
 
-#include "..\Kernels\AltaLuxKernels.h"
+#include "..\Kernels\Kernels.h"
 
 namespace
 {

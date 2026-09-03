@@ -1,4 +1,4 @@
-#include "AltaLuxKernelsInternal.h"
+#include "KernelsInternal.h"
 
 #include <immintrin.h>
 

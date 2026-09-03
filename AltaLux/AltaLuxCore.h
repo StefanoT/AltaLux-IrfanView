@@ -2,7 +2,7 @@
 
 #include <Windows.h>
 
-#include "Kernels/AltaLuxKernels.h"
+#include "Kernels/Kernels.h"
 
 struct UiState
 {

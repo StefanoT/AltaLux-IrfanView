@@ -24,7 +24,7 @@
 #include <Windows.h>
 
 #include <CAltaLuxFilterFactory.h>
-#include "..\AltaLux\Kernels\AltaLuxKernels.h"
+#include "..\AltaLux\Kernels\Kernels.h"
 
 using namespace std;
 

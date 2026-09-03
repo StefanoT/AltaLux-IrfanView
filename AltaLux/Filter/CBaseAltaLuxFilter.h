@@ -9,7 +9,7 @@ The full license text is in the LICENSE file at the root of the repository.
 
 #pragma once
 
-#include "..\Kernels\AltaLuxKernels.h"
+#include "..\Kernels\Kernels.h"
 
 //=============================================================================
 // CLAHE (Contrast Limited Adaptive Histogram Equalization) Filter

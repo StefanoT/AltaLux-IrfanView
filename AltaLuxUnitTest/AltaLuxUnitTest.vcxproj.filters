@@ -48,10 +48,10 @@
     <ClInclude Include="..\AltaLux\AltaLuxCore.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\AltaLux\Kernels\AltaLuxKernels.h">
+    <ClInclude Include="..\AltaLux\Kernels\Kernels.h">
       <Filter>Header Files\Kernels</Filter>
     </ClInclude>
-    <ClInclude Include="..\AltaLux\Kernels\AltaLuxKernelsInternal.h">
+    <ClInclude Include="..\AltaLux\Kernels\KernelsInternal.h">
       <Filter>Header Files\Kernels</Filter>
     </ClInclude>
   </ItemGroup>
@@ -77,16 +77,16 @@
     <ClCompile Include="..\AltaLux\AltaLuxCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernels.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\Kernels.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsScalar.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\KernelsScalar.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsSSSE3.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\KernelsSSSE3.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
-    <ClCompile Include="..\AltaLux\Kernels\AltaLuxKernelsAvx2.cpp">
+    <ClCompile Include="..\AltaLux\Kernels\KernelsAvx2.cpp">
       <Filter>Source Files\Kernels</Filter>
     </ClCompile>
   </ItemGroup>

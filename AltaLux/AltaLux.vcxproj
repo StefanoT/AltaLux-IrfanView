@@ -154,8 +154,8 @@
     <ClInclude Include="AltaLuxCore.h" />
     <ClInclude Include="AltaLuxVersion.h" />
     <ClInclude Include="ChromaCorrection.h" />
-    <ClInclude Include="Kernels\AltaLuxKernels.h" />
-    <ClInclude Include="Kernels\AltaLuxKernelsInternal.h" />
+    <ClInclude Include="Kernels\Kernels.h" />
+    <ClInclude Include="Kernels\KernelsInternal.h" />
     <ClInclude Include="Filter\CBaseAltaLuxFilter.h" />
     <ClInclude Include="Filter\CAltaLuxFilterFactory.h" />
     <ClInclude Include="Filter\CParallelSplitLoopAltaLuxFilter.h" />
@@ -173,12 +173,12 @@
     <ClCompile Include="AltaLux.cpp" />
     <ClCompile Include="AltaLuxCore.cpp" />
     <ClCompile Include="ChromaCorrection.cpp" />
-    <ClCompile Include="Kernels\AltaLuxKernels.cpp" />
-    <ClCompile Include="Kernels\AltaLuxKernelsScalar.cpp" />
-    <ClCompile Include="Kernels\AltaLuxKernelsSSSE3.cpp">
+    <ClCompile Include="Kernels\Kernels.cpp" />
+    <ClCompile Include="Kernels\KernelsScalar.cpp" />
+    <ClCompile Include="Kernels\KernelsSSSE3.cpp">
       <EnableEnhancedInstructionSet Condition="'$(Platform)'=='Win32'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
-    <ClCompile Include="Kernels\AltaLuxKernelsAvx2.cpp">
+    <ClCompile Include="Kernels\KernelsAvx2.cpp">
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <ClCompile Include="Filter\CBaseAltaLuxFilter.cpp" />
