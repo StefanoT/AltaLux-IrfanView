@@ -46,7 +46,8 @@ Use a DLL build that matches the IrfanView architecture.
 
 The x64 plug-in can apply AltaLux through MobileSAM-generated object masks. The
 base `AltaLux.dll` remains fully functional without the AI files. To enable
-object selection, extract every file from `AltaLux-AI-x64.zip` directly into
+object selection, extract every file from the versioned
+`AltaLux-AI-x64-<version>.zip` release package directly into
 the same IrfanView `Plugins` folder as `AltaLux.dll`; do not create a subfolder.
 
 The add-on runs locally through ONNX Runtime's CPU provider. No image data is
@@ -455,8 +456,8 @@ The current unit test suite contains 40 tests. Coverage includes:
   a 0-100 slider (default 50 = 25% max attenuation), persisted as
   `ChromaProtection` in the INI file; `0` keeps prior output byte-identical.
 - Added the optional AI object selection add-on: MobileSAM-generated object
-  masks applied through a feathered blend, shipped as the separate
-  `AltaLux-AI-x64.zip` package (x64 only).
+  masks applied through a feathered blend, shipped as the separate, versioned
+  `AltaLux-AI-x64-<version>.zip` release package (x64 only).
 - Unified version reporting: the version resource and the version string
   reported to IrfanView now derive from a single header
   (`AltaLux/AltaLuxVersion.h`).

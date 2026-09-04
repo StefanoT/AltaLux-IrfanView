@@ -16,10 +16,7 @@ env:
   SOLUTION_FILE_PATH: ./AltaLux
 
   # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
   BUILD_CONFIGURATION: Release
-  BUILD_PLATFORM: x64
 
 permissions:
   contents: read
@@ -27,6 +24,20 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x64 outputs to <solution>/x64/Release; the Segmentation project
+          # (ONNX Runtime) is x64-only, so the full solution builds here.
+          - platform: x64
+            output-dir: x64/Release
+            vstest-platform: x64
+          # Win32 outputs to <solution>/Release; AltaLuxSegmentation has no
+          # Win32 config and is skipped by the solution mapping.
+          - platform: Win32
+            output-dir: Release
+            vstest-platform: x86
 
     steps:
     - uses: actions/checkout@v4
@@ -40,11 +51,11 @@ jobs:
     - name: Restore ONNX Runtime
       run: msbuild /t:Restore ${{env.SOLUTION_FILE_PATH}}
 
-    - name: Build x64 solution
+    - name: Build ${{ matrix.platform }} solution
       working-directory: ${{env.GITHUB_WORKSPACE}}
       # Add additional options to the MSBuild command line here (like platform or verbosity level).
       # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=${{env.BUILD_PLATFORM}} ${{env.SOLUTION_FILE_PATH}}
+      run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=${{matrix.platform}} ${{env.SOLUTION_FILE_PATH}}
 
-    - name: Run x64 unit tests
-      run: vstest.console.exe AltaLux/x64/Release/AltaLuxUnitTest.dll /Platform:x64
+    - name: Run ${{ matrix.platform }} unit tests
+      run: vstest.console.exe AltaLux/${{ matrix.output-dir }}/AltaLuxUnitTest.dll /Platform:${{ matrix.vstest-platform }}

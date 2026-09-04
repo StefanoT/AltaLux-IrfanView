@@ -1,4 +1,4 @@
-name: Release x64
+name: Release x64 and Win32
 
 on:
   push:
@@ -8,9 +8,6 @@ on:
 env:
   SOLUTION_FILE_PATH: ./AltaLux
   BUILD_CONFIGURATION: Release
-  BUILD_PLATFORM: x64
-  RELEASE_ASSET_PATH: ./AltaLux/x64/Release/AltaLux.dll
-  AI_RELEASE_ASSET_PATH: ./AltaLux-AI-x64.zip
 
 permissions:
   contents: write
@@ -22,6 +19,17 @@ jobs:
     steps:
       - name: Check out tagged commit
         uses: actions/checkout@v4
+
+      - name: Derive versioned asset names
+        shell: pwsh
+        # Release zips carry the tag so downloads are self-describing, e.g.
+        # AltaLux-Win32-v3.0.0.zip; slashes in tag names would be illegal in
+        # file names and are folded to '-'.
+        run: |
+          $version = "${{ github.ref_name }}" -replace '[/\\]', '-'
+          "X64_RELEASE_ASSET_PATH=AltaLux-x64-$version.zip" | Add-Content $env:GITHUB_ENV
+          "WIN32_RELEASE_ASSET_PATH=AltaLux-Win32-$version.zip" | Add-Content $env:GITHUB_ENV
+          "AI_RELEASE_ASSET_PATH=AltaLux-AI-x64-$version.zip" | Add-Content $env:GITHUB_ENV
 
       - name: Set up Windows 10 SDK
         uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
@@ -35,8 +43,25 @@ jobs:
         run: >-
           msbuild /m /restore
           /p:Configuration=${{ env.BUILD_CONFIGURATION }}
-          /p:Platform=${{ env.BUILD_PLATFORM }}
+          /p:Platform=x64
           ${{ env.SOLUTION_FILE_PATH }}
+
+      - name: Build Win32 DLL
+        run: >-
+          msbuild /m /restore
+          /p:Configuration=${{ env.BUILD_CONFIGURATION }}
+          /p:Platform=Win32
+          ${{ env.SOLUTION_FILE_PATH }}
+
+      - name: Package x64 DLL
+        shell: pwsh
+        # All platform packages are zips carrying the version in the file
+        # name; each unzips to AltaLux.dll for the IrfanView Plugins folder.
+        run: Compress-Archive -Path AltaLux/x64/Release/AltaLux.dll -DestinationPath ${{ env.X64_RELEASE_ASSET_PATH }}
+
+      - name: Package Win32 DLL
+        shell: pwsh
+        run: Compress-Archive -Path AltaLux/Release/AltaLux.dll -DestinationPath ${{ env.WIN32_RELEASE_ASSET_PATH }}
 
       - name: Download pinned MobileSAM model bundle
         env:
@@ -64,7 +89,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "${{ github.ref_name }}"
-          "${{ env.RELEASE_ASSET_PATH }}"
+          "${{ env.X64_RELEASE_ASSET_PATH }}"
+          "${{ env.WIN32_RELEASE_ASSET_PATH }}"
           "${{ env.AI_RELEASE_ASSET_PATH }}"
           --verify-tag
           --generate-notes
