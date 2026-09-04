@@ -27,6 +27,16 @@ namespace
 		return width * height * bitDepth;
 	}
 
+	int RectWidthOf(const RECT& rect)
+	{
+		return rect.right - rect.left;
+	}
+
+	int RectHeightOf(const RECT& rect)
+	{
+		return rect.bottom - rect.top;
+	}
+
 	std::unique_ptr<CBaseAltaLuxFilter> CreateFilter(int width, int height, int regions)
 	{
 		return std::unique_ptr<CBaseAltaLuxFilter>(CAltaLuxFilterFactory::CreateAltaLuxFilter(width, height, regions, regions));
@@ -217,6 +227,49 @@ RECT GetPreviewImageRect(int imageWidth, int imageHeight, const RECT& rectPositi
 	}
 
 	return FitImageRect(rectPosition, imageWidth, imageHeight);
+}
+
+RECT GetZoomedImageRect(int imageWidth, int imageHeight, const RECT& container, double zoomFactor, int panX, int panY)
+{
+	const RECT fitRect = FitImageRect(container, imageWidth, imageHeight);
+	if (zoomFactor <= 1.0)
+	{
+		return fitRect;
+	}
+
+	const int fittedWidth = RectWidthOf(fitRect);
+	const int fittedHeight = RectHeightOf(fitRect);
+	const double zoom = (std::max)(1.0, zoomFactor);
+	const int zoomedWidth = static_cast<int>(fittedWidth * zoom);
+	const int zoomedHeight = static_cast<int>(fittedHeight * zoom);
+	const int centerX = (container.left + container.right) / 2 + panX;
+	const int centerY = (container.top + container.bottom) / 2 + panY;
+
+	RECT zoomed = {};
+	zoomed.left = centerX - zoomedWidth / 2;
+	zoomed.top = centerY - zoomedHeight / 2;
+	zoomed.right = zoomed.left + zoomedWidth;
+	zoomed.bottom = zoomed.top + zoomedHeight;
+	return zoomed;
+}
+
+void ClampPanOffsets(int imageWidth, int imageHeight, const RECT& container, double zoomFactor, int& panX, int& panY)
+{
+	const RECT zoomedRect = GetZoomedImageRect(imageWidth, imageHeight, container, zoomFactor, 0, 0);
+	const int overflowX = RectWidthOf(zoomedRect) - RectWidthOf(container);
+	const int overflowY = RectHeightOf(zoomedRect) - RectHeightOf(container);
+	panX = (overflowX > 0) ? ClampInt(panX, -(overflowX / 2), overflowX / 2) : 0;
+	panY = (overflowY > 0) ? ClampInt(panY, -(overflowY / 2), overflowY / 2) : 0;
+}
+
+double GetActualPixelScale(int imageWidth, int imageHeight, const RECT& container, double zoomFactor)
+{
+	if (imageWidth <= 0 || imageHeight <= 0)
+	{
+		return 1.0;
+	}
+	const RECT zoomedRect = GetZoomedImageRect(imageWidth, imageHeight, container, zoomFactor, 0, 0);
+	return static_cast<double>(RectWidthOf(zoomedRect)) / imageWidth;
 }
 
 bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigned char* targetImage,

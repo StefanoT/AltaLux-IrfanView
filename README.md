@@ -58,10 +58,10 @@ uploaded and AltaLux does not download models at runtime.
 2. Launch AltaLux from the effects menu.
 3. Adjust `Strength`, `Detail`, `Natural look`, and `Chroma protection`.
 4. Drag the vertical divider to compare original and processed output.
-5. Hold `Space` to temporarily show the original.
+5. Hold `Space` (or `Ctrl`) to temporarily show the original.
 6. Double-click the divider to recenter it.
 7. Use `Natural`, `Balanced`, or `Detail` as starting presets.
-8. Use `Zoom` to switch between fit preview and 1:1 crop preview.
+8. Scroll the mouse wheel over the preview to zoom toward the cursor; drag the preview (or drag with the middle button) to pan while zoomed. `Fit` and `1:1` reset the view.
 9. Press `OK` to apply or `Cancel` to discard.
 
 When the optional AI package is installed, use `Select objects`, choose `Add`

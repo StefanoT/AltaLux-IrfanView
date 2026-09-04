@@ -14,6 +14,14 @@ struct UiState
 	bool compareHoldOriginal;
 	bool draggingSplit;
 	int splitX;
+	// Continuous zoom relative to the fit scale (1.0 = fit, larger = zoomed in)
+	double zoomFactor;
+	// Pan of the image rect center from the preview center, in client pixels
+	int panX;
+	int panY;
+	bool draggingPan;
+	int panLastX;
+	int panLastY;
 };
 
 struct BlendWeights
@@ -70,6 +78,9 @@ void ApplyPreset(UiState& state, const Preset& preset);
 bool IsPresetActive(const UiState& state, const Preset& preset, int tolerance);
 RECT FitImageRect(const RECT& container, int imageWidth, int imageHeight);
 RECT GetPreviewImageRect(int imageWidth, int imageHeight, const RECT& rectPosition, bool noRescaling);
+RECT GetZoomedImageRect(int imageWidth, int imageHeight, const RECT& container, double zoomFactor, int panX, int panY);
+void ClampPanOffsets(int imageWidth, int imageHeight, const RECT& container, double zoomFactor, int& panX, int& panY);
+double GetActualPixelScale(int imageWidth, int imageHeight, const RECT& container, double zoomFactor);
 bool ProcessMultiscaleImage(const unsigned char* sourceImage, unsigned char* targetImage, int width, int height,
 	int bitDepth, const UiState& state);
 bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigned char* targetImage,

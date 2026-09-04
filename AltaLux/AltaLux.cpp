@@ -24,8 +24,10 @@ The full license text is in the LICENSE file at the root of the repository.
 #include <cstring>
 #include <cwchar>
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -53,9 +55,68 @@ namespace
 	const int SPLIT_HIT_RADIUS = 8;
 	const int PRESET_TOLERANCE = 3;
 	const UINT_PTR PREVIEW_REFRESH_TIMER_ID = 1;
+	const UINT_PTR PREVIEW_BUSY_TIMER_ID = 2;
 	const UINT PREVIEW_REFRESH_DELAY_MS = 40;
+	const UINT PREVIEW_BUSY_ANIMATION_MS = 30;
 	const UINT WM_ALTALUX_SEGMENTATION_PREPARED = WM_APP + 42;
 	const UINT WM_ALTALUX_SEGMENTATION_COMPLETED = WM_APP + 43;
+	const UINT WM_ALTALUX_PREVIEW_READY = WM_APP + 44;
+	const UINT WM_ALTALUX_APPLY_DONE = WM_APP + 45;
+	const UINT_PTR APPLY_BUSY_TIMER_ID = 1;
+
+	// The plugin DLL is loaded into the IrfanView process, so a DLL manifest
+	// cannot claim DPI awareness for us (the host's manifest wins). Instead we
+	// try to upgrade the process at runtime before the dialog is shown; the
+	// call simply fails if the host already declared its own awareness.
+	void TryEnablePerMonitorDpiAwareness()
+	{
+		using SetProcessDpiAwarenessContextProc = BOOL(WINAPI*)(HANDLE);
+		const HANDLE perMonitorV2 = reinterpret_cast<HANDLE>(-4);
+		HMODULE user32 = GetModuleHandleW(L"user32.dll");
+		if (user32 == nullptr)
+		{
+			return;
+		}
+		auto proc = reinterpret_cast<SetProcessDpiAwarenessContextProc>(
+			GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+		if (proc != nullptr)
+		{
+			proc(perMonitorV2);
+		}
+	}
+
+	UINT gDialogDpi = USER_DEFAULT_SCREEN_DPI;
+
+	UINT GetWindowDpiSafe(HWND hwnd)
+	{
+		using GetDpiForWindowProc = UINT(WINAPI*)(HWND);
+		HMODULE user32 = GetModuleHandleW(L"user32.dll");
+		if (user32 != nullptr)
+		{
+			auto proc = reinterpret_cast<GetDpiForWindowProc>(GetProcAddress(user32, "GetDpiForWindow"));
+			if (proc != nullptr)
+			{
+				const UINT dpi = proc(hwnd);
+				if (dpi != 0)
+				{
+					return dpi;
+				}
+			}
+		}
+		HDC dc = GetDC(hwnd);
+		if (dc == nullptr)
+		{
+			return USER_DEFAULT_SCREEN_DPI;
+		}
+		const UINT dpi = static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX));
+		ReleaseDC(hwnd, dc);
+		return dpi;
+	}
+
+	int ScaleForDpi(int value)
+	{
+		return MulDiv(value, gDialogDpi, USER_DEFAULT_SCREEN_DPI);
+	}
 
 	const std::array<Preset, 3> Presets = { {
 		{ IDC_PRESET_NATURAL, L"Natural", 35, 10, 55 },
@@ -128,6 +189,12 @@ namespace
 		false,
 		false,
 		false,
+		0,
+		1.0,
+		0,
+		0,
+		false,
+		0,
 		0
 	};
 
@@ -159,6 +226,7 @@ namespace
 	ThemeMode gCurrentTheme = ThemeMode::Light;
 	std::unique_ptr<ScopedBrush> gBackgroundBrush = std::make_unique<ScopedBrush>(RGB(255, 255, 255));
 	HFONT gSectionFont = nullptr;
+	HFONT gDialogFont = nullptr;
 
 	HHOOK gKeyboardHook = nullptr;
 	HWND gHookDlg = nullptr;
@@ -179,18 +247,116 @@ namespace
 		GetClientRect(hwnd, &clientRect);
 
 		RECT previewRect = {};
-		previewRect.left = PREVIEW_MARGIN;
-		previewRect.top = PREVIEW_MARGIN;
-		const int minimumPreviewRight = previewRect.left + 320;
-		const int preferredPreviewRight = clientRect.right - PANEL_WIDTH - PANEL_GAP - PREVIEW_MARGIN;
+		previewRect.left = ScaleForDpi(PREVIEW_MARGIN);
+		previewRect.top = ScaleForDpi(PREVIEW_MARGIN);
+		const int minimumPreviewRight = previewRect.left + ScaleForDpi(320);
+		const int preferredPreviewRight = clientRect.right - ScaleForDpi(PANEL_WIDTH + PANEL_GAP + PREVIEW_MARGIN);
 		previewRect.right = preferredPreviewRight > minimumPreviewRight ? preferredPreviewRight : minimumPreviewRight;
-		previewRect.bottom = clientRect.bottom - PREVIEW_MARGIN;
+		previewRect.bottom = clientRect.bottom - ScaleForDpi(PREVIEW_MARGIN);
 		return previewRect;
+	}
+
+	void ClampSplitToPreview(HWND hwnd);
+	void InvalidatePreview(HWND hwnd);
+	RECT GetActiveImageRect(HWND hwnd);
+
+	RECT GetZoomedDestRect(HWND hwnd)
+	{
+		return GetZoomedImageRect(ScaledImageWidth, ScaledImageHeight, GetPreviewRect(hwnd),
+		                          gUiState.zoomFactor, gUiState.panX, gUiState.panY);
+	}
+
+	bool IsImagePannable(HWND hwnd)
+	{
+		const RECT previewRect = GetPreviewRect(hwnd);
+		const RECT destRect = GetZoomedDestRect(hwnd);
+		return RectWidth(destRect) > RectWidth(previewRect) || RectHeight(destRect) > RectHeight(previewRect);
+	}
+
+	void SyncZoomRadioButtons(HWND hwnd)
+	{
+		const bool isFit = gUiState.zoomFactor <= 1.0;
+		const double actualScale = GetActualPixelScale(ScaledImageWidth, ScaledImageHeight,
+			GetPreviewRect(hwnd), gUiState.zoomFactor);
+		const bool isActual = !isFit && (actualScale > 0.99) && (actualScale < 1.01);
+		SendMessage(GetDlgItem(hwnd, IDC_VIEW_FIT), BM_SETCHECK,
+			isFit ? BST_CHECKED : BST_UNCHECKED, 0);
+		SendMessage(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), BM_SETCHECK,
+			isActual ? BST_CHECKED : BST_UNCHECKED, 0);
+	}
+
+	void ResetZoomTo(HWND hwnd, double zoomFactor)
+	{
+		gUiState.zoomFactor = zoomFactor;
+		gUiState.panX = 0;
+		gUiState.panY = 0;
+		gUiState.zoomToSelection = zoomFactor > 1.0;
+		ClampSplitToPreview(hwnd);
+		SyncZoomRadioButtons(hwnd);
+		InvalidatePreview(hwnd);
+	}
+
+	// Zoom about the given client point so the image pixel under the cursor
+	// stays under the cursor; falls back to a centered zoom when the point is
+	// outside the current image rect.
+	void ZoomAtClientPoint(HWND hwnd, int x, int y, double newZoom)
+	{
+		const RECT container = GetPreviewRect(hwnd);
+		newZoom = (std::max)(1.0, (std::min)(32.0, newZoom));
+		if (newZoom <= 1.0)
+		{
+			ResetZoomTo(hwnd, 1.0);
+			return;
+		}
+
+		const RECT oldRect = GetZoomedDestRect(hwnd);
+		const double imageFractionX = static_cast<double>(x - oldRect.left) / RectWidth(oldRect);
+		const double imageFractionY = static_cast<double>(y - oldRect.top) / RectHeight(oldRect);
+
+		const RECT newRect = GetZoomedImageRect(ScaledImageWidth, ScaledImageHeight, container, newZoom, 0, 0);
+		const int centerX = (container.left + container.right) / 2;
+		const int centerY = (container.top + container.bottom) / 2;
+
+		int panX = 0;
+		int panY = 0;
+		if (imageFractionX >= 0.0 && imageFractionX <= 1.0 && imageFractionY >= 0.0 && imageFractionY <= 1.0)
+		{
+			const int anchorLeft = x - static_cast<int>(imageFractionX * RectWidth(newRect));
+			const int anchorTop = y - static_cast<int>(imageFractionY * RectHeight(newRect));
+			panX = anchorLeft - (centerX - RectWidth(newRect) / 2);
+			panY = anchorTop - (centerY - RectHeight(newRect) / 2);
+		}
+
+		ClampPanOffsets(ScaledImageWidth, ScaledImageHeight, container, newZoom, panX, panY);
+		gUiState.zoomFactor = newZoom;
+		gUiState.panX = panX;
+		gUiState.panY = panY;
+		gUiState.zoomToSelection = true;
+		ClampSplitToPreview(hwnd);
+		SyncZoomRadioButtons(hwnd);
+		InvalidatePreview(hwnd);
+	}
+
+	void SetActualSizeZoom(HWND hwnd)
+	{
+		const RECT container = GetPreviewRect(hwnd);
+		const RECT fitRect = FitImageRect(container, ScaledImageWidth, ScaledImageHeight);
+		if (RectWidth(fitRect) <= 0)
+		{
+			ResetZoomTo(hwnd, 1.0);
+			return;
+		}
+		const double actualZoom = static_cast<double>(ScaledImageWidth) / RectWidth(fitRect);
+		ResetZoomTo(hwnd, (std::max)(1.0, actualZoom));
+		gUiState.zoomToSelection = true;
+		SyncZoomRadioButtons(hwnd);
 	}
 
 	RECT GetActiveImageRect(HWND hwnd)
 	{
-		return GetPreviewImageRect(ScaledImageWidth, ScaledImageHeight, GetPreviewRect(hwnd), gUiState.zoomToSelection);
+		RECT visible = GetPreviewRect(hwnd);
+		IntersectRect(&visible, &visible, &GetZoomedDestRect(hwnd));
+		return visible;
 	}
 
 	void CenterSplitInPreview(HWND hwnd)
@@ -265,54 +431,81 @@ namespace
 		memcpy(targetImage, scaledSrc->data(), GetImageByteCount(ScaledImageWidth, ScaledImageHeight));
 	}
 
-	void DoPreviewProcessingV2()
+	// Preview jobs are snapshots of everything the processing kernel needs, so
+	// the worker never touches dialog state that the UI thread mutates while a
+	// job is in flight.
+	struct PreviewJob
 	{
-		auto scaledSrc = ScaledSrcImagePtr.lock();
-		auto scaledProc = ScaledProcImagePtr.lock();
-		if (scaledSrc == nullptr || scaledProc == nullptr)
+		std::uint32_t generation = 0;
+		UiState ui = {};
+		bool selective = false;
+		bool showMask = false;
+		int softness = 3;
+		std::vector<unsigned char> selectionMask;
+	};
+
+	struct PreviewResult
+	{
+		std::uint32_t generation = 0;
+		std::vector<unsigned char> processed;
+		std::vector<unsigned char> originalDisplay;
+		std::vector<unsigned char> processedDisplay;
+	};
+
+	struct PreviewWorkerState
+	{
+		HWND hwnd = nullptr;
+		std::thread thread;
+		std::mutex mutex;
+		std::condition_variable wake;
+		std::optional<PreviewJob> pending;
+		bool stop = false;
+		std::atomic<std::uint32_t> generation{ 0 };
+	};
+
+	std::unique_ptr<PreviewWorkerState> gPreviewWorker;
+	bool gPreviewBusy = false;
+	float gPreviewBusyPosition = 0.0f;
+
+	void ProcessPreviewJob(const PreviewJob& job, const SharedImagePtr& scaledSrc, PreviewResult& result)
+	{
+		if (scaledSrc == nullptr)
 		{
-			return;
-		}
-
-		ProcessMultiscaleImage(scaledSrc->data(), scaledProc->data(), ScaledImageWidth, ScaledImageHeight, ImageBitDepth, gUiState);
-
-		if (gSelectionSession == nullptr || !gSelectionSession->selectiveMode ||
-			gSelectionSession->selectionMask.empty())
-		{
-			if (gSelectionSession != nullptr)
-			{
-				gSelectionSession->previewOriginalDisplay.clear();
-				gSelectionSession->previewProcessedDisplay.clear();
-			}
-			return;
-		}
-
-		const std::size_t previewPixelCount = static_cast<std::size_t>(ScaledImageWidth) * ScaledImageHeight;
-		gSelectionSession->previewMask.resize(previewPixelCount);
-		ResizeMaskNearest(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
-			gSelectionSession->previewMask.data(), ScaledImageWidth, ScaledImageHeight);
-
-		std::vector<unsigned char> previewAlpha;
-		const int previewSoftness = gSelectionSession->softness == 0 ? 0 :
-			(std::max)(1, gSelectionSession->softness / ScalingFactor);
-		if (!BuildFeatheredMask(gSelectionSession->previewMask.data(), ScaledImageWidth, ScaledImageHeight,
-			previewSoftness, previewAlpha))
-		{
-			return;
-		}
-		CompositeWithMask(scaledSrc->data(), scaledProc->data(), scaledProc->data(), previewAlpha.data(),
-			ScaledImageWidth, ScaledImageHeight, ImageBitDepth);
-
-		if (!gSelectionSession->showMask)
-		{
-			gSelectionSession->previewOriginalDisplay.clear();
-			gSelectionSession->previewProcessedDisplay.clear();
 			return;
 		}
 
 		const std::size_t byteCount = static_cast<std::size_t>(GetImageByteCount(ScaledImageWidth, ScaledImageHeight));
-		gSelectionSession->previewOriginalDisplay.assign(scaledSrc->begin(), scaledSrc->begin() + byteCount);
-		gSelectionSession->previewProcessedDisplay.assign(scaledProc->begin(), scaledProc->begin() + byteCount);
+		result.processed.assign(scaledSrc->begin(), scaledSrc->begin() + byteCount);
+		ProcessMultiscaleImage(scaledSrc->data(), result.processed.data(), ScaledImageWidth,
+			ScaledImageHeight, ImageBitDepth, job.ui);
+
+		if (!job.selective || job.selectionMask.empty())
+		{
+			return;
+		}
+
+		const std::size_t previewPixelCount = static_cast<std::size_t>(ScaledImageWidth) * ScaledImageHeight;
+		std::vector<unsigned char> previewMask(previewPixelCount);
+		ResizeMaskNearest(job.selectionMask.data(), ImageWidth, ImageHeight,
+			previewMask.data(), ScaledImageWidth, ScaledImageHeight);
+
+		std::vector<unsigned char> previewAlpha;
+		const int previewSoftness = job.softness == 0 ? 0 : (std::max)(1, job.softness / ScalingFactor);
+		if (!BuildFeatheredMask(previewMask.data(), ScaledImageWidth, ScaledImageHeight,
+			previewSoftness, previewAlpha))
+		{
+			return;
+		}
+		CompositeWithMask(scaledSrc->data(), result.processed.data(), result.processed.data(),
+			previewAlpha.data(), ScaledImageWidth, ScaledImageHeight, ImageBitDepth);
+
+		if (!job.showMask)
+		{
+			return;
+		}
+
+		result.originalDisplay.assign(scaledSrc->begin(), scaledSrc->begin() + byteCount);
+		result.processedDisplay.assign(result.processed.begin(), result.processed.begin() + byteCount);
 		auto applyOverlay = [&](std::vector<unsigned char>& image)
 		{
 			for (std::size_t pixel = 0; pixel < previewPixelCount; ++pixel)
@@ -326,9 +519,303 @@ namespace
 				image[base + 2] = static_cast<unsigned char>((image[base + 2] * inverse + 127U) / 255U);
 			}
 		};
-		applyOverlay(gSelectionSession->previewOriginalDisplay);
-		applyOverlay(gSelectionSession->previewProcessedDisplay);
+		applyOverlay(result.originalDisplay);
+		applyOverlay(result.processedDisplay);
 	}
+
+	void PreviewWorkerLoop(PreviewWorkerState& worker, SharedImagePtr scaledSrc)
+	{
+		for (;;)
+		{
+			PreviewJob job;
+			{
+				std::unique_lock<std::mutex> lock(worker.mutex);
+				worker.wake.wait(lock, [&worker]()
+				{
+					return worker.stop || worker.pending.has_value();
+				});
+				if (worker.stop)
+				{
+					return;
+				}
+				job = std::move(*worker.pending);
+				worker.pending.reset();
+			}
+
+			auto* result = new PreviewResult();
+			result->generation = job.generation;
+			ProcessPreviewJob(job, scaledSrc, *result);
+			if (PostMessage(worker.hwnd, WM_ALTALUX_PREVIEW_READY, 0,
+				reinterpret_cast<LPARAM>(result)) == FALSE)
+			{
+				delete result;
+			}
+		}
+	}
+
+	void StartPreviewWorker(HWND hwnd)
+	{
+		if (gPreviewWorker != nullptr || ScaledSrcImagePtr.lock() == nullptr)
+		{
+			return;
+		}
+		gPreviewWorker = std::make_unique<PreviewWorkerState>();
+		gPreviewWorker->hwnd = hwnd;
+		gPreviewWorker->thread = std::thread(PreviewWorkerLoop, std::ref(*gPreviewWorker),
+			ScaledSrcImagePtr.lock());
+	}
+
+	void StopPreviewWorker()
+	{
+		if (gPreviewWorker == nullptr)
+		{
+			return;
+		}
+		{
+			std::lock_guard<std::mutex> lock(gPreviewWorker->mutex);
+			gPreviewWorker->stop = true;
+		}
+		gPreviewWorker->wake.notify_all();
+		if (gPreviewWorker->thread.joinable())
+		{
+			gPreviewWorker->thread.join();
+		}
+		gPreviewWorker.reset();
+		gPreviewBusy = false;
+	}
+
+	void DiscardPendingPreviewResults(HWND hwnd)
+	{
+		MSG message = {};
+		while (PeekMessage(&message, hwnd, WM_ALTALUX_PREVIEW_READY, WM_ALTALUX_PREVIEW_READY, PM_REMOVE))
+		{
+			delete reinterpret_cast<PreviewResult*>(message.lParam);
+		}
+	}
+
+	void GetPreviewBusyStripRect(HWND hwnd, RECT& stripRect)
+	{
+		const RECT previewRect = GetPreviewRect(hwnd);
+		stripRect.left = previewRect.left;
+		stripRect.top = previewRect.top;
+		stripRect.right = previewRect.right;
+		stripRect.bottom = previewRect.top + 4;
+	}
+
+	void SetPreviewBusy(HWND hwnd, bool busy)
+	{
+		if (gPreviewBusy == busy)
+		{
+			return;
+		}
+		gPreviewBusy = busy;
+		if (busy)
+		{
+			SetTimer(hwnd, PREVIEW_BUSY_TIMER_ID, PREVIEW_BUSY_ANIMATION_MS, nullptr);
+		}
+		else
+		{
+			KillTimer(hwnd, PREVIEW_BUSY_TIMER_ID);
+			RECT stripRect = {};
+			GetPreviewBusyStripRect(hwnd, stripRect);
+			InvalidateRect(hwnd, &stripRect, FALSE);
+		}
+	}
+
+	void DrawPreviewBusyLine(HDC hdc, const RECT& previewRect)
+	{
+		const int width = previewRect.right - previewRect.left;
+		const int band = (std::max)(24, width / 4);
+		const int travel = width + band;
+		int x = previewRect.left + static_cast<int>(gPreviewBusyPosition * travel) - band;
+		x = (std::max)(static_cast<int>(previewRect.left), (std::min)(x, static_cast<int>(previewRect.right) - 1));
+		RECT lineRect = { x, previewRect.top, (std::min)(static_cast<int>(previewRect.right), x + band), previewRect.top + 3 };
+		const HBRUSH brush = CreateSolidBrush(RGB(0, 120, 215));
+		FillRect(hdc, &lineRect, brush);
+		DeleteObject(brush);
+	}
+
+	// Borderless popup shown while the full-resolution image is processed on a
+	// worker thread after the dialog closes; the calling thread pumps messages
+	// so the indeterminate band keeps animating without freezing the host.
+	class ApplyProgressPopup
+	{
+	public:
+		ApplyProgressPopup(HWND parent)
+		{
+			RegisterWindowClass();
+			BufferedPaintInit();
+			RECT parentRect = {};
+			GetWindowRect(parent, &parentRect);
+			const int width = ScaleForDpi(340);
+			const int height = ScaleForDpi(110);
+			const int x = parentRect.left + ((std::max)(0, static_cast<int>(parentRect.right - parentRect.left)) - width) / 2;
+			const int y = parentRect.top + ((std::max)(0, static_cast<int>(parentRect.bottom - parentRect.top)) - height) / 2;
+			hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, ClassName, L"AltaLux",
+				WS_POPUP | WS_BORDER, (std::max)(0, x), (std::max)(0, y), width, height,
+				parent, nullptr, hDll, this);
+			if (hwnd_ != nullptr)
+			{
+				ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+				UpdateWindow(hwnd_);
+				SetTimer(hwnd_, APPLY_BUSY_TIMER_ID, PREVIEW_BUSY_ANIMATION_MS, nullptr);
+			}
+		}
+
+		~ApplyProgressPopup()
+		{
+			if (hwnd_ != nullptr)
+			{
+				DestroyWindow(hwnd_);
+			}
+			BufferedPaintUnInit();
+		}
+
+		HWND hwnd() const { return hwnd_; }
+		bool succeeded() const { return succeeded_; }
+
+		void NotifyDone(bool success)
+		{
+			PostMessage(hwnd_, WM_ALTALUX_APPLY_DONE, success ? 1 : 0, 0);
+		}
+
+		void PumpUntilDone()
+		{
+			MSG message = {};
+			while (!done_ && GetMessage(&message, nullptr, 0, 0) > 0)
+			{
+				TranslateMessage(&message);
+				DispatchMessage(&message);
+			}
+		}
+
+	private:
+		static constexpr const wchar_t* ClassName = L"AltaLuxApplyProgress";
+
+		static void RegisterWindowClass()
+		{
+			WNDCLASSW windowClass = {};
+			windowClass.lpfnWndProc = &ApplyProgressPopup::WindowProc;
+			windowClass.hInstance = hDll;
+			windowClass.hCursor = LoadCursor(nullptr, IDC_WAIT);
+			windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+			windowClass.lpszClassName = ClassName;
+			RegisterClassW(&windowClass);
+		}
+
+		static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+		{
+			ApplyProgressPopup* self = nullptr;
+			if (msg == WM_NCCREATE)
+			{
+				self = reinterpret_cast<ApplyProgressPopup*>(
+					reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
+				SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+			}
+			else
+			{
+				self = reinterpret_cast<ApplyProgressPopup*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+			}
+			if (self != nullptr && self->hwnd_ == hwnd)
+			{
+				return self->HandleMessage(hwnd, msg, wparam, lparam);
+			}
+			return DefWindowProcW(hwnd, msg, wparam, lparam);
+		}
+
+		LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+		{
+			switch (msg)
+			{
+			case WM_ALTALUX_APPLY_DONE:
+				succeeded_ = wparam != 0;
+				done_ = true;
+				DestroyWindow(hwnd);
+				return 0;
+
+			case WM_TIMER:
+				if (wparam == APPLY_BUSY_TIMER_ID)
+				{
+					position_ += 0.02f;
+					if (position_ > 1.0f) position_ = 0.0f;
+					RECT bandRect = {};
+					GetBandRect(bandRect);
+					InvalidateRect(hwnd, &bandRect, FALSE);
+					return 0;
+				}
+				break;
+
+			case WM_PAINT:
+			{
+				PAINTSTRUCT ps = {};
+				HDC hdc = BeginPaint(hwnd, &ps);
+				if (hdc != nullptr)
+				{
+					RECT clientRect = {};
+					GetClientRect(hwnd, &clientRect);
+					HDC paintDc = nullptr;
+					HPAINTBUFFER paintBuffer = BeginBufferedPaint(hdc, &ps.rcPaint,
+						BPBF_COMPATIBLEBITMAP, nullptr, &paintDc);
+					if (paintBuffer == nullptr) paintDc = hdc;
+
+					const bool darkMode = gCurrentTheme == ThemeMode::Dark;
+					FillRect(paintDc, &clientRect, darkMode ?
+	 static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)) : reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+					SetBkMode(paintDc, TRANSPARENT);
+					SetTextColor(paintDc, darkMode ? RGB(245, 245, 245) : RGB(24, 24, 24));
+					HFONT guiFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+					HFONT oldFont = static_cast<HFONT>(SelectObject(paintDc, guiFont));
+					RECT textRect = clientRect;
+					textRect.bottom -= ScaleForDpi(24);
+					DrawTextW(paintDc, L"Enhancing full-resolution image...", -1, &textRect,
+						DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+					SelectObject(paintDc, oldFont);
+
+					RECT bandRect = {};
+					GetBandRect(bandRect);
+					RECT trackRect = bandRect;
+					const HBRUSH trackBrush = CreateSolidBrush(darkMode ? RGB(64, 64, 64) : RGB(228, 228, 228));
+					FillRect(paintDc, &trackRect, trackBrush);
+					DeleteObject(trackBrush);
+					const int trackWidth = trackRect.right - trackRect.left;
+					const int band = (std::max)(24, trackWidth / 4);
+					const int travel = trackWidth + band;
+					int x = trackRect.left + static_cast<int>(position_ * travel) - band;
+					x = (std::max)(static_cast<int>(trackRect.left), (std::min)(x, static_cast<int>(trackRect.right) - 1));
+					RECT lineRect = { x, trackRect.top, x + (std::min)(trackWidth, band), trackRect.bottom };
+					const HBRUSH brush = CreateSolidBrush(RGB(0, 120, 215));
+					FillRect(paintDc, &lineRect, brush);
+					DeleteObject(brush);
+
+					if (paintBuffer != nullptr) EndBufferedPaint(paintBuffer, TRUE);
+					EndPaint(hwnd, &ps);
+				}
+				return 0;
+			}
+
+			case WM_DESTROY:
+				KillTimer(hwnd, APPLY_BUSY_TIMER_ID);
+				hwnd_ = nullptr;
+				return 0;
+			}
+			return DefWindowProcW(hwnd, msg, wparam, lparam);
+		}
+
+		void GetBandRect(RECT& bandRect)
+		{
+			RECT clientRect = {};
+			GetClientRect(hwnd_, &clientRect);
+			bandRect.left = clientRect.left + ScaleForDpi(24);
+			bandRect.right = clientRect.right - ScaleForDpi(24);
+			bandRect.top = clientRect.bottom - ScaleForDpi(22);
+			bandRect.bottom = clientRect.bottom - ScaleForDpi(16);
+		}
+
+		HWND hwnd_ = nullptr;
+		bool done_ = false;
+		bool succeeded_ = false;
+		float position_ = 0.0f;
+	};
 
 	void ApplyPreset(const Preset& preset)
 	{
@@ -357,10 +844,7 @@ namespace
 
 	void UpdateCommandLabels(HWND hwnd)
 	{
-		SendMessage(GetDlgItem(hwnd, IDC_VIEW_FIT), BM_SETCHECK,
-			gUiState.zoomToSelection ? BST_UNCHECKED : BST_CHECKED, 0);
-		SendMessage(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), BM_SETCHECK,
-			gUiState.zoomToSelection ? BST_CHECKED : BST_UNCHECKED, 0);
+		SyncZoomRadioButtons(hwnd);
 		const bool selective = gSelectionSession != nullptr && gSelectionSession->selectiveMode;
 		SetButtonText(hwnd, IDC_MODE_ENTIRE_IMAGE, L"Entire image");
 		SetButtonText(hwnd, IDC_MODE_SELECT_OBJECTS, L"Select objects");
@@ -394,9 +878,54 @@ namespace
 		}
 	}
 
+	BOOL CALLBACK ApplyFontToChild(HWND child, LPARAM font)
+	{
+		SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(font), TRUE);
+		return TRUE;
+	}
+
+	void ApplyDialogFont(HWND hwnd)
+	{
+		if (gDialogFont != nullptr)
+		{
+			DeleteObject(gDialogFont);
+			gDialogFont = nullptr;
+		}
+		LOGFONTW logFont = {};
+		logFont.lfHeight = -ScaleForDpi(9);
+		logFont.lfWeight = FW_NORMAL;
+		logFont.lfCharSet = DEFAULT_CHARSET;
+		logFont.lfQuality = CLEARTYPE_QUALITY;
+		wcscpy_s(logFont.lfFaceName, L"Segoe UI");
+		gDialogFont = CreateFontIndirectW(&logFont);
+		const HFONT font = gDialogFont != nullptr ? gDialogFont :
+			reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+		SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+		EnumChildWindows(hwnd, ApplyFontToChild, reinterpret_cast<LPARAM>(font));
+	}
+
 	void SetSelectionStatus(HWND hwnd, const wchar_t* text)
 	{
 		SetWindowTextW(GetDlgItem(hwnd, IDC_SELECTION_STATUS), text != nullptr ? text : L"");
+	}
+
+	void SetSliderValueText(HWND hwnd, int controlId, int value)
+	{
+		wchar_t text[16];
+		swprintf_s(text, L"%d", value);
+		SetWindowTextW(GetDlgItem(hwnd, controlId), text);
+	}
+
+	void UpdateSliderValues(HWND hwnd)
+	{
+		SetSliderValueText(hwnd, IDC_STRENGTH_VALUE, gUiState.strength);
+		SetSliderValueText(hwnd, IDC_DETAIL_VALUE, gUiState.detail);
+		SetSliderValueText(hwnd, IDC_NATURALLOOK_VALUE, gUiState.naturalLook);
+		SetSliderValueText(hwnd, IDC_CHROMA_VALUE, gUiState.chromaProtection);
+		if (gSelectionSession != nullptr)
+		{
+			SetSliderValueText(hwnd, IDC_EDGE_SOFTNESS_VALUE, gSelectionSession->softness);
+		}
 	}
 
 	void UpdateSelectionControls(HWND hwnd)
@@ -404,7 +933,7 @@ namespace
 		const int selectiveControls[] = {
 			IDC_SELECTION_ADD, IDC_SELECTION_REMOVE, IDC_SELECTION_UNDO, IDC_SELECTION_CLEAR,
 			IDC_SELECTION_SELECT_ALL, IDC_SELECTION_SHOW_MASK, IDC_EDGE_SOFTNESS_STATIC,
-			IDC_EDGE_SOFTNESS_SLIDER, IDC_SELECTION_STATUS, IDC_SELECTION_SECTION
+			IDC_EDGE_SOFTNESS_SLIDER, IDC_EDGE_SOFTNESS_VALUE, IDC_SELECTION_STATUS, IDC_SELECTION_SECTION
 		};
 #if !defined(_WIN64)
 		ShowWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), SW_HIDE);
@@ -442,6 +971,7 @@ namespace
 				gSelectionSession->showMask ? BST_CHECKED : BST_UNCHECKED, 0);
 			SendMessage(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), TBM_SETPOS, TRUE,
 				gSelectionSession->softness);
+			SetSliderValueText(hwnd, IDC_EDGE_SOFTNESS_VALUE, gSelectionSession->softness);
 		}
 		UpdateCommandLabels(hwnd);
 #endif
@@ -453,6 +983,7 @@ namespace
 		SendMessage(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), TBM_SETPOS, TRUE, gUiState.detail);
 		SendMessage(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), TBM_SETPOS, TRUE, gUiState.naturalLook);
 		SendMessage(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), TBM_SETPOS, TRUE, gUiState.chromaProtection);
+		UpdateSliderValues(hwnd);
 		UpdatePresetButtons(hwnd);
 		UpdateCommandLabels(hwnd);
 	}
@@ -482,62 +1013,69 @@ namespace
 		RECT clientRect = {};
 		GetClientRect(hwnd, &clientRect);
 
-		const int panelLeft = previewRect.right + PANEL_GAP;
-		const int panelWidth = clientRect.right - panelLeft - PREVIEW_MARGIN;
-		const int labelHeight = 12;
-		const int helperHeight = 12;
-		const int sliderHeight = 28;
-		const int buttonHeight = 20;
-		const int rowGap = 10;
-		const int top = PREVIEW_MARGIN + 2;
-		const int sectionHeight = 14;
-		const int strengthTop = top + 24;
-		const int detailTop = top + 78;
-		const int naturalTop = top + 148;
-		const int chromaTop = top + 218;
+		const int panelLeft = previewRect.right + ScaleForDpi(PANEL_GAP);
+		const int panelWidth = clientRect.right - panelLeft - ScaleForDpi(PREVIEW_MARGIN);
+		const int labelHeight = ScaleForDpi(12);
+		const int valueWidth = ScaleForDpi(34);
+		const int helperHeight = ScaleForDpi(12);
+		const int sliderHeight = ScaleForDpi(28);
+		const int buttonHeight = ScaleForDpi(20);
+		const int rowGap = ScaleForDpi(10);
+		const int top = ScaleForDpi(PREVIEW_MARGIN + 2);
+		const int sectionHeight = ScaleForDpi(14);
+		const int strengthTop = top + ScaleForDpi(24);
+		const int detailTop = top + ScaleForDpi(78);
+		const int naturalTop = top + ScaleForDpi(148);
+		const int chromaTop = top + ScaleForDpi(218);
 
+		const int labelWidth = panelWidth - valueWidth - ScaleForDpi(4);
 		MoveWindow(GetDlgItem(hwnd, IDC_ENHANCEMENT_SECTION), panelLeft, top, panelWidth, sectionHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, strengthTop, panelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), panelLeft, strengthTop + 14, panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_STATIC), panelLeft, detailTop, panelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), panelLeft, detailTop + 14, panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_HELP_STATIC), panelLeft, detailTop + 46, panelWidth, helperHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_STATIC), panelLeft, naturalTop, panelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), panelLeft, naturalTop + 14, panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, naturalTop + 46, panelWidth, helperHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_STATIC), panelLeft, chromaTop, panelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), panelLeft, chromaTop + 14, panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_HELP_STATIC), panelLeft, chromaTop + 46, panelWidth, helperHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, strengthTop, labelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_VALUE), panelLeft + panelWidth - valueWidth, strengthTop, valueWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), panelLeft, strengthTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_STATIC), panelLeft, detailTop, labelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_VALUE), panelLeft + panelWidth - valueWidth, detailTop, valueWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), panelLeft, detailTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_HELP_STATIC), panelLeft, detailTop + ScaleForDpi(46), panelWidth, helperHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_STATIC), panelLeft, naturalTop, labelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_VALUE), panelLeft + panelWidth - valueWidth, naturalTop, valueWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), panelLeft, naturalTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, naturalTop + ScaleForDpi(46), panelWidth, helperHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_STATIC), panelLeft, chromaTop, labelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_VALUE), panelLeft + panelWidth - valueWidth, chromaTop, valueWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), panelLeft, chromaTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_HELP_STATIC), panelLeft, chromaTop + ScaleForDpi(46), panelWidth, helperHeight, TRUE);
 
 		const int presetWidth = (panelWidth - (2 * rowGap)) / 3;
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + 286, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + 286, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + 286, presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + ScaleForDpi(286), presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + ScaleForDpi(286), presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + ScaleForDpi(286), presetWidth, buttonHeight, TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, top + 320, panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, top + ScaleForDpi(320), panelWidth, sectionHeight, TRUE);
 		const int viewWidth = (panelWidth - rowGap) / 2;
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, top + 340, viewWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + viewWidth + rowGap, top + 340,
-			viewWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, top + ScaleForDpi(340), viewWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + viewWidth + rowGap, top + ScaleForDpi(340),
+			viewWidth, buttonHeight + ScaleForDpi(2), TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, top + 372, panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, top + ScaleForDpi(372), panelWidth, sectionHeight, TRUE);
 		const int modeWidth = (panelWidth - rowGap) / 2;
-		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, top + 392, modeWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + modeWidth + rowGap, top + 392, modeWidth, buttonHeight + 2, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, top + ScaleForDpi(392), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + modeWidth + rowGap, top + ScaleForDpi(392), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
 
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, top + 430, panelWidth, sectionHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, top + 450, modeWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + modeWidth + rowGap, top + 450, modeWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, top + 482, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + presetWidth + rowGap, top + 482, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (presetWidth + rowGap)), top + 482, presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, top + 512, panelWidth, buttonHeight + 2, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, top + 546, panelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, top + 560, panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, top + 594, panelWidth, 28, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, top + ScaleForDpi(430), panelWidth, sectionHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, top + ScaleForDpi(450), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + modeWidth + rowGap, top + ScaleForDpi(450), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, top + ScaleForDpi(482), presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + presetWidth + rowGap, top + ScaleForDpi(482), presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (presetWidth + rowGap)), top + ScaleForDpi(482), presetWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, top + ScaleForDpi(512), panelWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, top + ScaleForDpi(546), labelWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_VALUE), panelLeft + panelWidth - valueWidth, top + ScaleForDpi(546), valueWidth, labelHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, top + ScaleForDpi(560), panelWidth, sliderHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, top + ScaleForDpi(594), panelWidth, ScaleForDpi(28), TRUE);
 
 		const int actionWidth = modeWidth;
-		const int actionTop = clientRect.bottom - PREVIEW_MARGIN - buttonHeight;
+		const int actionTop = clientRect.bottom - ScaleForDpi(PREVIEW_MARGIN) - buttonHeight;
 		MoveWindow(GetDlgItem(hwnd, IDCANCEL), panelLeft + panelWidth - (2 * actionWidth) - rowGap, actionTop, actionWidth, buttonHeight, TRUE);
 		MoveWindow(GetDlgItem(hwnd, IDOK), panelLeft + panelWidth - actionWidth, actionTop, actionWidth, buttonHeight, TRUE);
 
@@ -654,17 +1192,13 @@ namespace
 	bool MapClientPointToSource(HWND hwnd, int x, int y, float& sourceX, float& sourceY)
 	{
 		const RECT imageRect = GetActiveImageRect(hwnd);
-		float scaledX = 0.0f;
-		float scaledY = 0.0f;
-		if (!MapPreviewPointToImage(imageRect, x, y, ScaledImageWidth, ScaledImageHeight, scaledX, scaledY))
+		if (!PtInRect(&imageRect, POINT{ x, y }))
 		{
 			return false;
 		}
-		if (gUiState.zoomToSelection && ScaledImageWidth > RectWidth(imageRect) && ScaledImageHeight > RectHeight(imageRect))
-		{
-			scaledX = static_cast<float>((ScaledImageWidth - RectWidth(imageRect)) / 2 + (x - imageRect.left));
-			scaledY = static_cast<float>((ScaledImageHeight - RectHeight(imageRect)) / 2 + (y - imageRect.top));
-		}
+		const RECT destRect = GetZoomedDestRect(hwnd);
+		const float scaledX = static_cast<float>((x - destRect.left) * ScaledImageWidth) / RectWidth(destRect);
+		const float scaledY = static_cast<float>((y - destRect.top) * ScaledImageHeight) / RectHeight(destRect);
 		sourceX = (scaledX + 0.5f) * ImageWidth / ScaledImageWidth - 0.5f;
 		sourceY = (scaledY + 0.5f) * ImageHeight / ScaledImageHeight - 0.5f;
 		sourceX = (std::max)(0.0f, (std::min)(sourceX, static_cast<float>(ImageWidth - 1)));
@@ -724,11 +1258,31 @@ namespace
 
 	void RefreshPreview(HWND hwnd)
 	{
-		DoPreviewProcessingV2();
 		UpdatePresetButtons(hwnd);
 		UpdateCommandLabels(hwnd);
-		InvalidatePreview(hwnd);
-		UpdateWindow(hwnd);
+		if (gPreviewWorker == nullptr)
+		{
+			InvalidatePreview(hwnd);
+			return;
+		}
+
+		PreviewJob job;
+		job.generation = ++gPreviewWorker->generation;
+		job.ui = gUiState;
+		if (gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+			!gSelectionSession->selectionMask.empty())
+		{
+			job.selective = true;
+			job.showMask = gSelectionSession->showMask;
+			job.softness = gSelectionSession->softness;
+			job.selectionMask = gSelectionSession->selectionMask;
+		}
+		{
+			std::lock_guard<std::mutex> lock(gPreviewWorker->mutex);
+			gPreviewWorker->pending = std::move(job);
+		}
+		gPreviewWorker->wake.notify_one();
+		SetPreviewBusy(hwnd, true);
 	}
 
 	void SchedulePreviewRefresh(HWND hwnd)
@@ -751,28 +1305,21 @@ namespace
 		{
 			const float scaledX = (marker.x + 0.5f) * ScaledImageWidth / ImageWidth - 0.5f;
 			const float scaledY = (marker.y + 0.5f) * ScaledImageHeight / ImageHeight - 0.5f;
-			int clientX = 0;
-			int clientY = 0;
-			if (gUiState.zoomToSelection && ScaledImageWidth > RectWidth(imageRect) && ScaledImageHeight > RectHeight(imageRect))
-			{
-				clientX = imageRect.left + static_cast<int>(scaledX) - (ScaledImageWidth - RectWidth(imageRect)) / 2;
-				clientY = imageRect.top + static_cast<int>(scaledY) - (ScaledImageHeight - RectHeight(imageRect)) / 2;
-			}
-			else
-			{
-				clientX = imageRect.left + static_cast<int>((scaledX + 0.5f) * RectWidth(imageRect) / ScaledImageWidth);
-				clientY = imageRect.top + static_cast<int>((scaledY + 0.5f) * RectHeight(imageRect) / ScaledImageHeight);
-			}
+			const RECT destRect = GetZoomedDestRect(hwnd);
+			const int clientX = destRect.left + static_cast<int>((scaledX + 0.5f) * RectWidth(destRect) / ScaledImageWidth);
+			const int clientY = destRect.top + static_cast<int>((scaledY + 0.5f) * RectHeight(destRect) / ScaledImageHeight);
 			if (clientX < imageRect.left || clientX >= imageRect.right || clientY < imageRect.top || clientY >= imageRect.bottom)
 			{
 				continue;
 			}
 			const COLORREF color = marker.mode == SelectionCombineMode::Add ? RGB(20, 220, 80) : RGB(240, 70, 70);
-			HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+			const int markerRadius = ScaleForDpi(5);
+			HPEN pen = CreatePen(PS_SOLID, ScaleForDpi(2), RGB(255, 255, 255));
 			HBRUSH brush = CreateSolidBrush(color);
 			HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
 			HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, brush));
-			Ellipse(hdc, clientX - 5, clientY - 5, clientX + 6, clientY + 6);
+			Ellipse(hdc, clientX - markerRadius, clientY - markerRadius,
+				clientX + markerRadius + 1, clientY + markerRadius + 1);
 			SelectObject(hdc, oldBrush);
 			SelectObject(hdc, oldPen);
 			DeleteObject(brush);
@@ -817,9 +1364,14 @@ namespace
 				processedToDraw = gSelectionSession->previewProcessedDisplay.data();
 			}
 			DrawMainPreviewComparison(paintDc, &BmHdrCopy, originalToDraw, processedToDraw,
-			                          ScaledImageWidth, ScaledImageHeight, previewRect, gUiState.splitX,
-			                          gUiState.compareHoldOriginal, gUiState.zoomToSelection, darkMode);
+			                          ScaledImageWidth, ScaledImageHeight, previewRect, GetZoomedDestRect(hwnd),
+			                          gUiState.splitX, gUiState.compareHoldOriginal, darkMode);
 			DrawSelectionMarkers(paintDc, hwnd);
+		}
+
+		if (gPreviewBusy)
+		{
+			DrawPreviewBusyLine(paintDc, previewRect);
 		}
 
 		if (paintBuffer != nullptr)
@@ -846,6 +1398,10 @@ namespace
 		gUiState.compareHoldOriginal = false;
 		gUiState.draggingSplit = false;
 		gUiState.splitX = 0;
+		gUiState.zoomFactor = 1.0;
+		gUiState.panX = 0;
+		gUiState.panY = 0;
+		gUiState.draggingPan = false;
 
 		gUiState.strength = ClampInt(gUiState.strength, 0, 100);
 		gUiState.detail = ClampInt(gUiState.detail, 0, 100);
@@ -1012,7 +1568,7 @@ namespace
 			return false;
 		}
 
-		return abs(x - gUiState.splitX) <= SPLIT_HIT_RADIUS;
+		return abs(x - gUiState.splitX) <= ScaleForDpi(SPLIT_HIT_RADIUS);
 	}
 
 	LRESULT CALLBACK CompareHoldHookProc(int code, WPARAM wparam, LPARAM lparam)
@@ -1020,7 +1576,11 @@ namespace
 		if (code == HC_ACTION && wparam == PM_REMOVE && gHookDlg != nullptr)
 		{
 			MSG* msg = reinterpret_cast<MSG*>(lparam);
-			if (msg->wParam == VK_SPACE &&
+			// Space is the primary hold-to-compare key; Ctrl is the modifier
+			// alternative, useful while dragging (pan/split) or when a control
+			// has keyboard focus and would otherwise consume the space bar.
+			const bool holdKey = msg->wParam == VK_SPACE || msg->wParam == VK_CONTROL;
+			if (holdKey &&
 				(msg->message == WM_KEYDOWN || msg->message == WM_KEYUP) &&
 				(msg->hwnd == gHookDlg || IsChild(gHookDlg, msg->hwnd)))
 			{
@@ -1062,16 +1622,28 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_INITDIALOG:
 	{
 		BufferedPaintInit();
+		gDialogDpi = GetWindowDpiSafe(hwnd);
+		SetUIDrawDpi(gDialogDpi);
 		SetClassLongPtr(hwnd, GCL_STYLE, GetClassLongPtr(hwnd, GCL_STYLE) | CS_DBLCLKS);
 		AdjustForDarkMode(hwnd);
 		BOOL useDarkMode = IsDarkModeEnabled();
 		DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+		ApplyDialogFont(hwnd);
 		ApplyPanelTypography(hwnd);
 		SetSliderRanges(hwnd);
 		LayoutControlsV2(hwnd);
+		if (gUiState.zoomToSelection)
+		{
+			SetActualSizeZoom(hwnd);
+		}
+		else
+		{
+			SyncZoomRadioButtons(hwnd);
+		}
 		CenterSplitInPreview(hwnd);
 		UpdateSliders(hwnd);
-		DoPreviewProcessingV2();
+		StartPreviewWorker(hwnd);
+		RefreshPreview(hwnd);
 		UpdateSelectionControls(hwnd);
 		gHookDlg = hwnd;
 		gKeyboardHook = SetWindowsHookExW(WH_GETMESSAGE, CompareHoldHookProc, nullptr, GetCurrentThreadId());
@@ -1080,6 +1652,9 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 	case WM_DESTROY:
 		KillTimer(hwnd, PREVIEW_REFRESH_TIMER_ID);
+		KillTimer(hwnd, PREVIEW_BUSY_TIMER_ID);
+		StopPreviewWorker();
+		DiscardPendingPreviewResults(hwnd);
 		StopSelectionWorker();
 		DiscardPendingSegmentationResults(hwnd);
 		if (gSelectionSession != nullptr)
@@ -1098,10 +1673,38 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			DeleteObject(gSectionFont);
 			gSectionFont = nullptr;
 		}
+		if (gDialogFont != nullptr)
+		{
+			DeleteObject(gDialogFont);
+			gDialogFont = nullptr;
+		}
 		BufferedPaintUnInit();
 		return TRUE;
 
 	case WM_COMMAND:
+		if (HIWORD(wparam) == STN_DBLCLK)
+		{
+			bool reset = true;
+			switch (LOWORD(wparam))
+			{
+			case IDC_STRENGTH_STATIC: gUiState.strength = Constants::DefaultStrength; break;
+			case IDC_DETAIL_STATIC: gUiState.detail = Constants::DefaultDetail; break;
+			case IDC_NATURALLOOK_STATIC: gUiState.naturalLook = Constants::DefaultNatural; break;
+			case IDC_CHROMA_STATIC: gUiState.chromaProtection = Constants::DefaultChromaProtection; break;
+			case IDC_EDGE_SOFTNESS_STATIC:
+				if (gSelectionSession != nullptr) gSelectionSession->softness = 3;
+				else reset = false;
+				break;
+			default: reset = false; break;
+			}
+			if (reset)
+			{
+				UpdateSliders(hwnd);
+				if (gSelectionSession != nullptr) UpdateSelectionControls(hwnd);
+				RefreshPreview(hwnd);
+				return TRUE;
+			}
+		}
 		switch (LOWORD(wparam))
 		{
 		case IDOK:
@@ -1139,15 +1742,11 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			return TRUE;
 
 		case IDC_VIEW_FIT:
-			gUiState.zoomToSelection = false;
-			UpdateCommandLabels(hwnd);
-			InvalidatePreview(hwnd);
+			ResetZoomTo(hwnd, 1.0);
 			return TRUE;
 
 		case IDC_VIEW_ACTUAL:
-			gUiState.zoomToSelection = true;
-			UpdateCommandLabels(hwnd);
-			InvalidatePreview(hwnd);
+			SetActualSizeZoom(hwnd);
 			return TRUE;
 
 		case IDC_MODE_ENTIRE_IMAGE:
@@ -1250,9 +1849,10 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			gUiState.chromaProtection = value;
 		}
 		else if (slider == GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER) && gSelectionSession != nullptr)
-		{
-			gSelectionSession->softness = value;
-		}
+			{
+				gSelectionSession->softness = value;
+			}
+		UpdateSliderValues(hwnd);
 
 		switch (LOWORD(wparam))
 		{
@@ -1276,7 +1876,51 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			RefreshPreview(hwnd);
 			return TRUE;
 		}
+		if (wparam == PREVIEW_BUSY_TIMER_ID)
+		{
+			gPreviewBusyPosition += 0.02f;
+			if (gPreviewBusyPosition > 1.0f)
+			{
+				gPreviewBusyPosition = 0.0f;
+			}
+			RECT stripRect = {};
+			GetPreviewBusyStripRect(hwnd, stripRect);
+			InvalidateRect(hwnd, &stripRect, FALSE);
+			return TRUE;
+		}
 		break;
+
+	case WM_ALTALUX_PREVIEW_READY:
+	{
+		std::unique_ptr<PreviewResult> result(reinterpret_cast<PreviewResult*>(lparam));
+		if (gPreviewWorker == nullptr || result == nullptr ||
+			result->generation != gPreviewWorker->generation.load())
+		{
+			return TRUE;
+		}
+
+		auto scaledProc = ScaledProcImagePtr.lock();
+		if (scaledProc != nullptr && !result->processed.empty())
+		{
+			memcpy(scaledProc->data(), result->processed.data(),
+				GetImageByteCount(ScaledImageWidth, ScaledImageHeight));
+		}
+		if (gSelectionSession != nullptr)
+		{
+			gSelectionSession->previewOriginalDisplay = std::move(result->originalDisplay);
+			gSelectionSession->previewProcessedDisplay = std::move(result->processedDisplay);
+		}
+
+		bool moreWorkQueued = false;
+		{
+			std::lock_guard<std::mutex> lock(gPreviewWorker->mutex);
+			moreWorkQueued = gPreviewWorker->pending.has_value();
+		}
+		SetPreviewBusy(hwnd, moreWorkQueued);
+		InvalidatePreview(hwnd);
+		UpdateWindow(hwnd);
+		return TRUE;
+	}
 
 	case WM_LBUTTONDOWN:
 	{
@@ -1303,6 +1947,31 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				return TRUE;
 			}
 		}
+		if (IsImagePannable(hwnd))
+		{
+			gUiState.draggingPan = true;
+			gUiState.panLastX = x;
+			gUiState.panLastY = y;
+			SetCapture(hwnd);
+			return TRUE;
+		}
+		break;
+	}
+
+	case WM_MBUTTONDOWN:
+	{
+		// Middle button always pans, even in selective mode where the left
+		// button is reserved for object picking.
+		const int x = GET_X_LPARAM(lparam);
+		const int y = GET_Y_LPARAM(lparam);
+		if (IsImagePannable(hwnd))
+		{
+			gUiState.draggingPan = true;
+			gUiState.panLastX = x;
+			gUiState.panLastY = y;
+			SetCapture(hwnd);
+			return TRUE;
+		}
 		break;
 	}
 
@@ -1314,12 +1983,50 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			InvalidatePreview(hwnd);
 			return TRUE;
 		}
+		if (gUiState.draggingPan)
+		{
+			const int x = GET_X_LPARAM(lparam);
+			const int y = GET_Y_LPARAM(lparam);
+			gUiState.panX += x - gUiState.panLastX;
+			gUiState.panY += y - gUiState.panLastY;
+			gUiState.panLastX = x;
+			gUiState.panLastY = y;
+			ClampPanOffsets(ScaledImageWidth, ScaledImageHeight, GetPreviewRect(hwnd),
+				gUiState.zoomFactor, gUiState.panX, gUiState.panY);
+			ClampSplitToPreview(hwnd);
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
 		break;
 
+	case WM_MOUSEWHEEL:
+	{
+		const POINT cursor = { GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+		POINT client = cursor;
+		ScreenToClient(hwnd, &client);
+		const RECT previewRect = GetPreviewRect(hwnd);
+		if (PtInRect(&previewRect, client) && ScaledImageWidth > 0 && ScaledImageHeight > 0)
+		{
+			const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+			const double step = delta > 0 ? 1.25 : 0.8;
+			ZoomAtClientPoint(hwnd, client.x, client.y, gUiState.zoomFactor * step);
+			return TRUE;
+		}
+		break;
+	}
+
 	case WM_LBUTTONUP:
+	case WM_MBUTTONUP:
 		if (gUiState.draggingSplit)
 		{
 			gUiState.draggingSplit = false;
+			ReleaseCapture();
+			InvalidatePreview(hwnd);
+			return TRUE;
+		}
+		if (gUiState.draggingPan)
+		{
+			gUiState.draggingPan = false;
 			ReleaseCapture();
 			InvalidatePreview(hwnd);
 			return TRUE;
@@ -1337,6 +2044,7 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 	case WM_CAPTURECHANGED:
 		gUiState.draggingSplit = false;
+		gUiState.draggingPan = false;
 		break;
 
 	case WM_SETCURSOR:
@@ -1354,6 +2062,11 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			gSelectionSession->ready && PtInRect(&activeImageRect, cursor))
 		{
 			SetCursor(LoadCursor(nullptr, IDC_CROSS));
+			return TRUE;
+		}
+		if (gUiState.draggingPan || (IsImagePannable(hwnd) && PtInRect(&activeImageRect, cursor)))
+		{
+			SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
 			return TRUE;
 		}
 		break;
@@ -1479,11 +2192,26 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return TRUE;
 
+	case WM_DPICHANGED:
+	{
+		gDialogDpi = HIWORD(wparam);
+		SetUIDrawDpi(gDialogDpi);
+		const RECT* suggestedRect = reinterpret_cast<const RECT*>(lparam);
+		SetWindowPos(hwnd, nullptr, suggestedRect->left, suggestedRect->top,
+			suggestedRect->right - suggestedRect->left, suggestedRect->bottom - suggestedRect->top,
+			SWP_NOZORDER | SWP_NOACTIVATE);
+		ApplyDialogFont(hwnd);
+		ApplyPanelTypography(hwnd);
+		LayoutControlsV2(hwnd);
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return TRUE;
+	}
+
 	case WM_GETMINMAXINFO:
 	{
 		MINMAXINFO* minMaxInfo = reinterpret_cast<MINMAXINFO*>(lparam);
-		minMaxInfo->ptMinTrackSize.x = 960;
-		minMaxInfo->ptMinTrackSize.y = 680;
+		minMaxInfo->ptMinTrackSize.x = ScaleForDpi(960);
+		minMaxInfo->ptMinTrackSize.y = ScaleForDpi(680);
 		return TRUE;
 	}
 	}
@@ -1535,6 +2263,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 	{
 		strcpy_s(SetupIniFile, sizeof(SetupIniFile), iniFile);
 		LoadUiStateFromSettings();
+		TryEnablePerMonitorDpiAwareness();
 
 		ComputeScalingFactor();
 		auto scaledSrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
@@ -1572,32 +2301,68 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		gUiState.compareHoldOriginal = false;
 		gUiState.draggingSplit = false;
 		gUiState.splitX = 0;
+		gUiState.zoomFactor = 1.0;
+		gUiState.panX = 0;
+		gUiState.panY = 0;
+		gUiState.draggingPan = false;
 	}
 
-	const bool applySelection = gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
-		gSelectionSession->ready && HasSelectedPixels(gSelectionSession->selectionMask);
-	if (applySelection)
+	auto processFullImage = [&]() -> bool
 	{
-		std::vector<unsigned char> processedImage(srcImage->begin(),
-			srcImage->begin() + GetImageByteCount(ImageWidth, ImageHeight));
-		if (!ProcessMultiscaleImage(srcImage->data(), processedImage.data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+		const bool applySelection = gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+			gSelectionSession->ready && HasSelectedPixels(gSelectionSession->selectionMask);
+		if (applySelection)
 		{
-			gSelectionSession.reset();
-			FullSrcImagePtr.reset();
+			std::vector<unsigned char> processedImage(srcImage->begin(),
+				srcImage->begin() + GetImageByteCount(ImageWidth, ImageHeight));
+			if (!ProcessMultiscaleImage(srcImage->data(), processedImage.data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+			{
+				return false;
+			}
+			std::vector<unsigned char> alphaMask;
+			if (!BuildFeatheredMask(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
+				gSelectionSession->softness, alphaMask) ||
+				!CompositeWithMask(srcImage->data(), processedImage.data(), srcImage->data(), alphaMask.data(),
+					ImageWidth, ImageHeight, ImageBitDepth))
+			{
+				return false;
+			}
+		}
+		else if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+		{
 			return false;
 		}
-		std::vector<unsigned char> alphaMask;
-		if (!BuildFeatheredMask(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
-			gSelectionSession->softness, alphaMask) ||
-			!CompositeWithMask(srcImage->data(), processedImage.data(), srcImage->data(), alphaMask.data(),
-				ImageWidth, ImageHeight, ImageBitDepth))
+		return true;
+	};
+
+	const bool interactiveDialog = (param1 == -1) || (param2 == -1);
+	bool processOk = false;
+	if (interactiveDialog)
+	{
+		// The user just confirmed the dialog; give them feedback while the
+		// full-resolution pass runs instead of freezing IrfanView silently.
+		ApplyProgressPopup progress(hwnd);
+		if (progress.hwnd() != nullptr)
 		{
-			gSelectionSession.reset();
-			FullSrcImagePtr.reset();
-			return false;
+			std::thread applyWorker([&]()
+			{
+				processOk = processFullImage();
+				progress.NotifyDone(processOk);
+			});
+			progress.PumpUntilDone();
+			applyWorker.join();
+		}
+		else
+		{
+			processOk = processFullImage();
 		}
 	}
-	else if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+	else
+	{
+		processOk = processFullImage();
+	}
+
+	if (!processOk)
 	{
 		gSelectionSession.reset();
 		FullSrcImagePtr.reset();
