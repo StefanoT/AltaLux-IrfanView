@@ -66,7 +66,9 @@ uploaded and AltaLux does not download models at runtime.
 9. Press `OK` to apply or `Cancel` to discard.
 
 When the optional AI package is installed, use `Select objects`, choose `Add`
-or `Remove`, and click objects in the preview. `Undo`, `Clear`, `Select all`,
+or `Remove`, and click objects in the preview. While zoomed, dragging the
+preview pans the image; a click without dragging picks the object under the
+cursor (the middle button also pans). `Undo`, `Clear`, `Select all`,
 the mask overlay, and `Edge softness` refine how the filtered result is blended.
 
 If an IrfanView selection is active, AltaLux processes only the selected area.
@@ -270,12 +272,16 @@ Detail=25
 NaturalLook=25
 ChromaProtection=50
 Zoom=0
+WindowRect=-480,60,1280,860
 ```
 
 The old `Intensity` key is read as a fallback only when `Strength` is absent. The
 old `Scale` setting is not surfaced in the v2 UI or parameter model. A missing
 `ChromaProtection` key falls back to the default `50`; set it to `0` to keep the
-pre-3.0 output byte-identical.
+pre-3.0 output byte-identical. `WindowRect` stores the dialog's last
+`left,top,width,height` in screen pixels so its size and position survive
+across invocations; a missing or invalid value keeps the default centered
+placement.
 
 ## Direct Invocation And Batch Parameters
 

@@ -22,6 +22,14 @@ struct UiState
 	bool draggingPan;
 	int panLastX;
 	int panLastY;
+	// Left-button press point while a drag may still turn out to be a pick
+	int panDragOriginX;
+	int panDragOriginY;
+	// True while a selective-mode press has not yet moved enough to count as
+	// a pan, so the release triggers an object pick at these source coords
+	bool pendingPick;
+	float pendingPickX;
+	float pendingPickY;
 };
 
 struct BlendWeights

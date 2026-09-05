@@ -52,7 +52,14 @@ namespace
 	const int PREVIEW_MARGIN = 16;
 	const int PANEL_GAP = 18;
 	const int PANEL_WIDTH = 240;
+	const int MIN_DIALOG_WIDTH = 960;
+	// Tall enough for the full selection panel at 96 DPI (about 790 px of
+	// client area)
+	const int MIN_DIALOG_HEIGHT = 830;
 	const int SPLIT_HIT_RADIUS = 8;
+	// Client-pixel movement beyond which a selective-mode press counts as a
+	// pan instead of an object pick
+	const int PICK_DRAG_SLOP = 4;
 	const int PRESET_TOLERANCE = 3;
 	const UINT_PTR PREVIEW_REFRESH_TIMER_ID = 1;
 	const UINT_PTR PREVIEW_BUSY_TIMER_ID = 2;
@@ -195,7 +202,12 @@ namespace
 		0,
 		false,
 		0,
-		0
+		0,
+		0,
+		0,
+		false,
+		0.0f,
+		0.0f
 	};
 
 	char SetupIniFile[1024] = {};
@@ -226,6 +238,7 @@ namespace
 	ThemeMode gCurrentTheme = ThemeMode::Light;
 	std::unique_ptr<ScopedBrush> gBackgroundBrush = std::make_unique<ScopedBrush>(RGB(255, 255, 255));
 	HFONT gSectionFont = nullptr;
+	HFONT gHelperFont = nullptr;
 	HFONT gDialogFont = nullptr;
 
 	HHOOK gKeyboardHook = nullptr;
@@ -466,6 +479,10 @@ namespace
 	std::unique_ptr<PreviewWorkerState> gPreviewWorker;
 	bool gPreviewBusy = false;
 	float gPreviewBusyPosition = 0.0f;
+	// Display-resolution copies of the preview images for the paint pass;
+	// cleared whenever a preview result replaces the image content.
+	PreviewDisplayCache gOriginalDisplayCache;
+	PreviewDisplayCache gProcessedDisplayCache;
 
 	void ProcessPreviewJob(const PreviewJob& job, const SharedImagePtr& scaledSrc, PreviewResult& result)
 	{
@@ -856,17 +873,30 @@ namespace
 
 	void ApplyPanelTypography(HWND hwnd)
 	{
+		HFONT dialogFont = reinterpret_cast<HFONT>(SendMessage(hwnd, WM_GETFONT, 0, 0));
 		if (gSectionFont != nullptr)
 		{
 			DeleteObject(gSectionFont);
 			gSectionFont = nullptr;
 		}
-		HFONT dialogFont = reinterpret_cast<HFONT>(SendMessage(hwnd, WM_GETFONT, 0, 0));
+		if (gHelperFont != nullptr)
+		{
+			DeleteObject(gHelperFont);
+			gHelperFont = nullptr;
+		}
 		LOGFONTW sectionLogFont = {};
 		if (dialogFont != nullptr && GetObjectW(dialogFont, sizeof(sectionLogFont), &sectionLogFont) != 0)
 		{
 			sectionLogFont.lfWeight = FW_SEMIBOLD;
 			gSectionFont = CreateFontIndirectW(&sectionLogFont);
+		}
+		LOGFONTW helperLogFont = {};
+		if (dialogFont != nullptr && GetObjectW(dialogFont, sizeof(helperLogFont), &helperLogFont) != 0)
+		{
+			helperLogFont.lfWeight = FW_NORMAL;
+			// Helper text sits one size below the 9pt body text
+			helperLogFont.lfHeight = -MulDiv(8, gDialogDpi, 72);
+			gHelperFont = CreateFontIndirectW(&helperLogFont);
 		}
 		const int sectionIds[] = {
 			IDC_ENHANCEMENT_SECTION, IDC_VIEW_SECTION, IDC_APPLY_TO_SECTION, IDC_SELECTION_SECTION
@@ -875,6 +905,14 @@ namespace
 		{
 			SendMessage(GetDlgItem(hwnd, controlId), WM_SETFONT,
 				reinterpret_cast<WPARAM>(gSectionFont != nullptr ? gSectionFont : dialogFont), TRUE);
+		}
+		const int helperIds[] = {
+			IDC_DETAIL_HELP_STATIC, IDC_NATURALLOOK_HELP_STATIC, IDC_CHROMA_HELP_STATIC, IDC_SELECTION_STATUS
+		};
+		for (const int controlId : helperIds)
+		{
+			SendMessage(GetDlgItem(hwnd, controlId), WM_SETFONT,
+				reinterpret_cast<WPARAM>(gHelperFont != nullptr ? gHelperFont : dialogFont), TRUE);
 		}
 	}
 
@@ -892,7 +930,8 @@ namespace
 			gDialogFont = nullptr;
 		}
 		LOGFONTW logFont = {};
-		logFont.lfHeight = -ScaleForDpi(9);
+		// 9pt body text; lfHeight is in pixels, so convert points via the dialog DPI
+		logFont.lfHeight = -MulDiv(9, gDialogDpi, 72);
 		logFont.lfWeight = FW_NORMAL;
 		logFont.lfCharSet = DEFAULT_CHARSET;
 		logFont.lfQuality = CLEARTYPE_QUALITY;
@@ -1013,71 +1052,106 @@ namespace
 		RECT clientRect = {};
 		GetClientRect(hwnd, &clientRect);
 
+		// Vertical rhythm: rows inside a section sit 10-14 design px apart while
+		// every section header gets 22 px of clearance above it, so each section
+		// reads as one group; DrawPanelSectionSeparators adds a hairline under
+		// each header to reinforce the grouping. Text rows are 16 design px tall
+		// so the 9pt body font renders without clipping descenders.
 		const int panelLeft = previewRect.right + ScaleForDpi(PANEL_GAP);
 		const int panelWidth = clientRect.right - panelLeft - ScaleForDpi(PREVIEW_MARGIN);
-		const int labelHeight = ScaleForDpi(12);
+		const int textRowHeight = ScaleForDpi(16);
 		const int valueWidth = ScaleForDpi(34);
-		const int helperHeight = ScaleForDpi(12);
 		const int sliderHeight = ScaleForDpi(28);
-		const int buttonHeight = ScaleForDpi(20);
+		// Every button shares one height so rows line up across sections
+		const int buttonHeight = ScaleForDpi(24);
 		const int rowGap = ScaleForDpi(10);
+		const int sectionClearance = ScaleForDpi(22);
+		const int headerToRowGap = ScaleForDpi(12);
+		const int captionToSliderGap = ScaleForDpi(2);
+		const int sliderToHelperGap = ScaleForDpi(4);
 		const int top = ScaleForDpi(PREVIEW_MARGIN + 2);
-		const int sectionHeight = ScaleForDpi(14);
-		const int strengthTop = top + ScaleForDpi(24);
-		const int detailTop = top + ScaleForDpi(78);
-		const int naturalTop = top + ScaleForDpi(148);
-		const int chromaTop = top + ScaleForDpi(218);
 
 		const int labelWidth = panelWidth - valueWidth - ScaleForDpi(4);
-		MoveWindow(GetDlgItem(hwnd, IDC_ENHANCEMENT_SECTION), panelLeft, top, panelWidth, sectionHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, strengthTop, labelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_VALUE), panelLeft + panelWidth - valueWidth, strengthTop, valueWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), panelLeft, strengthTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_STATIC), panelLeft, detailTop, labelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_VALUE), panelLeft + panelWidth - valueWidth, detailTop, valueWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), panelLeft, detailTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_HELP_STATIC), panelLeft, detailTop + ScaleForDpi(46), panelWidth, helperHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_STATIC), panelLeft, naturalTop, labelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_VALUE), panelLeft + panelWidth - valueWidth, naturalTop, valueWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), panelLeft, naturalTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, naturalTop + ScaleForDpi(46), panelWidth, helperHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_STATIC), panelLeft, chromaTop, labelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_VALUE), panelLeft + panelWidth - valueWidth, chromaTop, valueWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), panelLeft, chromaTop + ScaleForDpi(14), panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_HELP_STATIC), panelLeft, chromaTop + ScaleForDpi(46), panelWidth, helperHeight, TRUE);
+		const int twoButtonWidth = (panelWidth - rowGap) / 2;
+		const int threeButtonWidth = (panelWidth - (2 * rowGap)) / 3;
 
-		const int presetWidth = (panelWidth - (2 * rowGap)) / 3;
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, top + ScaleForDpi(286), presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + presetWidth + rowGap, top + ScaleForDpi(286), presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (presetWidth + rowGap)), top + ScaleForDpi(286), presetWidth, buttonHeight, TRUE);
+		// Rows stack downward from the top margin; y sits at the top of the
+		// row being placed and advances by that row's height plus its gap.
+		int y = top;
+		MoveWindow(GetDlgItem(hwnd, IDC_ENHANCEMENT_SECTION), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + headerToRowGap;
 
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, top + ScaleForDpi(320), panelWidth, sectionHeight, TRUE);
-		const int viewWidth = (panelWidth - rowGap) / 2;
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, top + ScaleForDpi(340), viewWidth, buttonHeight + ScaleForDpi(2), TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + viewWidth + rowGap, top + ScaleForDpi(340),
-			viewWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_STATIC), panelLeft, y, labelWidth, textRowHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_VALUE), panelLeft + panelWidth - valueWidth, y, valueWidth, textRowHeight, TRUE);
+		y += textRowHeight + captionToSliderGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_STRENGTH_SLIDER), panelLeft, y, panelWidth, sliderHeight, TRUE);
+		y += sliderHeight + rowGap;
 
-		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, top + ScaleForDpi(372), panelWidth, sectionHeight, TRUE);
-		const int modeWidth = (panelWidth - rowGap) / 2;
-		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, top + ScaleForDpi(392), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + modeWidth + rowGap, top + ScaleForDpi(392), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_STATIC), panelLeft, y, labelWidth, textRowHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_VALUE), panelLeft + panelWidth - valueWidth, y, valueWidth, textRowHeight, TRUE);
+		y += textRowHeight + captionToSliderGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_SLIDER), panelLeft, y, panelWidth, sliderHeight, TRUE);
+		y += sliderHeight + sliderToHelperGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_DETAIL_HELP_STATIC), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + rowGap;
 
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, top + ScaleForDpi(430), panelWidth, sectionHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, top + ScaleForDpi(450), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + modeWidth + rowGap, top + ScaleForDpi(450), modeWidth, buttonHeight + ScaleForDpi(2), TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, top + ScaleForDpi(482), presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + presetWidth + rowGap, top + ScaleForDpi(482), presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (presetWidth + rowGap)), top + ScaleForDpi(482), presetWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, top + ScaleForDpi(512), panelWidth, buttonHeight + ScaleForDpi(2), TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, top + ScaleForDpi(546), labelWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_VALUE), panelLeft + panelWidth - valueWidth, top + ScaleForDpi(546), valueWidth, labelHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, top + ScaleForDpi(560), panelWidth, sliderHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, top + ScaleForDpi(594), panelWidth, ScaleForDpi(28), TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_STATIC), panelLeft, y, labelWidth, textRowHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_VALUE), panelLeft + panelWidth - valueWidth, y, valueWidth, textRowHeight, TRUE);
+		y += textRowHeight + captionToSliderGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_SLIDER), panelLeft, y, panelWidth, sliderHeight, TRUE);
+		y += sliderHeight + sliderToHelperGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_NATURALLOOK_HELP_STATIC), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + rowGap;
 
-		const int actionWidth = modeWidth;
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_STATIC), panelLeft, y, labelWidth, textRowHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_VALUE), panelLeft + panelWidth - valueWidth, y, valueWidth, textRowHeight, TRUE);
+		y += textRowHeight + captionToSliderGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_SLIDER), panelLeft, y, panelWidth, sliderHeight, TRUE);
+		y += sliderHeight + sliderToHelperGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_CHROMA_HELP_STATIC), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + ScaleForDpi(12);
+
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_NATURAL), panelLeft, y, threeButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_BALANCED), panelLeft + threeButtonWidth + rowGap, y, threeButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_PRESET_DETAIL), panelLeft + (2 * (threeButtonWidth + rowGap)), y, threeButtonWidth, buttonHeight, TRUE);
+		y += buttonHeight;
+
+		y += sectionClearance;
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_SECTION), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + headerToRowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_FIT), panelLeft, y, twoButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_VIEW_ACTUAL), panelLeft + twoButtonWidth + rowGap, y, twoButtonWidth, buttonHeight, TRUE);
+		y += buttonHeight;
+
+		y += sectionClearance;
+		MoveWindow(GetDlgItem(hwnd, IDC_APPLY_TO_SECTION), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + headerToRowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_ENTIRE_IMAGE), panelLeft, y, twoButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_MODE_SELECT_OBJECTS), panelLeft + twoButtonWidth + rowGap, y, twoButtonWidth, buttonHeight, TRUE);
+		y += buttonHeight;
+
+		y += sectionClearance;
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SECTION), panelLeft, y, panelWidth, textRowHeight, TRUE);
+		y += textRowHeight + headerToRowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_ADD), panelLeft, y, twoButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_REMOVE), panelLeft + twoButtonWidth + rowGap, y, twoButtonWidth, buttonHeight, TRUE);
+		y += buttonHeight + rowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_UNDO), panelLeft, y, threeButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_CLEAR), panelLeft + threeButtonWidth + rowGap, y, threeButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SELECT_ALL), panelLeft + (2 * (threeButtonWidth + rowGap)), y, threeButtonWidth, buttonHeight, TRUE);
+		y += buttonHeight + rowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_SHOW_MASK), panelLeft, y, panelWidth, buttonHeight, TRUE);
+		y += buttonHeight + headerToRowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_STATIC), panelLeft, y, labelWidth, textRowHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_VALUE), panelLeft + panelWidth - valueWidth, y, valueWidth, textRowHeight, TRUE);
+		y += textRowHeight + captionToSliderGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_EDGE_SOFTNESS_SLIDER), panelLeft, y, panelWidth, sliderHeight, TRUE);
+		y += sliderHeight + rowGap;
+		MoveWindow(GetDlgItem(hwnd, IDC_SELECTION_STATUS), panelLeft, y, panelWidth, ScaleForDpi(30), TRUE);
+
 		const int actionTop = clientRect.bottom - ScaleForDpi(PREVIEW_MARGIN) - buttonHeight;
-		MoveWindow(GetDlgItem(hwnd, IDCANCEL), panelLeft + panelWidth - (2 * actionWidth) - rowGap, actionTop, actionWidth, buttonHeight, TRUE);
-		MoveWindow(GetDlgItem(hwnd, IDOK), panelLeft + panelWidth - actionWidth, actionTop, actionWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDCANCEL), panelLeft + panelWidth - (2 * twoButtonWidth) - rowGap, actionTop, twoButtonWidth, buttonHeight, TRUE);
+		MoveWindow(GetDlgItem(hwnd, IDOK), panelLeft + panelWidth - twoButtonWidth, actionTop, twoButtonWidth, buttonHeight, TRUE);
 
 		ClampSplitToPreview(hwnd);
 	}
@@ -1327,6 +1401,37 @@ namespace
 		}
 	}
 
+	// Draws a hairline under each panel section header so the panel reads as
+	// distinct groups; hidden sections (e.g. selection on Win32) draw nothing.
+	void DrawPanelSectionSeparators(HDC hdc, HWND hwnd)
+	{
+		const int sectionIds[] = {
+			IDC_ENHANCEMENT_SECTION, IDC_VIEW_SECTION, IDC_APPLY_TO_SECTION, IDC_SELECTION_SECTION
+		};
+		const RECT previewRect = GetPreviewRect(hwnd);
+		RECT clientRect = {};
+		GetClientRect(hwnd, &clientRect);
+		const int panelLeft = previewRect.right + ScaleForDpi(PANEL_GAP);
+		const int panelRight = clientRect.right - ScaleForDpi(PREVIEW_MARGIN);
+		const COLORREF lineColor = gCurrentTheme == ThemeMode::Dark ? RGB(64, 64, 64) : RGB(228, 228, 228);
+		const HBRUSH lineBrush = CreateSolidBrush(lineColor);
+		for (const int controlId : sectionIds)
+		{
+			const HWND header = GetDlgItem(hwnd, controlId);
+			if (header == nullptr || !IsWindowVisible(header))
+			{
+				continue;
+			}
+			RECT headerRect = {};
+			GetWindowRect(header, &headerRect);
+			MapWindowPoints(nullptr, hwnd, reinterpret_cast<LPPOINT>(&headerRect), 2);
+			const int lineTop = headerRect.bottom + ScaleForDpi(4);
+			const RECT lineRect = { panelLeft, lineTop, panelRight, lineTop + (std::max)(1, ScaleForDpi(1)) };
+			FillRect(hdc, &lineRect, lineBrush);
+		}
+		DeleteObject(lineBrush);
+	}
+
 	void HandlePaintMessage(HWND hwnd)
 	{
 		PAINTSTRUCT ps = {};
@@ -1350,6 +1455,7 @@ namespace
 		FillRect(paintDc, &clientRect, gBackgroundBrush->get());
 		FillImageArea(paintDc, previewRect, darkMode ? 18 : 24, darkMode ? 18 : 24, darkMode ? 18 : 28);
 		FrameRect(paintDc, &previewRect, static_cast<HBRUSH>(GetStockObject(darkMode ? DKGRAY_BRUSH : GRAY_BRUSH)));
+		DrawPanelSectionSeparators(paintDc, hwnd);
 
 		auto scaledSrc = ScaledSrcImagePtr.lock();
 		auto scaledProc = ScaledProcImagePtr.lock();
@@ -1365,7 +1471,8 @@ namespace
 			}
 			DrawMainPreviewComparison(paintDc, &BmHdrCopy, originalToDraw, processedToDraw,
 			                          ScaledImageWidth, ScaledImageHeight, previewRect, GetZoomedDestRect(hwnd),
-			                          gUiState.splitX, gUiState.compareHoldOriginal, darkMode);
+			                          gUiState.splitX, gUiState.compareHoldOriginal, darkMode,
+			                          gOriginalDisplayCache, gProcessedDisplayCache);
 			DrawSelectionMarkers(paintDc, hwnd);
 		}
 
@@ -1402,6 +1509,7 @@ namespace
 		gUiState.panX = 0;
 		gUiState.panY = 0;
 		gUiState.draggingPan = false;
+		gUiState.pendingPick = false;
 
 		gUiState.strength = ClampInt(gUiState.strength, 0, 100);
 		gUiState.detail = ClampInt(gUiState.detail, 0, 100);
@@ -1422,6 +1530,56 @@ namespace
 		WritePrivateProfileStringA("AltaLux", "ChromaProtection", valueBuffer, SetupIniFile);
 		sprintf_s(valueBuffer, "%d", gUiState.zoomToSelection ? 1 : 0);
 		WritePrivateProfileStringA("AltaLux", "Zoom", valueBuffer, SetupIniFile);
+	}
+
+	void SaveWindowRectToSettings(HWND hwnd)
+	{
+		RECT windowRect = {};
+		if (!GetWindowRect(hwnd, &windowRect))
+		{
+			return;
+		}
+		char valueBuffer[64] = {};
+		sprintf_s(valueBuffer, "%d,%d,%d,%d", static_cast<int>(windowRect.left), static_cast<int>(windowRect.top),
+			static_cast<int>(windowRect.right - windowRect.left), static_cast<int>(windowRect.bottom - windowRect.top));
+		WritePrivateProfileStringA("AltaLux", "WindowRect", valueBuffer, SetupIniFile);
+	}
+
+	// Restores the last dialog size and position; keeps the template's
+	// centered placement when nothing was saved yet or the saved spot is
+	// unusable (e.g. the monitor it lived on is gone).
+	void RestoreWindowRectFromSettings(HWND hwnd)
+	{
+		char valueBuffer[64] = {};
+		GetPrivateProfileStringA("AltaLux", "WindowRect", "", valueBuffer, sizeof(valueBuffer), SetupIniFile);
+		int left = 0;
+		int top = 0;
+		int width = 0;
+		int height = 0;
+		if (sscanf_s(valueBuffer, "%d,%d,%d,%d", &left, &top, &width, &height) != 4)
+		{
+			return;
+		}
+
+		width = (std::max)(width, ScaleForDpi(MIN_DIALOG_WIDTH));
+		height = (std::max)(height, ScaleForDpi(MIN_DIALOG_HEIGHT));
+		const RECT savedRect = { left, top, left + width, top + height };
+		const HMONITOR monitor = MonitorFromRect(&savedRect, MONITOR_DEFAULTTONEAREST);
+		MONITORINFO monitorInfo = {};
+		monitorInfo.cbSize = sizeof(monitorInfo);
+		if (!GetMonitorInfoA(monitor, &monitorInfo))
+		{
+			return;
+		}
+		const int workLeft = monitorInfo.rcWork.left;
+		const int workTop = monitorInfo.rcWork.top;
+		const int workRight = monitorInfo.rcWork.right;
+		const int workBottom = monitorInfo.rcWork.bottom;
+		width = (std::min)(width, workRight - workLeft);
+		height = (std::min)(height, workBottom - workTop);
+		left = (std::min)((std::max)(left, workLeft), workRight - width);
+		top = (std::min)((std::max)(top, workTop), workBottom - height);
+		SetWindowPos(hwnd, nullptr, left, top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 
 	void ScaleDownImage(unsigned char* sourceImage, int sourceWidth, int sourceHeight, unsigned char* targetImage,
@@ -1631,6 +1789,7 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		ApplyDialogFont(hwnd);
 		ApplyPanelTypography(hwnd);
 		SetSliderRanges(hwnd);
+		RestoreWindowRectFromSettings(hwnd);
 		LayoutControlsV2(hwnd);
 		if (gUiState.zoomToSelection)
 		{
@@ -1651,6 +1810,7 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	}
 
 	case WM_DESTROY:
+		SaveWindowRectToSettings(hwnd);
 		KillTimer(hwnd, PREVIEW_REFRESH_TIMER_ID);
 		KillTimer(hwnd, PREVIEW_BUSY_TIMER_ID);
 		StopPreviewWorker();
@@ -1672,6 +1832,11 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		{
 			DeleteObject(gSectionFont);
 			gSectionFont = nullptr;
+		}
+		if (gHelperFont != nullptr)
+		{
+			DeleteObject(gHelperFont);
+			gHelperFont = nullptr;
 		}
 		if (gDialogFont != nullptr)
 		{
@@ -1910,6 +2075,8 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			gSelectionSession->previewOriginalDisplay = std::move(result->originalDisplay);
 			gSelectionSession->previewProcessedDisplay = std::move(result->processedDisplay);
 		}
+		ClearPreviewDisplayCache(gOriginalDisplayCache);
+		ClearPreviewDisplayCache(gProcessedDisplayCache);
 
 		bool moreWorkQueued = false;
 		{
@@ -1936,23 +2103,30 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			InvalidatePreview(hwnd);
 			return TRUE;
 		}
-		if (gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
-			gSelectionSession->ready && !gSelectionSession->busy)
-		{
-			float sourceX = 0.0f;
-			float sourceY = 0.0f;
-			if (MapClientPointToSource(hwnd, x, y, sourceX, sourceY))
-			{
-				StartPointSegmentation(hwnd, sourceX, sourceY);
-				return TRUE;
-			}
-		}
+		// In selective mode a still press inside the image picks an object on
+		// release, while dragging the same button pans; treat every press as a
+		// potential pan and decide on release whether the gesture stayed still.
+		const bool pickReady = gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+			gSelectionSession->ready && !gSelectionSession->busy;
+		float sourceX = 0.0f;
+		float sourceY = 0.0f;
+		const bool pickPending = pickReady && MapClientPointToSource(hwnd, x, y, sourceX, sourceY);
 		if (IsImagePannable(hwnd))
 		{
 			gUiState.draggingPan = true;
 			gUiState.panLastX = x;
 			gUiState.panLastY = y;
+			gUiState.panDragOriginX = x;
+			gUiState.panDragOriginY = y;
+			gUiState.pendingPick = pickPending;
+			gUiState.pendingPickX = sourceX;
+			gUiState.pendingPickY = sourceY;
 			SetCapture(hwnd);
+			return TRUE;
+		}
+		if (pickPending)
+		{
+			StartPointSegmentation(hwnd, sourceX, sourceY);
 			return TRUE;
 		}
 		break;
@@ -1960,8 +2134,8 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 	case WM_MBUTTONDOWN:
 	{
-		// Middle button always pans, even in selective mode where the left
-		// button is reserved for object picking.
+		// Middle button always pans, even in selective mode where a still
+		// left-click picks an object.
 		const int x = GET_X_LPARAM(lparam);
 		const int y = GET_Y_LPARAM(lparam);
 		if (IsImagePannable(hwnd))
@@ -1969,6 +2143,7 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			gUiState.draggingPan = true;
 			gUiState.panLastX = x;
 			gUiState.panLastY = y;
+			gUiState.pendingPick = false;
 			SetCapture(hwnd);
 			return TRUE;
 		}
@@ -1987,6 +2162,12 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		{
 			const int x = GET_X_LPARAM(lparam);
 			const int y = GET_Y_LPARAM(lparam);
+			if (gUiState.pendingPick &&
+				(abs(x - gUiState.panDragOriginX) > ScaleForDpi(PICK_DRAG_SLOP) ||
+					abs(y - gUiState.panDragOriginY) > ScaleForDpi(PICK_DRAG_SLOP)))
+			{
+				gUiState.pendingPick = false;
+			}
 			gUiState.panX += x - gUiState.panLastX;
 			gUiState.panY += y - gUiState.panLastY;
 			gUiState.panLastX = x;
@@ -2028,7 +2209,13 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		{
 			gUiState.draggingPan = false;
 			ReleaseCapture();
+			const bool pick = msg == WM_LBUTTONUP && gUiState.pendingPick;
+			gUiState.pendingPick = false;
 			InvalidatePreview(hwnd);
+			if (pick)
+			{
+				StartPointSegmentation(hwnd, gUiState.pendingPickX, gUiState.pendingPickY);
+			}
 			return TRUE;
 		}
 		break;
@@ -2045,6 +2232,7 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_CAPTURECHANGED:
 		gUiState.draggingSplit = false;
 		gUiState.draggingPan = false;
+		gUiState.pendingPick = false;
 		break;
 
 	case WM_SETCURSOR:
@@ -2057,6 +2245,11 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
 			return TRUE;
 		}
+		if (gUiState.draggingPan)
+		{
+			SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
+			return TRUE;
+		}
 		const RECT activeImageRect = GetActiveImageRect(hwnd);
 		if (gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
 			gSelectionSession->ready && PtInRect(&activeImageRect, cursor))
@@ -2064,7 +2257,7 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			SetCursor(LoadCursor(nullptr, IDC_CROSS));
 			return TRUE;
 		}
-		if (gUiState.draggingPan || (IsImagePannable(hwnd) && PtInRect(&activeImageRect, cursor)))
+		if (IsImagePannable(hwnd) && PtInRect(&activeImageRect, cursor))
 		{
 			SetCursor(LoadCursor(nullptr, IDC_SIZEALL));
 			return TRUE;
@@ -2210,8 +2403,8 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_GETMINMAXINFO:
 	{
 		MINMAXINFO* minMaxInfo = reinterpret_cast<MINMAXINFO*>(lparam);
-		minMaxInfo->ptMinTrackSize.x = ScaleForDpi(960);
-		minMaxInfo->ptMinTrackSize.y = ScaleForDpi(680);
+		minMaxInfo->ptMinTrackSize.x = ScaleForDpi(MIN_DIALOG_WIDTH);
+		minMaxInfo->ptMinTrackSize.y = ScaleForDpi(MIN_DIALOG_HEIGHT);
 		return TRUE;
 	}
 	}
@@ -2305,6 +2498,7 @@ bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, i
 		gUiState.panX = 0;
 		gUiState.panY = 0;
 		gUiState.draggingPan = false;
+		gUiState.pendingPick = false;
 	}
 
 	auto processFullImage = [&]() -> bool
