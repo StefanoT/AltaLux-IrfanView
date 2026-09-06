@@ -58,4 +58,8 @@ jobs:
       run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=${{matrix.platform}} ${{env.SOLUTION_FILE_PATH}}
 
     - name: Run ${{ matrix.platform }} unit tests
-      run: vstest.console.exe AltaLux/${{ matrix.output-dir }}/AltaLuxUnitTest.dll /Platform:${{ matrix.vstest-platform }}
+      # vstest.console.exe is not on the runner PATH; locate it via vswhere.
+      run: |
+        $vstest = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -find "**\TestPlatform\vstest.console.exe" | Select-Object -First 1
+        if (-not $vstest) { throw "vstest.console.exe not found via vswhere" }
+        & $vstest "AltaLux/${{ matrix.output-dir }}/AltaLuxUnitTest.dll" "/Platform:${{ matrix.vstest-platform }}"
