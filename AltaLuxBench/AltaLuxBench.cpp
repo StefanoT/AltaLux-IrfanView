@@ -401,17 +401,17 @@ void BenchmarkCriticalKernels()
 	});
 	BenchmarkAllImplementations("Multiscale Accumulate Layer", [&](AltaLuxKernels::KernelImplementation implementation)
 	{
-		AltaLuxKernels::AccumulateLayer(accum.data(), rgb32.data(), 0, SAMPLE_PIXELS, 4,
+		AltaLuxKernels::AccumulateLayer(accum.data(), SAMPLE_PIXELS, rgb32.data(), 0, SAMPLE_PIXELS, 4,
 			341, false, implementation);
 	});
 	BenchmarkAllImplementations("RGB24 Accumulate Layer", [&](AltaLuxKernels::KernelImplementation implementation)
 	{
-		AltaLuxKernels::AccumulateLayer(accum.data(), rgb24.data(), 0, SAMPLE_PIXELS, 3,
+		AltaLuxKernels::AccumulateLayer(accum.data(), SAMPLE_PIXELS, rgb24.data(), 0, SAMPLE_PIXELS, 3,
 			341, false, implementation);
 	});
 	BenchmarkAllImplementations("Multiscale Write Image", [&](AltaLuxKernels::KernelImplementation implementation)
 	{
-		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), 0, SAMPLE_PIXELS, 4,
+		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), SAMPLE_PIXELS, 0, SAMPLE_PIXELS, 4,
 			WEIGHT_SCALE_LOG2, WEIGHT_HALF, implementation);
 	});
 	BenchmarkScalarOnlyKernel("Chroma Compute Risk", [&]()

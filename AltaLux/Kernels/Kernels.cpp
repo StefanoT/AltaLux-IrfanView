@@ -242,39 +242,43 @@ namespace AltaLuxKernels
 		MapHistogramScalar(histogram, pixelCount);
 	}
 
-	void AccumulateLayer(unsigned int* accum, const unsigned char* layer, int pixelStart,
-		int pixelEnd, int pixelStride, int weight, bool firstLayer, KernelImplementation implementation)
-	{
-		switch (NormalizeImplementation(implementation))
-		{
-		case KernelImplementation::AVX2:
-			AccumulateLayerAVX2(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
-			break;
-		case KernelImplementation::SSSE3:
-			AccumulateLayerSSSE3(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
-			break;
-		default:
-			AccumulateLayerScalar(accum, layer, pixelStart, pixelEnd, pixelStride, weight, firstLayer);
-			break;
-		}
-	}
-
-	void WriteAccumulatedImage(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf,
+	void AccumulateLayer(unsigned int* accum, int planeStride, const unsigned char* layer,
+		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer,
 		KernelImplementation implementation)
 	{
 		switch (NormalizeImplementation(implementation))
 		{
 		case KernelImplementation::AVX2:
-			WriteAccumulatedImageAVX2(target, accum, pixelStart, pixelEnd, pixelStride,
+			AccumulateLayerAVX2(accum, planeStride, layer, pixelStart, pixelEnd, pixelStride,
+				weight, firstLayer);
+			break;
+		case KernelImplementation::SSSE3:
+			AccumulateLayerSSSE3(accum, planeStride, layer, pixelStart, pixelEnd, pixelStride,
+				weight, firstLayer);
+			break;
+		default:
+			AccumulateLayerScalar(accum, planeStride, layer, pixelStart, pixelEnd, pixelStride,
+				weight, firstLayer);
+			break;
+		}
+	}
+
+	void WriteAccumulatedImage(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf,
+		KernelImplementation implementation)
+	{
+		switch (NormalizeImplementation(implementation))
+		{
+		case KernelImplementation::AVX2:
+			WriteAccumulatedImageAVX2(target, accum, planeStride, pixelStart, pixelEnd, pixelStride,
 				weightScaleLog2, weightHalf);
 			break;
 		case KernelImplementation::SSSE3:
-			WriteAccumulatedImageSSSE3(target, accum, pixelStart, pixelEnd, pixelStride,
+			WriteAccumulatedImageSSSE3(target, accum, planeStride, pixelStart, pixelEnd, pixelStride,
 				weightScaleLog2, weightHalf);
 			break;
 		default:
-			WriteAccumulatedImageScalar(target, accum, pixelStart, pixelEnd, pixelStride,
+			WriteAccumulatedImageScalar(target, accum, planeStride, pixelStart, pixelEnd, pixelStride,
 				weightScaleLog2, weightHalf);
 			break;
 		}

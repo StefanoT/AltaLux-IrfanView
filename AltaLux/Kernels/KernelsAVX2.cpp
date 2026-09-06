@@ -86,38 +86,17 @@ namespace
 			_mm_or_si128(_mm_and_si128(original, alphaMask), colors));
 	}
 
-	// Reorders eight vectors of per-channel RGB32 data from planar lanes
-	// RRRRRRRR/GGGGGGGG/BBBBBBBB into the accumulator's RGBRGB... uint32 triplet layout.
-	inline void BuildAccumTriplets8(__m256i c0, __m256i c1, __m256i c2,
-		__m256i& out0, __m256i& out1, __m256i& out2)
-	{
-		const __m256i out0C0 = _mm256_permutevar8x32_epi32(c0, _mm256_setr_epi32(0, 0, 0, 1, 0, 0, 2, 0));
-		const __m256i out0C1 = _mm256_permutevar8x32_epi32(c1, _mm256_setr_epi32(0, 0, 0, 0, 1, 0, 0, 2));
-		const __m256i out0C2 = _mm256_permutevar8x32_epi32(c2, _mm256_setr_epi32(0, 0, 0, 0, 0, 1, 0, 0));
-		out0 = _mm256_blend_epi32(_mm256_blend_epi32(out0C0, out0C1, 0x92), out0C2, 0x24);
-
-		const __m256i out1C0 = _mm256_permutevar8x32_epi32(c0, _mm256_setr_epi32(0, 3, 0, 0, 4, 0, 0, 5));
-		const __m256i out1C1 = _mm256_permutevar8x32_epi32(c1, _mm256_setr_epi32(0, 0, 3, 0, 0, 4, 0, 0));
-		const __m256i out1C2 = _mm256_permutevar8x32_epi32(c2, _mm256_setr_epi32(2, 0, 0, 3, 0, 0, 4, 0));
-		out1 = _mm256_blend_epi32(_mm256_blend_epi32(out1C0, out1C1, 0x24), out1C2, 0x49);
-
-		const __m256i out2C0 = _mm256_permutevar8x32_epi32(c0, _mm256_setr_epi32(0, 0, 6, 0, 0, 7, 0, 0));
-		const __m256i out2C1 = _mm256_permutevar8x32_epi32(c1, _mm256_setr_epi32(5, 0, 0, 6, 0, 0, 7, 0));
-		const __m256i out2C2 = _mm256_permutevar8x32_epi32(c2, _mm256_setr_epi32(0, 5, 0, 0, 6, 0, 0, 7));
-		out2 = _mm256_blend_epi32(_mm256_blend_epi32(out2C0, out2C1, 0x49), out2C2, 0x92);
-	}
-
 	// Loads eight RGB32/BGR32 pixels, extracts the three color bytes from each
-	// dword, applies the layer weight, and builds three accumulator vectors.
-	inline void LoadWeightedRGB32Accum8(const unsigned char* src, __m256i weightVec,
-		__m256i& w0, __m256i& w1, __m256i& w2)
+	// dword, applies the layer weight, and builds three channel-pure vectors
+	// that the planar accumulator stores without reordering.
+	inline void LoadWeightedRGB32Channels8(const unsigned char* src, __m256i weightVec,
+		__m256i& c0, __m256i& c1, __m256i& c2)
 	{
 		const __m256i channelMask = _mm256_set1_epi32(0xFF);
 		const __m256i pixels = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
-		const __m256i c0 = _mm256_mullo_epi32(_mm256_and_si256(pixels, channelMask), weightVec);
-		const __m256i c1 = _mm256_mullo_epi32(_mm256_and_si256(_mm256_srli_epi32(pixels, 8), channelMask), weightVec);
-		const __m256i c2 = _mm256_mullo_epi32(_mm256_and_si256(_mm256_srli_epi32(pixels, 16), channelMask), weightVec);
-		BuildAccumTriplets8(c0, c1, c2, w0, w1, w2);
+		c0 = _mm256_mullo_epi32(_mm256_and_si256(pixels, channelMask), weightVec);
+		c1 = _mm256_mullo_epi32(_mm256_and_si256(_mm256_srli_epi32(pixels, 8), channelMask), weightVec);
+		c2 = _mm256_mullo_epi32(_mm256_and_si256(_mm256_srli_epi32(pixels, 16), channelMask), weightVec);
 	}
 
 	inline __m256i LoadTwoRGB24ScaleDownChunksAVX2(const unsigned char* row)
@@ -518,7 +497,7 @@ namespace AltaLuxKernels
 	// Accumulates eight RGB/RGBX pixels into the uint32 weighted-sum buffer. Source
 	// bytes are expanded into three AVX2 vectors holding twenty-four channels,
 	// multiplied by the weight, then assigned or added to the accumulator.
-	void AccumulateLayerAVX2(unsigned int* accum, const unsigned char* layer, int pixelStart,
+	void AccumulateLayerAVX2(unsigned int* accum, int planeStride, const unsigned char* layer, int pixelStart,
 		int pixelEnd, int pixelStride, int weight, bool firstLayer)
 	{
 		const __m256i weightVec = _mm256_set1_epi32(weight);
@@ -528,32 +507,37 @@ namespace AltaLuxKernels
 
 		if (pixelStride == 4)
 		{
+			// Planar accumulator: channel-pure vectors store straight into the
+			// R/G/B planes with no triplet reordering.
+			unsigned int* dstR = accum + pixelStart;
+			unsigned int* dstG = dstR + planeStride;
+			unsigned int* dstB = dstG + planeStride;
 			if (firstLayer)
 			{
-				for (; p <= pixelEnd - 8; p += 8, src += 32, dst += 24)
+				for (; p <= pixelEnd - 8; p += 8, src += 32, dstR += 8, dstG += 8, dstB += 8)
 				{
-					__m256i w0, w1, w2;
-					LoadWeightedRGB32Accum8(src, weightVec, w0, w1, w2);
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst), w0);
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 8), w1);
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 16), w2);
+					__m256i c0, c1, c2;
+					LoadWeightedRGB32Channels8(src, weightVec, c0, c1, c2);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dstR), c0);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dstG), c1);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dstB), c2);
 				}
 			}
 			else
 			{
-				for (; p <= pixelEnd - 8; p += 8, src += 32, dst += 24)
+				for (; p <= pixelEnd - 8; p += 8, src += 32, dstR += 8, dstG += 8, dstB += 8)
 				{
-					__m256i w0, w1, w2;
-					LoadWeightedRGB32Accum8(src, weightVec, w0, w1, w2);
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst),
-						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst)), w0));
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 8),
-						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 8)), w1));
-					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 16),
-						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 16)), w2));
+					__m256i c0, c1, c2;
+					LoadWeightedRGB32Channels8(src, weightVec, c0, c1, c2);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dstR),
+						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dstR)), c0));
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dstG),
+						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dstG)), c1));
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dstB),
+						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dstB)), c2));
 				}
 			}
-			AccumulateLayerSSSE3(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			AccumulateLayerSSSE3(accum, planeStride, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 			return;
 		}
 
@@ -595,7 +579,7 @@ namespace AltaLuxKernels
 						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 16)), w2));
 				}
 			}
-			AccumulateLayerSSSE3(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			AccumulateLayerSSSE3(accum, planeStride, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 			return;
 		}
 		if (firstLayer)
@@ -652,36 +636,40 @@ namespace AltaLuxKernels
 	// Three AVX2 vectors hold the twenty-four channel sums; 128-bit halves are
 	// packed into RGB24/RGB32 groups because the final byte layout is 12 bytes per
 	// four pixels before optional alpha preservation.
-	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
+	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
 	{
 		const __m256i roundingVec = _mm256_set1_epi32(weightHalf);
 		const __m128i shiftVec = _mm_cvtsi32_si128(weightScaleLog2);
 		int p = pixelStart;
 		if (pixelStride == 4)
 		{
-			for (; p <= pixelEnd - 8; p += 8)
+			// Planar accumulator: three channel-pure loads replace the
+			// interleaved ones; the interleave happens once here at write-out.
+			const unsigned int* srcR = accum + pixelStart;
+			const unsigned int* srcG = srcR + planeStride;
+			const unsigned int* srcB = srcG + planeStride;
+			for (; p <= pixelEnd - 8; p += 8, srcR += 8, srcG += 8, srcB += 8)
 			{
-				const unsigned int* src = accum + (p * 3);
 				const __m256i e0 = _mm256_srl_epi32(
-					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(src)), roundingVec),
+					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(srcR)), roundingVec),
 					shiftVec);
 				const __m256i e1 = _mm256_srl_epi32(
-					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 8)), roundingVec),
+					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(srcG)), roundingVec),
 					shiftVec);
 				const __m256i e2 = _mm256_srl_epi32(
-					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + 16)), roundingVec),
+					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(srcB)), roundingVec),
 					shiftVec);
 				StoreRGB32Pixels4(target + (p * 4),
-					PackRGBTriplets4(_mm256_castsi256_si128(e0),
-						_mm256_extracti128_si256(e0, 1),
-						_mm256_castsi256_si128(e1)));
+					InterleaveChannels3x4(_mm256_castsi256_si128(e0),
+						_mm256_castsi256_si128(e1),
+						_mm256_castsi256_si128(e2)));
 				StoreRGB32Pixels4(target + ((p + 4) * 4),
-					PackRGBTriplets4(_mm256_extracti128_si256(e1, 1),
-						_mm256_castsi256_si128(e2),
+					InterleaveChannels3x4(_mm256_extracti128_si256(e0, 1),
+						_mm256_extracti128_si256(e1, 1),
 						_mm256_extracti128_si256(e2, 1)));
 			}
-			WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+			WriteAccumulatedImageSSSE3(target, accum, planeStride, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 			return;
 		}
 
@@ -708,7 +696,7 @@ namespace AltaLuxKernels
 						_mm256_castsi256_si128(e2),
 						_mm256_extracti128_si256(e2, 1)));
 			}
-			WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+			WriteAccumulatedImageSSSE3(target, accum, planeStride, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 			return;
 		}
 

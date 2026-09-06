@@ -313,6 +313,8 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 
 	// Raw arrays avoid std::vector value-initialization. The fine layer assigns
 	// every accumulator element, and layerBuffer is overwritten before each use.
+	// The accumulator is 3 * pixelCount dwords: three R/G/B planes for 32-bit
+	// pixels, interleaved triplets for 24-bit (layout rule in Kernels.h).
 	std::unique_ptr<unsigned int[]> accum(new unsigned int[static_cast<size_t>(pixelCount) * 3U]);
 	std::unique_ptr<unsigned char[]> layerBuffer(new unsigned char[static_cast<size_t>(byteCount)]);
 
@@ -326,7 +328,7 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	{
 		RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 		{
-			AltaLuxKernels::AccumulateLayer(accum.get(), buffer, pStart, pEnd, bitDepth,
+			AltaLuxKernels::AccumulateLayer(accum.get(), pixelCount, buffer, pStart, pEnd, bitDepth,
 				weight, firstLayer, implementation);
 		});
 	};
@@ -394,7 +396,7 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 
 	RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 	{
-		AltaLuxKernels::WriteAccumulatedImage(targetImage, accum.get(), pStart, pEnd, bitDepth,
+		AltaLuxKernels::WriteAccumulatedImage(targetImage, accum.get(), pixelCount, pStart, pEnd, bitDepth,
 			kWeightScaleLog2, kWeightHalf, implementation);
 	});
 

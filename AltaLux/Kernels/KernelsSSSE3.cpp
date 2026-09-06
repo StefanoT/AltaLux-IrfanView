@@ -96,45 +96,17 @@ namespace
 			_mm_or_si128(_mm_and_si128(original, alphaMask), colors));
 	}
 
-	// Reorders four vectors of per-channel RGB32 data from planar lanes
-	// RRRR/GGGG/BBBB into the accumulator's RGBRGB... uint32 triplet layout.
-	inline void BuildAccumTriplets4(__m128i c0, __m128i c1, __m128i c2,
-		__m128i& out0, __m128i& out1, __m128i& out2)
-	{
-		const __m128i lane0 = _mm_setr_epi32(-1, 0, 0, 0);
-		const __m128i lane1 = _mm_setr_epi32(0, -1, 0, 0);
-		const __m128i lane2 = _mm_setr_epi32(0, 0, -1, 0);
-		const __m128i lane3 = _mm_setr_epi32(0, 0, 0, -1);
-		const __m128i lanes03 = _mm_or_si128(lane0, lane3);
-
-		out0 = _mm_or_si128(
-			_mm_and_si128(_mm_shuffle_epi32(c0, _MM_SHUFFLE(1, 0, 0, 0)), lanes03),
-			_mm_or_si128(
-				_mm_and_si128(_mm_shuffle_epi32(c1, _MM_SHUFFLE(0, 0, 0, 0)), lane1),
-				_mm_and_si128(_mm_shuffle_epi32(c2, _MM_SHUFFLE(0, 0, 0, 0)), lane2)));
-		out1 = _mm_or_si128(
-			_mm_and_si128(_mm_shuffle_epi32(c1, _MM_SHUFFLE(2, 0, 0, 1)), lanes03),
-			_mm_or_si128(
-				_mm_and_si128(_mm_shuffle_epi32(c2, _MM_SHUFFLE(1, 1, 1, 1)), lane1),
-				_mm_and_si128(_mm_shuffle_epi32(c0, _MM_SHUFFLE(2, 2, 2, 2)), lane2)));
-		out2 = _mm_or_si128(
-			_mm_and_si128(_mm_shuffle_epi32(c2, _MM_SHUFFLE(3, 0, 0, 2)), lanes03),
-			_mm_or_si128(
-				_mm_and_si128(_mm_shuffle_epi32(c0, _MM_SHUFFLE(3, 3, 3, 3)), lane1),
-				_mm_and_si128(_mm_shuffle_epi32(c1, _MM_SHUFFLE(3, 3, 3, 3)), lane2)));
-	}
-
 	// Loads four RGB32/BGR32 pixels, extracts the three color bytes from each
-	// dword, applies the layer weight, and builds three accumulator vectors.
-	inline void LoadWeightedRGB32Accum4(const unsigned char* src, __m128i weightVec,
-		__m128i& w0, __m128i& w1, __m128i& w2)
+	// dword, applies the layer weight, and builds three channel-pure vectors
+	// that the planar accumulator stores without reordering.
+	inline void LoadWeightedRGB32Channels4(const unsigned char* src, __m128i weightVec,
+		__m128i& c0, __m128i& c1, __m128i& c2)
 	{
 		const __m128i channelMask = _mm_set1_epi32(0xFF);
 		const __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
-		const __m128i c0 = MulloEpi32Compat(_mm_and_si128(pixels, channelMask), weightVec);
-		const __m128i c1 = MulloEpi32Compat(_mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask), weightVec);
-		const __m128i c2 = MulloEpi32Compat(_mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask), weightVec);
-		BuildAccumTriplets4(c0, c1, c2, w0, w1, w2);
+		c0 = MulloEpi32Compat(_mm_and_si128(pixels, channelMask), weightVec);
+		c1 = MulloEpi32Compat(_mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask), weightVec);
+		c2 = MulloEpi32Compat(_mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask), weightVec);
 	}
 
 	inline void LoadWeightedRGB24Accum4(const unsigned char* src, __m128i weightVec,
@@ -472,7 +444,7 @@ namespace AltaLuxKernels
 	// Accumulates four RGB/RGBX pixels into the uint32 weighted-sum buffer. Source
 	// bytes are expanded into three vectors holding twelve channels, multiplied by
 	// the layer weight, then either assigned or added to the accumulator.
-	void AccumulateLayerSSSE3(unsigned int* accum, const unsigned char* layer, int pixelStart,
+	void AccumulateLayerSSSE3(unsigned int* accum, int planeStride, const unsigned char* layer, int pixelStart,
 		int pixelEnd, int pixelStride, int weight, bool firstLayer)
 	{
 		const __m128i weightVec = _mm_set1_epi32(weight);
@@ -482,32 +454,37 @@ namespace AltaLuxKernels
 
 		if (pixelStride == 4)
 		{
+			// Planar accumulator: channel-pure vectors store straight into the
+			// R/G/B planes with no triplet reordering.
+			unsigned int* dstR = accum + pixelStart;
+			unsigned int* dstG = dstR + planeStride;
+			unsigned int* dstB = dstG + planeStride;
 			if (firstLayer)
 			{
-				for (; p <= pixelEnd - 4; p += 4, src += 16, dst += 12)
+				for (; p <= pixelEnd - 4; p += 4, src += 16, dstR += 4, dstG += 4, dstB += 4)
 				{
-					__m128i w0, w1, w2;
-					LoadWeightedRGB32Accum4(src, weightVec, w0, w1, w2);
-					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst), w0);
-					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4), w1);
-					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 8), w2);
+					__m128i c0, c1, c2;
+					LoadWeightedRGB32Channels4(src, weightVec, c0, c1, c2);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dstR), c0);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dstG), c1);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dstB), c2);
 				}
 			}
 			else
 			{
-				for (; p <= pixelEnd - 4; p += 4, src += 16, dst += 12)
+				for (; p <= pixelEnd - 4; p += 4, src += 16, dstR += 4, dstG += 4, dstB += 4)
 				{
-					__m128i w0, w1, w2;
-					LoadWeightedRGB32Accum4(src, weightVec, w0, w1, w2);
-					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst),
-						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst)), w0));
-					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 4),
-						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 4)), w1));
-					_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + 8),
-						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 8)), w2));
+					__m128i c0, c1, c2;
+					LoadWeightedRGB32Channels4(src, weightVec, c0, c1, c2);
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dstR),
+						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dstR)), c0));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dstG),
+						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dstG)), c1));
+					_mm_storeu_si128(reinterpret_cast<__m128i*>(dstB),
+						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dstB)), c2));
 				}
 			}
-			AccumulateLayerScalar(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			AccumulateLayerScalar(accum, planeStride, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 			return;
 		}
 
@@ -538,7 +515,7 @@ namespace AltaLuxKernels
 						_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 8)), w2));
 				}
 			}
-			AccumulateLayerScalar(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			AccumulateLayerScalar(accum, planeStride, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 			return;
 		}
 
@@ -586,29 +563,33 @@ namespace AltaLuxKernels
 	// Converts accumulated weighted sums back to RGB bytes four pixels at a time.
 	// Three vectors hold the twelve channel sums; each lane is rounded, shifted,
 	// saturated to bytes, and stored through RGB24 or RGB32 packing helpers.
-	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
+	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
 	{
 		const __m128i roundingVec = _mm_set1_epi32(weightHalf);
 		const __m128i shiftVec = _mm_cvtsi32_si128(weightScaleLog2);
 		int p = pixelStart;
 		if (pixelStride == 4)
 		{
-			for (; p <= pixelEnd - 4; p += 4)
+			// Planar accumulator: three channel-pure loads replace the
+			// interleaved ones; the interleave happens once here at write-out.
+			const unsigned int* srcR = accum + pixelStart;
+			const unsigned int* srcG = srcR + planeStride;
+			const unsigned int* srcB = srcG + planeStride;
+			for (; p <= pixelEnd - 4; p += 4, srcR += 4, srcG += 4, srcB += 4)
 			{
-				const unsigned int* src = accum + (p * 3);
 				const __m128i e0 = _mm_srl_epi32(
-					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src)), roundingVec),
+					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(srcR)), roundingVec),
 					shiftVec);
 				const __m128i e1 = _mm_srl_epi32(
-					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src + 4)), roundingVec),
+					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(srcG)), roundingVec),
 					shiftVec);
 				const __m128i e2 = _mm_srl_epi32(
-					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src + 8)), roundingVec),
+					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(srcB)), roundingVec),
 					shiftVec);
-				StoreRGB32Pixels4(target + (p * 4), PackRGBTriplets4(e0, e1, e2));
+				StoreRGB32Pixels4(target + (p * 4), InterleaveChannels3x4(e0, e1, e2));
 			}
-			WriteAccumulatedImageScalar(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+			WriteAccumulatedImageScalar(target, accum, planeStride, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 			return;
 		}
 
@@ -628,7 +609,7 @@ namespace AltaLuxKernels
 					shiftVec);
 				StoreRGB24Pixels4(target + (p * 3), PackRGBTriplets4(e0, e1, e2));
 			}
-			WriteAccumulatedImageScalar(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+			WriteAccumulatedImageScalar(target, accum, planeStride, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 			return;
 		}
 

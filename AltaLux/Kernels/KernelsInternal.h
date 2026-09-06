@@ -55,10 +55,10 @@ namespace AltaLuxKernels
 		int regionHeight, unsigned int* histogram);
 	void ClipHistogramScalar(unsigned int* histogram, unsigned int clipLimit);
 	void MapHistogramScalar(unsigned int* histogram, unsigned int pixelCount);
-	void AccumulateLayerScalar(unsigned int* accum, const unsigned char* layer, int pixelStart,
-		int pixelEnd, int pixelStride, int weight, bool firstLayer);
-	void WriteAccumulatedImageScalar(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void AccumulateLayerScalar(unsigned int* accum, int planeStride, const unsigned char* layer,
+		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer);
+	void WriteAccumulatedImageScalar(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
 	void InterpolateScalar(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
@@ -86,10 +86,10 @@ namespace AltaLuxKernels
 		const int* reciprocalLut);
 	void ScaleDownBoxSSSE3(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride);
-	void AccumulateLayerSSSE3(unsigned int* accum, const unsigned char* layer, int pixelStart,
-		int pixelEnd, int pixelStride, int weight, bool firstLayer);
-	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void AccumulateLayerSSSE3(unsigned int* accum, int planeStride, const unsigned char* layer,
+		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer);
+	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
 	void ApplyChromaAttenuationSSSE3(unsigned char* target, const unsigned char* enhancedLuma,
 		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 
@@ -107,10 +107,10 @@ namespace AltaLuxKernels
 		const int* reciprocalLut);
 	void ScaleDownBoxAVX2(const unsigned char* source, int sourceWidth, int sourceHeight,
 		unsigned char* target, int scaleFactor, int pixelStride);
-	void AccumulateLayerAVX2(unsigned int* accum, const unsigned char* layer, int pixelStart,
-		int pixelEnd, int pixelStride, int weight, bool firstLayer);
-	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void AccumulateLayerAVX2(unsigned int* accum, int planeStride, const unsigned char* layer,
+		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer);
+	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
 	void ApplyChromaAttenuationAVX2(unsigned char* target, const unsigned char* enhancedLuma,
 		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 }

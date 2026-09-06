@@ -50,7 +50,11 @@
 //                                                    reciprocal lookup and the
 //                                                    scale cap stay scalar there
 //     ScaleDownBox                                   scaleFactor == 2 only
-//     AccumulateLayer / WriteAccumulatedImage        multiscale accumulation
+//     AccumulateLayer / WriteAccumulatedImage        multiscale accumulation;
+//                                                    planar accumulator for
+//                                                    32bpp, interleaved for
+//                                                    24bpp (see the comment on
+//                                                    AccumulateLayer)
 //     ApplyChromaAttenuation                         RGB/BGR, 24 and 32 bpp
 //
 //   Scalar-only (no implementation argument; every tier runs the same code):
@@ -109,10 +113,20 @@ namespace AltaLuxKernels
 	void ClipHistogram(unsigned int* histogram, unsigned int clipLimit);
 	void MapHistogram(unsigned int* histogram, unsigned int pixelCount);
 
-	void AccumulateLayer(unsigned int* accum, const unsigned char* layer, int pixelStart,
-		int pixelEnd, int pixelStride, int weight, bool firstLayer, KernelImplementation implementation);
-	void WriteAccumulatedImage(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf,
+	// The multiscale accumulator holds 3 * planeStride dwords and its layout
+	// follows the source stride. pixelStride 4 (RGB32/BGR32) uses three planes
+	// -- R in accum[0..planeStride), G in [planeStride..2*planeStride) and B in
+	// [2*planeStride..3*planeStride) -- because 32-bit pixels load as
+	// channel-pure vectors that planar stores keep shuffle-free. Other strides
+	// (BGR24) use interleaved triplets, pixel p at accum[3p..3p+2), because
+	// 3-byte pixels already load in interleaved order and a planar store would
+	// force a deinterleave. Callers pass the pixel count as planeStride; the
+	// interleaved layout ignores it.
+	void AccumulateLayer(unsigned int* accum, int planeStride, const unsigned char* layer,
+		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer,
+		KernelImplementation implementation);
+	void WriteAccumulatedImage(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf,
 		KernelImplementation implementation);
 	void Interpolate(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,

@@ -259,10 +259,39 @@ namespace AltaLuxKernels
 		}
 	}
 
-	void AccumulateLayerScalar(unsigned int* accum, const unsigned char* layer, int pixelStart,
-		int pixelEnd, int pixelStride, int weight, bool firstLayer)
+	void AccumulateLayerScalar(unsigned int* accum, int planeStride, const unsigned char* layer,
+		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer)
 	{
 		int sourceBase = pixelStart * pixelStride;
+		if (pixelStride == 4)
+		{
+			// Planar accumulator: one R/G/B dword per pixel in three planes.
+			unsigned int* accumR = accum + pixelStart;
+			unsigned int* accumG = accumR + planeStride;
+			unsigned int* accumB = accumG + planeStride;
+			if (firstLayer)
+			{
+				for (int p = (pixelEnd - pixelStart); p > 0; --p)
+				{
+					*accumR++ = static_cast<unsigned int>(layer[sourceBase] * weight);
+					*accumG++ = static_cast<unsigned int>(layer[sourceBase + 1] * weight);
+					*accumB++ = static_cast<unsigned int>(layer[sourceBase + 2] * weight);
+					sourceBase += 4;
+				}
+			}
+			else
+			{
+				for (int p = (pixelEnd - pixelStart); p > 0; --p)
+				{
+					*accumR++ += static_cast<unsigned int>(layer[sourceBase] * weight);
+					*accumG++ += static_cast<unsigned int>(layer[sourceBase + 1] * weight);
+					*accumB++ += static_cast<unsigned int>(layer[sourceBase + 2] * weight);
+					sourceBase += 4;
+				}
+			}
+			return;
+		}
+
 		int accumBase = pixelStart * 3;
 		if (firstLayer)
 		{
@@ -295,10 +324,28 @@ namespace AltaLuxKernels
 		}
 	}
 
-	void WriteAccumulatedImageScalar(unsigned char* target, const unsigned int* accum, int pixelStart,
-		int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
+	void WriteAccumulatedImageScalar(unsigned char* target, const unsigned int* accum, int planeStride,
+		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf)
 	{
 		int targetBase = pixelStart * pixelStride;
+		if (pixelStride == 4)
+		{
+			const unsigned int* accumR = accum + pixelStart;
+			const unsigned int* accumG = accumR + planeStride;
+			const unsigned int* accumB = accumG + planeStride;
+			for (int p = (pixelEnd - pixelStart); p > 0; --p)
+			{
+				target[targetBase] = ClampToByte(static_cast<int>((accumR[0] + weightHalf) >> weightScaleLog2));
+				target[targetBase + 1] = ClampToByte(static_cast<int>((accumG[0] + weightHalf) >> weightScaleLog2));
+				target[targetBase + 2] = ClampToByte(static_cast<int>((accumB[0] + weightHalf) >> weightScaleLog2));
+				++accumR;
+				++accumG;
+				++accumB;
+				targetBase += 4;
+			}
+			return;
+		}
+
 		int accumBase = pixelStart * 3;
 		for (int p = (pixelEnd - pixelStart); p > 0; --p)
 		{
