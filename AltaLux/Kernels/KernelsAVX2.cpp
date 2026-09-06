@@ -4,23 +4,6 @@
 
 namespace
 {
-	struct ScaleCapLutTable
-	{
-		int table[256];
-	};
-
-	// Lookup table used by RGB32 luma injection to cap the scale factor so no
-	// color channel exceeds 255. AVX2 gathers this by max input channel value.
-	const ScaleCapLutTable g_ScaleCapLut = []() {
-		ScaleCapLutTable lut = {};
-		lut.table[0] = 0x7FFFFFFF;
-		for (int value = 1; value < 256; ++value)
-		{
-			lut.table[value] = (255 << 8) / value;
-		}
-		return lut;
-	}();
-
 	inline __m128i CalculateRGBLuma4FromPacked(__m128i pixels, __m128i factors,
 		__m128i roundingOffset, __m128i shiftCount);
 

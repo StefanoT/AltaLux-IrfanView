@@ -9,20 +9,25 @@ namespace AltaLuxKernels
 		return static_cast<unsigned char>(value < 0 ? 0 : (value > 255 ? 255 : value));
 	}
 
+	// Scale-cap lookup for the RGB inject kernels: table[maxChannel] holds
+	// (255 << 8) / maxChannel so the largest channel maps to at most 255 without
+	// drifting in hue, with a huge sentinel at index 0 that leaves black pixels
+	// uncapped. The 1 KiB table replaces a per-pixel integer division in the
+	// scalar and SSSE3 inject paths; the AVX2 tier gathers the same table.
+	struct ScaleCapLutTable
+	{
+		int table[256];
+	};
+
+	extern const ScaleCapLutTable g_ScaleCapLut;
+
 	inline int ComputeRGBScale(int newY, int oldY, int c0, int c1, int c2, const int* reciprocalLut)
 	{
 		int scale = (newY * reciprocalLut[oldY] + (1 << 7)) >> 8;
 		int maxChannel = c0 > c1 ? c0 : c1;
 		maxChannel = maxChannel > c2 ? maxChannel : c2;
-		if (maxChannel > 0)
-		{
-			const int scaleCap = (255 << 8) / maxChannel;
-			if (scale > scaleCap)
-			{
-				scale = scaleCap;
-			}
-		}
-		return scale;
+		const int scaleCap = g_ScaleCapLut.table[maxChannel];
+		return scale > scaleCap ? scaleCap : scale;
 	}
 
 	inline void ApplyRGBScale(unsigned char* pixel, int scale)

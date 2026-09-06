@@ -4,6 +4,19 @@
 
 namespace AltaLuxKernels
 {
+	// Built once at DLL load, like the filter layer's reciprocal table. Values
+	// are exactly what ComputeRGBScale used to compute per pixel: the sentinel
+	// at index 0 reproduces the old "only cap when maxChannel > 0" behavior.
+	extern const ScaleCapLutTable g_ScaleCapLut = []() {
+		ScaleCapLutTable lut = {};
+		lut.table[0] = 0x7FFFFFFF;
+		for (int value = 1; value < 256; ++value)
+		{
+			lut.table[value] = (255 << 8) / value;
+		}
+		return lut;
+	}();
+
 	namespace
 	{
 		const int LumaMapSize = 256;
