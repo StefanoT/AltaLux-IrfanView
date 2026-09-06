@@ -342,10 +342,11 @@ namespace AltaLuxKernels
 
 	// Scalar-only operation: the combination is dominated by a randomly indexed
 	// 64K-entry gain table; an AVX2 gather version measured 2.3x slower than
-	// these scalar loads on random 4K data, so every tier runs this loop.
+	// these scalar loads on random 4K data, so every tier runs this loop. The
+	// table is byte-packed (64 KiB) so the random accesses stay L2-resident.
 	void ComputeChromaRisk(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
 		const unsigned char* activity, unsigned char* risk, int pixelCount,
-		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8)
+		const unsigned char* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8)
 	{
 		ComputeChromaRiskScalar(originalLuma, enhancedLuma, activity, risk, pixelCount,
 			gainRiskLut, activityRiskLut, textureFloorQ8);

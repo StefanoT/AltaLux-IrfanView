@@ -67,7 +67,7 @@ namespace AltaLuxKernels
 		int width, int height);
 	void BlurRiskMapScalar(unsigned char* risk, unsigned char* temp, int width, int height);	void ComputeChromaRiskScalar(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
 		const unsigned char* activity, unsigned char* risk, int pixelCount,
-		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8);
+		const unsigned char* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8);
 	void ApplyChromaAttenuationScalar(unsigned char* target, const unsigned char* enhancedLuma,
 		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 

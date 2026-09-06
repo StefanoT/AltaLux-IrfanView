@@ -334,7 +334,9 @@ void BenchmarkCriticalKernels()
 	vector<unsigned int> clipHistogramBatchSource(HISTOGRAM_CLIP_BENCHMARK_BATCH * 256);
 	vector<unsigned int> mapHistogramBatch(HISTOGRAM_MAP_BENCHMARK_BATCH * 256);
 	vector<unsigned int> mapHistogramBatchSource(HISTOGRAM_MAP_BENCHMARK_BATCH * 256);
-	vector<unsigned int> gainRiskLut(256 * 256);
+	// Byte-packed like the production gain table: 64 KiB stays L2-resident,
+	// which is part of what the risk-pass benchmark measures.
+	vector<unsigned char> gainRiskLut(256 * 256);
 	vector<unsigned int> activityRiskLut(256);
 	int reciprocalLut[256] = {};
 
@@ -351,7 +353,7 @@ void BenchmarkCriticalKernels()
 	for (int i = 0; i < ACCUM_SAMPLE_SIZE; ++i)
 		accum[i] = static_cast<unsigned int>((i * 37) & 0x3FFFF);
 	for (size_t k = 0; k < gainRiskLut.size(); ++k)
-		gainRiskLut[k] = static_cast<unsigned int>((k * 2654435761U) >> 24) & 0xFFU;
+		gainRiskLut[k] = static_cast<unsigned char>((k * 2654435761U) >> 24);
 	for (size_t k = 0; k < activityRiskLut.size(); ++k)
 		activityRiskLut[k] = static_cast<unsigned int>(((k * 97U) + 13U) & 0xFFU);
 	for (int i = 0; i < 256; ++i)
@@ -377,6 +379,22 @@ void BenchmarkCriticalKernels()
 		memcpy(target.data(), rgb32.data(), target.size());
 		AltaLuxKernels::InjectRGBLuma(target.data(), luma.data(), SAMPLE_PIXELS, 4,
 			Y_RED_SCALE, Y_GREEN_SCALE, Y_BLUE_SCALE, SCALING_LOG, reciprocalLut, implementation);
+	});
+	// The inject variant the production pipeline actually calls (it caches the
+	// original luma during extraction), for both DIB strides; the same random
+	// plane stands in for new and original luma because the kernel's math and
+	// memory pattern do not depend on the two differing.
+	BenchmarkAllImplementations("RGB32 Inject Luma (cached original)", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		memcpy(target.data(), rgb32.data(), target.size());
+		AltaLuxKernels::InjectRGBLumaWithOriginalLuma(target.data(), luma.data(), luma.data(),
+			SAMPLE_PIXELS, 4, reciprocalLut, implementation);
+	});
+	BenchmarkAllImplementations("RGB24 Inject Luma (cached original)", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		memcpy(target.data(), rgb24.data(), rgb24.size());
+		AltaLuxKernels::InjectRGBLumaWithOriginalLuma(target.data(), luma.data(), luma.data(),
+			SAMPLE_PIXELS, 3, reciprocalLut, implementation);
 	});
 	BenchmarkAllImplementations("RGB24 Scale Down Box 2x", [&](AltaLuxKernels::KernelImplementation implementation)
 	{

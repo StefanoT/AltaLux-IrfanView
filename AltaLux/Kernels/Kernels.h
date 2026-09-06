@@ -133,11 +133,8 @@ namespace AltaLuxKernels
 
 	// Shadow chroma correction kernels. The per-pixel risk map estimates how
 	// unreliable the chroma of a strongly lifted, originally dark, flat pixel
-	// is, so the caller can attenuate it toward the enhanced luma. gainRiskLut
-	// is a 65536-entry table indexed by (originalLuma << 8) | enhancedLuma and
-	// activityRiskLut is a 256-entry table indexed by local activity; both hold
-	// Q8 values and are prebuilt by the caller. textureFloorQ8 is the fraction
-	// of the risk that survives on textured areas, in Q8.
+	// is, so the caller can attenuate it toward the enhanced luma.
+
 	// Row-vectorized 3x3 mean absolute deviation of the center pixel from its
 	// neighborhood: the eight byte differences are computed with
 	// max(n, c) - min(n, c) and widened to 16 bits before summing, because
@@ -147,9 +144,19 @@ namespace AltaLuxKernels
 		int width, int height, KernelImplementation implementation);
 	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height,
 		KernelImplementation implementation);
+
+	// Combines the luma-gain/darkness table with the local-activity table into
+	// the final Q8 risk: full risk on flat pixels, textureFloorQ8 of it on
+	// textured ones. gainRiskLut is a 65536-entry byte table indexed by
+	// (originalLuma << 8) | enhancedLuma -- one byte per Q8 entry keeps the
+	// randomly indexed table at 64 KiB, small enough to stay L2-resident while
+	// the pass streams the image planes past it; activityRiskLut is a 256-entry
+	// dword table indexed by local activity. Both are prebuilt by the caller,
+	// and textureFloorQ8 is the fraction of the risk that survives on textured
+	// areas, in Q8.
 	void ComputeChromaRisk(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
 		const unsigned char* activity, unsigned char* risk, int pixelCount,
-		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8);
+		const unsigned char* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8);
 	void ApplyChromaAttenuation(unsigned char* target, const unsigned char* enhancedLuma,
 		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride,
 		int maxStrengthQ8, KernelImplementation implementation);

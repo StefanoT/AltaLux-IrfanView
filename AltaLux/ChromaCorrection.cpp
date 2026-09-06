@@ -51,10 +51,13 @@ namespace
 
 	// Gain x darkness risk for every (original, enhanced) luma pair, Q8. Built
 	// once at load like the reciprocal table; the log2 stops ratio makes the
-	// table the natural place to pay for it.
+	// table the natural place to pay for it. One byte per entry instead of a
+	// dword: the Q8 values fit, and the randomly indexed table shrinks from
+	// 256 KiB to 64 KiB so it stays L2-resident while the risk pass streams
+	// the image planes past it.
 	struct GainRiskLutTable
 	{
-		unsigned int table[256 * 256];
+		unsigned char table[256 * 256];
 	};
 
 	const GainRiskLutTable g_GainRiskLut = []() {
@@ -68,7 +71,7 @@ namespace
 				const float gainStops = std::log2(
 					(static_cast<float>(yp) + 1.0f) / (static_cast<float>(y) + 1.0f));
 				const float gainRisk = SmoothStep(kGainLowStops, kGainHighStops, gainStops);
-				lut.table[(y << 8) | yp] = static_cast<unsigned int>(gainRisk * darkRisk * 255.0f + 0.5f);
+				lut.table[(y << 8) | yp] = static_cast<unsigned char>(gainRisk * darkRisk * 255.0f + 0.5f);
 			}
 		}
 		return lut;

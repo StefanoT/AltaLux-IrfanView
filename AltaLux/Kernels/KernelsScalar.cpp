@@ -496,7 +496,7 @@ namespace AltaLuxKernels
 	// textured pixels, zero where the gain or darkness term already vanished.
 	void ComputeChromaRiskScalar(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
 		const unsigned char* activity, unsigned char* risk, int pixelCount,
-		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8)
+		const unsigned char* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8)
 	{
 		for (int i = 0; i < pixelCount; ++i)
 		{
