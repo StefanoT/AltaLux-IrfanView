@@ -184,6 +184,70 @@ namespace
 		const __m128i scaled = MulloEpi32Compat(diff, attenuation);
 		return _mm_add_epi32(luma, _mm_sra_epi32(_mm_add_epi32(scaled, rounding), shiftCount));
 	}
+
+	inline int AbsDiffByte(int a, int b)
+	{
+		const int diff = a - b;
+		return diff < 0 ? -diff : diff;
+	}
+
+	// One [1 2 1] / 4 tap along x over sixteen bytes. For the horizontal pass
+	// a, b and c are the same row shifted by one byte; for the vertical pass
+	// they are three neighboring rows at the same column.
+	inline __m128i BlurTaps16SSSE3(const unsigned char* a, const unsigned char* b,
+		const unsigned char* c)
+	{
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i two = _mm_set1_epi16(2);
+		const __m128i aW = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a));
+		const __m128i bW = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
+		const __m128i cW = _mm_loadu_si128(reinterpret_cast<const __m128i*>(c));
+		const __m128i sumLo = _mm_add_epi16(
+			_mm_add_epi16(_mm_unpacklo_epi8(aW, zero), _mm_unpacklo_epi8(cW, zero)),
+			_mm_add_epi16(_mm_unpacklo_epi8(bW, zero), _mm_unpacklo_epi8(bW, zero)));
+		const __m128i sumHi = _mm_add_epi16(
+			_mm_add_epi16(_mm_unpackhi_epi8(aW, zero), _mm_unpackhi_epi8(cW, zero)),
+			_mm_add_epi16(_mm_unpackhi_epi8(bW, zero), _mm_unpackhi_epi8(bW, zero)));
+		return _mm_packus_epi16(
+			_mm_srli_epi16(_mm_add_epi16(sumLo, two), 2),
+			_mm_srli_epi16(_mm_add_epi16(sumHi, two), 2));
+	}
+
+	// Accumulates |n - c| for sixteen bytes into 16-bit lane sums; eight of
+	// them can reach 2040, so the sums must live in 16 bits.
+	inline void AccumulateAbsDiff16SSSE3(__m128i& sumLo, __m128i& sumHi,
+		const unsigned char* neighbors, __m128i center)
+	{
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i n = _mm_loadu_si128(reinterpret_cast<const __m128i*>(neighbors));
+		const __m128i diff = _mm_sub_epi8(_mm_max_epu8(n, center), _mm_min_epu8(n, center));
+		sumLo = _mm_add_epi16(sumLo, _mm_unpacklo_epi8(diff, zero));
+		sumHi = _mm_add_epi16(sumHi, _mm_unpackhi_epi8(diff, zero));
+	}
+
+	// Mean absolute deviation from the 3x3 neighborhood for sixteen interior
+	// pixels. up, mid and down point at the block's left column; the center
+	// row's vector starts one byte later.
+	inline __m128i Activity16SSSE3(const unsigned char* up, const unsigned char* mid,
+		const unsigned char* down, const unsigned char* center)
+	{
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i rounding = _mm_set1_epi16(4);
+		const __m128i c = _mm_loadu_si128(reinterpret_cast<const __m128i*>(center));
+		__m128i sumLo = zero;
+		__m128i sumHi = zero;
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, up, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, up + 1, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, up + 2, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, mid, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, mid + 2, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, down, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, down + 1, c);
+		AccumulateAbsDiff16SSSE3(sumLo, sumHi, down + 2, c);
+		return _mm_packus_epi16(
+			_mm_srli_epi16(_mm_add_epi16(sumLo, rounding), 3),
+			_mm_srli_epi16(_mm_add_epi16(sumHi, rounding), 3));
+	}
 }
 
 namespace AltaLuxKernels
@@ -557,7 +621,7 @@ namespace AltaLuxKernels
 					_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + 8)), w2));
 			}
 		}
-		AccumulateLayerScalar(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+		AccumulateLayerScalar(accum, planeStride, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 	}
 
 	// Converts accumulated weighted sums back to RGB bytes four pixels at a time.
@@ -613,7 +677,7 @@ namespace AltaLuxKernels
 			return;
 		}
 
-		WriteAccumulatedImageScalar(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+		WriteAccumulatedImageScalar(target, accum, planeStride, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 	}
 
 	// Attenuates chroma toward the enhanced luma four pixels at a time. The
@@ -681,5 +745,99 @@ namespace AltaLuxKernels
 			}
 		}
 		ApplyChromaAttenuationScalar(target, enhancedLuma, risk, i, pixelEnd, pixelStride, maxStrengthQ8);
+	}
+
+	// Row-vectorized [1 2 1] / 4 blur. The horizontal pass keeps the two
+	// replicated-edge columns scalar and feeds the interior to the tap helper;
+	// the vertical pass covers full-width chunks because its rows are already
+	// clamped. Both tails are scalar.
+	void BlurRiskMapSSSE3(unsigned char* risk, unsigned char* temp, int width, int height)
+	{
+		if (risk == nullptr || temp == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		const int last = width - 1;
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* row = risk + (y * width);
+			unsigned char* outRow = temp + (y * width);
+			int x = 1;
+			for (; x <= last - 16; x += 16)
+			{
+				_mm_storeu_si128(reinterpret_cast<__m128i*>(outRow + x),
+					BlurTaps16SSSE3(row + x - 1, row + x, row + x + 1));
+			}
+			for (; x < last; ++x)
+			{
+				outRow[x] = static_cast<unsigned char>((row[x - 1] + (row[x] << 1) + row[x + 1] + 2) >> 2);
+			}
+			outRow[0] = static_cast<unsigned char>(((row[0] * 3) + row[1] + 2) >> 2);
+			outRow[last] = static_cast<unsigned char>((row[last - 1] + (row[last] * 3) + 2) >> 2);
+		}
+
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* rowUp = temp + ((y > 0 ? y - 1 : 0) * width);
+			const unsigned char* row = temp + (y * width);
+			const unsigned char* rowDown = temp + ((y < height - 1 ? y + 1 : height - 1) * width);
+			unsigned char* outRow = risk + (y * width);
+			int x = 0;
+			for (; x <= width - 16; x += 16)
+			{
+				_mm_storeu_si128(reinterpret_cast<__m128i*>(outRow + x),
+					BlurTaps16SSSE3(rowUp + x, row + x, rowDown + x));
+			}
+			for (; x < width; ++x)
+			{
+				outRow[x] = static_cast<unsigned char>((rowUp[x] + (row[x] << 1) + rowDown[x] + 2) >> 2);
+			}
+		}
+	}
+
+	// Row-vectorized 3x3 mean absolute deviation; the border columns use the
+	// same replicated-edge formulas as the scalar kernel.
+	void ComputeLocalActivity3x3SSSE3(const unsigned char* luma, unsigned char* activity,
+		int width, int height)
+	{
+		if (luma == nullptr || activity == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		const int last = width - 1;
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* rowUp = luma + ((y > 0 ? y - 1 : 0) * width);
+			const unsigned char* row = luma + (y * width);
+			const unsigned char* rowDown = luma + ((y < height - 1 ? y + 1 : height - 1) * width);
+			unsigned char* out = activity + (y * width);
+			int x = 1;
+			for (; x <= width - 17; x += 16)
+			{
+				_mm_storeu_si128(reinterpret_cast<__m128i*>(out + x),
+					Activity16SSSE3(rowUp + x - 1, row + x - 1, rowDown + x - 1, row + x));
+			}
+			for (; x < last; ++x)
+			{
+				const int center = row[x];
+				int sum = AbsDiffByte(rowUp[x - 1], center) + AbsDiffByte(rowUp[x], center) + AbsDiffByte(rowUp[x + 1], center);
+				sum += AbsDiffByte(row[x - 1], center) + AbsDiffByte(row[x + 1], center);
+				sum += AbsDiffByte(rowDown[x - 1], center) + AbsDiffByte(rowDown[x], center) + AbsDiffByte(rowDown[x + 1], center);
+				out[x] = static_cast<unsigned char>((sum + 4) >> 3);
+			}
+
+			const int centerFirst = row[0];
+			const int sumFirst = AbsDiffByte(rowUp[0], centerFirst) + AbsDiffByte(rowUp[1], centerFirst)
+				+ AbsDiffByte(row[0], centerFirst) + AbsDiffByte(row[1], centerFirst)
+				+ AbsDiffByte(rowDown[0], centerFirst) + AbsDiffByte(rowDown[1], centerFirst);
+			out[0] = static_cast<unsigned char>((sumFirst + 4) >> 3);
+			const int centerLast = row[last];
+			const int sumLast = AbsDiffByte(rowUp[last - 1], centerLast) + AbsDiffByte(rowUp[last], centerLast)
+				+ AbsDiffByte(row[last - 1], centerLast) + AbsDiffByte(row[last], centerLast)
+				+ AbsDiffByte(rowDown[last - 1], centerLast) + AbsDiffByte(rowDown[last], centerLast);
+			out[last] = static_cast<unsigned char>((sumLast + 4) >> 3);
+		}
 	}
 }

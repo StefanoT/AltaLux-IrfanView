@@ -434,15 +434,15 @@ void BenchmarkCriticalKernels()
 		AltaLuxKernels::ApplyChromaAttenuation(target.data(), luma.data(), riskPlane.data(),
 			0, SAMPLE_PIXELS, 3, 64, implementation);
 	});
-	BenchmarkScalarOnlyKernel("Chroma Activity 3x3", [&]()
+	BenchmarkAllImplementations("Chroma Activity 3x3", [&](AltaLuxKernels::KernelImplementation implementation)
 	{
 		AltaLuxKernels::ComputeLocalActivity3x3(luma.data(), activityPlane.data(),
-			SAMPLE_WIDTH, SAMPLE_HEIGHT);
+			SAMPLE_WIDTH, SAMPLE_HEIGHT, implementation);
 	});
-	BenchmarkScalarOnlyKernel("Chroma Blur Risk Map", [&]()
+	BenchmarkAllImplementations("Chroma Blur Risk Map", [&](AltaLuxKernels::KernelImplementation implementation)
 	{
 		AltaLuxKernels::BlurRiskMap(riskPlane.data(), activityPlane.data(),
-			SAMPLE_WIDTH, SAMPLE_HEIGHT);
+			SAMPLE_WIDTH, SAMPLE_HEIGHT, implementation);
 	});
 	BenchmarkScalarOnlyKernel("CLAHE Make Histogram", [&]()
 	{

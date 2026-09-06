@@ -297,26 +297,47 @@ namespace AltaLuxKernels
 			mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 	}
 
-	// Scalar for now. Vectorizing along x needs no cross-lane work: vertical
-	// neighbors are whole-row loads over the same x range, horizontal neighbors
-	// are the same row loaded at +/-1 byte, and |a - b| on unsigned bytes is
-	// max(a, b) - min(a, b). A 16-pixel-wide version is straightforward but not
-	// yet written; revisit alongside BlurRiskMap when the chroma stage needs to
-	// be faster.
+	// Row-vectorized 3x3 mean absolute deviation: the vertical neighbors are
+	// whole-row loads over the same x range, the horizontal ones are the same
+	// row loaded at +/-1 byte, and |n - c| on unsigned bytes is
+	// max(n, c) - min(n, c). The eight byte differences are widened to 16 bits
+	// before summing because eight of them can reach 2040.
 	void ComputeLocalActivity3x3(const unsigned char* luma, unsigned char* activity,
-		int width, int height)
+		int width, int height, KernelImplementation implementation)
 	{
-		ComputeLocalActivity3x3Scalar(luma, activity, width, height);
+		switch (NormalizeImplementation(implementation))
+		{
+		case KernelImplementation::AVX2:
+			ComputeLocalActivity3x3AVX2(luma, activity, width, height);
+			break;
+		case KernelImplementation::SSSE3:
+			ComputeLocalActivity3x3SSSE3(luma, activity, width, height);
+			break;
+		default:
+			ComputeLocalActivity3x3Scalar(luma, activity, width, height);
+			break;
+		}
 	}
 
-	// Scalar for now. The separable [1 2 1] blur vectorizes along x without any
-	// transposes: the vertical pass loads three whole rows over the same x range,
-	// the horizontal pass loads one row at three 1-byte-shifted offsets, and both
-	// reduce to 16-bit adds, a shift, and a pack per 16 pixels. Revisit alongside
-	// ComputeLocalActivity3x3 when the chroma stage needs to be faster.
-	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height)
+	// Row-vectorized separable [1 2 1] / 4 blur: both passes are one-dimensional
+	// taps along x -- three whole-row loads for the vertical pass, three
+	// 1-byte-shifted loads of one row for the horizontal pass -- reduced to
+	// 16-bit adds, a shift, and a pack per vector.
+	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height,
+		KernelImplementation implementation)
 	{
-		BlurRiskMapScalar(risk, temp, width, height);
+		switch (NormalizeImplementation(implementation))
+		{
+		case KernelImplementation::AVX2:
+			BlurRiskMapAVX2(risk, temp, width, height);
+			break;
+		case KernelImplementation::SSSE3:
+			BlurRiskMapSSSE3(risk, temp, width, height);
+			break;
+		default:
+			BlurRiskMapScalar(risk, temp, width, height);
+			break;
+		}
 	}
 
 	// Scalar-only operation: the combination is dominated by a randomly indexed

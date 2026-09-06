@@ -166,10 +166,11 @@ bool ApplyChromaCorrection(unsigned char* targetImage, const unsigned char* orig
 	std::unique_ptr<unsigned char[]> risk(new unsigned char[static_cast<size_t>(pixelCount)]);
 
 	ExtractBgrLuma(targetImage, enhancedLuma.get(), pixelCount, bitDepth, implementation);
-	AltaLuxKernels::ComputeLocalActivity3x3(originalLuma, activity.get(), width, height);
+	AltaLuxKernels::ComputeLocalActivity3x3(originalLuma, activity.get(), width, height,
+		implementation);
 	AltaLuxKernels::ComputeChromaRisk(originalLuma, enhancedLuma.get(), activity.get(), risk.get(),
 		pixelCount, g_GainRiskLut.table, g_ActivityRiskLut.table, kTextureFloorQ8);
-	AltaLuxKernels::BlurRiskMap(risk.get(), activity.get(), width, height);
+	AltaLuxKernels::BlurRiskMap(risk.get(), activity.get(), width, height, implementation);
 
 	RunBlocks(pixelCount, [&](int pStart, int pEnd)
 	{

@@ -208,9 +208,10 @@ c' = Y' + (c - Y') * (1 - S)
 
 This is luma-neutral (it preserves `Y'` exactly) and provably stays inside byte
 range. Zero-risk pixels — bright, barely lifted, or strongly textured — are
-reproduced byte-for-byte. The stage costs roughly 50 ms per 4K image, dominated
-by three scalar table/2D passes; the attenuation kernel itself runs 3-4x faster
-under AVX2.
+reproduced byte-for-byte. The stage costs roughly 35 ms per 4K image: the
+activity and blur passes are row-vectorized (2.4-3.8x under SSSE3/AVX2),
+leaving the scalar 64K-table risk pass as the dominant cost, and the
+attenuation kernel itself runs 3-4x faster under AVX2.
 
 ## Color And Format Handling
 

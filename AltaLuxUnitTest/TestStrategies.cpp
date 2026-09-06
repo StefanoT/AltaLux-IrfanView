@@ -921,7 +921,8 @@ namespace AltaLuxUnitTest
 			const int pixelCount = width * height;
 			std::vector<unsigned char> flat(pixelCount, 42);
 			std::vector<unsigned char> activity(pixelCount, 0);
-			AltaLuxKernels::ComputeLocalActivity3x3(flat.data(), activity.data(), width, height);
+			AltaLuxKernels::ComputeLocalActivity3x3(flat.data(), activity.data(), width, height,
+				AltaLuxKernels::KernelImplementation::Scalar);
 			for (int i = 0; i < pixelCount; ++i)
 			{
 				Assert::AreEqual(0, static_cast<int>(activity[i]));
@@ -929,14 +930,16 @@ namespace AltaLuxUnitTest
 
 			std::vector<unsigned char> spike(pixelCount, 0);
 			spike[(pixelCount - 1) / 2] = 255;
-			AltaLuxKernels::ComputeLocalActivity3x3(spike.data(), activity.data(), width, height);
+			AltaLuxKernels::ComputeLocalActivity3x3(spike.data(), activity.data(), width, height,
+				AltaLuxKernels::KernelImplementation::Scalar);
 			Assert::IsTrue(activity[(pixelCount - 1) / 2] == 255);
 			Assert::IsTrue(activity[0] < activity[(pixelCount - 1) / 2]);
 
 			// Blur of a constant map is the same constant...
 			std::vector<unsigned char> constant(pixelCount, 77);
 			std::vector<unsigned char> temp(pixelCount, 0);
-			AltaLuxKernels::BlurRiskMap(constant.data(), temp.data(), width, height);
+			AltaLuxKernels::BlurRiskMap(constant.data(), temp.data(), width, height,
+				AltaLuxKernels::KernelImplementation::Scalar);
 			for (int i = 0; i < pixelCount; ++i)
 			{
 				Assert::AreEqual(77, static_cast<int>(constant[i]));
@@ -945,7 +948,8 @@ namespace AltaLuxUnitTest
 			// ...and a spike bleeds into its neighbors while losing height.
 			std::vector<unsigned char> spikeRisk(pixelCount, 0);
 			spikeRisk[(pixelCount - 1) / 2] = 255;
-			AltaLuxKernels::BlurRiskMap(spikeRisk.data(), temp.data(), width, height);
+			AltaLuxKernels::BlurRiskMap(spikeRisk.data(), temp.data(), width, height,
+				AltaLuxKernels::KernelImplementation::Scalar);
 			const int center = (pixelCount - 1) / 2;
 			Assert::IsTrue(spikeRisk[center] > 0 && spikeRisk[center] < 255);
 			Assert::IsTrue(spikeRisk[center + 1] > 0);
@@ -1005,6 +1009,35 @@ namespace AltaLuxUnitTest
 				Assert::IsTrue(memcmp(baseImage.data() + (81 * bitDepth),
 					partialScalar.data() + (81 * bitDepth), baseImage.size() - (81 * bitDepth)) == 0);
 			}
+
+			// The row-vectorized activity and blur kernels must match scalar
+			// byte-for-byte across the SIMD bodies, the scalar tails and the
+			// clamped edges; the width is not a multiple of the vector size so
+			// every tail runs, and the odd height exercises row clamping.
+			const int stencilWidth = 100;
+			const int stencilHeight = 37;
+			const int stencilPixels = stencilWidth * stencilHeight;
+			std::vector<unsigned char> lumaPlane(stencilPixels);
+			for (int i = 0; i < stencilPixels; ++i)
+			{
+				lumaPlane[i] = static_cast<unsigned char>((i * 37 + 11) & 0xFF);
+			}
+			std::vector<unsigned char> scalarActivity(stencilPixels);
+			std::vector<unsigned char> simdActivity(stencilPixels);
+			AltaLuxKernels::ComputeLocalActivity3x3(lumaPlane.data(), scalarActivity.data(),
+				stencilWidth, stencilHeight, AltaLuxKernels::KernelImplementation::Scalar);
+			AltaLuxKernels::ComputeLocalActivity3x3(lumaPlane.data(), simdActivity.data(),
+				stencilWidth, stencilHeight, implementation);
+			Assert::IsTrue(memcmp(scalarActivity.data(), simdActivity.data(), simdActivity.size()) == 0);
+
+			std::vector<unsigned char> scalarRisk(simdActivity);
+			std::vector<unsigned char> simdRisk(simdActivity);
+			std::vector<unsigned char> blurScratch(stencilPixels);
+			AltaLuxKernels::BlurRiskMap(scalarRisk.data(), blurScratch.data(), stencilWidth, stencilHeight,
+				AltaLuxKernels::KernelImplementation::Scalar);
+			AltaLuxKernels::BlurRiskMap(simdRisk.data(), blurScratch.data(), stencilWidth, stencilHeight,
+				implementation);
+			Assert::IsTrue(memcmp(scalarRisk.data(), simdRisk.data(), simdRisk.size()) == 0);
 
 			// End-to-end parity through the full pipeline with the stage active.
 			const int pipelineWidth = 64;

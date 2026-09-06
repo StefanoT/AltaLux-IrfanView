@@ -56,6 +56,8 @@
 //                                                    24bpp (see the comment on
 //                                                    AccumulateLayer)
 //     ApplyChromaAttenuation                         RGB/BGR, 24 and 32 bpp
+//     ComputeLocalActivity3x3 / BlurRiskMap          row-vectorized 2D stencils
+//                                                    over the risk planes
 //
 //   Scalar-only (no implementation argument; every tier runs the same code):
 //     MakeHistogram / ClipHistogram / MapHistogram   conflicting histogram
@@ -68,10 +70,6 @@
 //                                                    indexed 64K-entry table;
 //                                                    AVX2 gather measured 2.3x
 //                                                    slower than scalar loads
-//     ComputeLocalActivity3x3 / BlurRiskMap          vectorizable along x with
-//                                                    no cross-lane work, not yet
-//                                                    rewritten; see the notes in
-//                                                    Kernels.cpp
 namespace AltaLuxKernels
 {
 	enum class KernelImplementation
@@ -140,9 +138,15 @@ namespace AltaLuxKernels
 	// activityRiskLut is a 256-entry table indexed by local activity; both hold
 	// Q8 values and are prebuilt by the caller. textureFloorQ8 is the fraction
 	// of the risk that survives on textured areas, in Q8.
+	// Row-vectorized 3x3 mean absolute deviation of the center pixel from its
+	// neighborhood: the eight byte differences are computed with
+	// max(n, c) - min(n, c) and widened to 16 bits before summing, because
+	// eight of them can reach 2040. Border rows and columns keep the
+	// replicated-edge rule of the scalar kernel.
 	void ComputeLocalActivity3x3(const unsigned char* luma, unsigned char* activity,
-		int width, int height);
-	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height);
+		int width, int height, KernelImplementation implementation);
+	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height,
+		KernelImplementation implementation);
 	void ComputeChromaRisk(const unsigned char* originalLuma, const unsigned char* enhancedLuma,
 		const unsigned char* activity, unsigned char* risk, int pixelCount,
 		const unsigned int* gainRiskLut, const unsigned int* activityRiskLut, int textureFloorQ8);

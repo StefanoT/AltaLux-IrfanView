@@ -167,6 +167,71 @@ namespace
 		return _mm_add_epi32(luma, _mm_sra_epi32(_mm_add_epi32(scaled, rounding), shiftCount));
 	}
 
+	inline int AbsDiffByte(int a, int b)
+	{
+		const int diff = a - b;
+		return diff < 0 ? -diff : diff;
+	}
+
+	// One [1 2 1] / 4 tap along x over thirty-two bytes. For the horizontal
+	// pass a, b and c are the same row shifted by one byte; for the vertical
+	// pass they are three neighboring rows at the same column. All lane-local
+	// ops, and the per-lane packus emits consecutive bytes.
+	inline __m256i BlurTaps32AVX2(const unsigned char* a, const unsigned char* b,
+		const unsigned char* c)
+	{
+		const __m256i zero = _mm256_setzero_si256();
+		const __m256i two = _mm256_set1_epi16(2);
+		const __m256i aW = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
+		const __m256i bW = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b));
+		const __m256i cW = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(c));
+		const __m256i sumLo = _mm256_add_epi16(
+			_mm256_add_epi16(_mm256_unpacklo_epi8(aW, zero), _mm256_unpacklo_epi8(cW, zero)),
+			_mm256_add_epi16(_mm256_unpacklo_epi8(bW, zero), _mm256_unpacklo_epi8(bW, zero)));
+		const __m256i sumHi = _mm256_add_epi16(
+			_mm256_add_epi16(_mm256_unpackhi_epi8(aW, zero), _mm256_unpackhi_epi8(cW, zero)),
+			_mm256_add_epi16(_mm256_unpackhi_epi8(bW, zero), _mm256_unpackhi_epi8(bW, zero)));
+		return _mm256_packus_epi16(
+			_mm256_srli_epi16(_mm256_add_epi16(sumLo, two), 2),
+			_mm256_srli_epi16(_mm256_add_epi16(sumHi, two), 2));
+	}
+
+	// Accumulates |n - c| for thirty-two bytes into 16-bit lane sums; eight of
+	// them can reach 2040, so the sums must live in 16 bits.
+	inline void AccumulateAbsDiff32AVX2(__m256i& sumLo, __m256i& sumHi,
+		const unsigned char* neighbors, __m256i center)
+	{
+		const __m256i zero = _mm256_setzero_si256();
+		const __m256i n = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(neighbors));
+		const __m256i diff = _mm256_sub_epi8(_mm256_max_epu8(n, center), _mm256_min_epu8(n, center));
+		sumLo = _mm256_add_epi16(sumLo, _mm256_unpacklo_epi8(diff, zero));
+		sumHi = _mm256_add_epi16(sumHi, _mm256_unpackhi_epi8(diff, zero));
+	}
+
+	// Mean absolute deviation from the 3x3 neighborhood for thirty-two
+	// interior pixels. up, mid and down point at the block's left column; the
+	// center row's vector starts one byte later.
+	inline __m256i Activity32AVX2(const unsigned char* up, const unsigned char* mid,
+		const unsigned char* down, const unsigned char* center)
+	{
+		const __m256i zero = _mm256_setzero_si256();
+		const __m256i rounding = _mm256_set1_epi16(4);
+		const __m256i c = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(center));
+		__m256i sumLo = zero;
+		__m256i sumHi = zero;
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, up, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, up + 1, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, up + 2, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, mid, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, mid + 2, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, down, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, down + 1, c);
+		AccumulateAbsDiff32AVX2(sumLo, sumHi, down + 2, c);
+		return _mm256_packus_epi16(
+			_mm256_srli_epi16(_mm256_add_epi16(sumLo, rounding), 3),
+			_mm256_srli_epi16(_mm256_add_epi16(sumHi, rounding), 3));
+	}
+
 	inline void StoreFourRGB24DownscaledPixelsAVX2(unsigned char* target, __m256i pixels)
 	{
 		StoreLow6BytesAVX2(target, _mm256_castsi256_si128(pixels));
@@ -629,7 +694,7 @@ namespace AltaLuxKernels
 					_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 16)), w2));
 			}
 		}
-		AccumulateLayerSSSE3(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+		AccumulateLayerSSSE3(accum, planeStride, layer, p, pixelEnd, pixelStride, weight, firstLayer);
 	}
 
 	// Converts accumulated weighted sums back to RGB bytes eight pixels at a time.
@@ -700,7 +765,7 @@ namespace AltaLuxKernels
 			return;
 		}
 
-		WriteAccumulatedImageSSSE3(target, accum, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
+		WriteAccumulatedImageSSSE3(target, accum, planeStride, p, pixelEnd, pixelStride, weightScaleLog2, weightHalf);
 	}
 
 	// Attenuates chroma toward the enhanced luma. RGB32 processes eight pixels
@@ -780,5 +845,98 @@ namespace AltaLuxKernels
 			}
 		}
 		ApplyChromaAttenuationSSSE3(target, enhancedLuma, risk, i, pixelEnd, pixelStride, maxStrengthQ8);
+	}
+
+	// Row-vectorized [1 2 1] / 4 blur, thirty-two bytes per iteration; the
+	// replicated-edge and tail columns stay scalar (see BlurRiskMapSSSE3).
+	void BlurRiskMapAVX2(unsigned char* risk, unsigned char* temp, int width, int height)
+	{
+		if (risk == nullptr || temp == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		const int last = width - 1;
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* row = risk + (y * width);
+			unsigned char* outRow = temp + (y * width);
+			int x = 1;
+			for (; x <= last - 32; x += 32)
+			{
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(outRow + x),
+					BlurTaps32AVX2(row + x - 1, row + x, row + x + 1));
+			}
+			for (; x < last; ++x)
+			{
+				outRow[x] = static_cast<unsigned char>((row[x - 1] + (row[x] << 1) + row[x + 1] + 2) >> 2);
+			}
+			outRow[0] = static_cast<unsigned char>(((row[0] * 3) + row[1] + 2) >> 2);
+			outRow[last] = static_cast<unsigned char>((row[last - 1] + (row[last] * 3) + 2) >> 2);
+		}
+
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* rowUp = temp + ((y > 0 ? y - 1 : 0) * width);
+			const unsigned char* row = temp + (y * width);
+			const unsigned char* rowDown = temp + ((y < height - 1 ? y + 1 : height - 1) * width);
+			unsigned char* outRow = risk + (y * width);
+			int x = 0;
+			for (; x <= width - 32; x += 32)
+			{
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(outRow + x),
+					BlurTaps32AVX2(rowUp + x, row + x, rowDown + x));
+			}
+			for (; x < width; ++x)
+			{
+				outRow[x] = static_cast<unsigned char>((rowUp[x] + (row[x] << 1) + rowDown[x] + 2) >> 2);
+			}
+		}
+	}
+
+	// Row-vectorized 3x3 mean absolute deviation, thirty-two bytes per
+	// iteration; the border columns use the same replicated-edge formulas as
+	// the scalar kernel.
+	void ComputeLocalActivity3x3AVX2(const unsigned char* luma, unsigned char* activity,
+		int width, int height)
+	{
+		if (luma == nullptr || activity == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		const int last = width - 1;
+		for (int y = 0; y < height; ++y)
+		{
+			const unsigned char* rowUp = luma + ((y > 0 ? y - 1 : 0) * width);
+			const unsigned char* row = luma + (y * width);
+			const unsigned char* rowDown = luma + ((y < height - 1 ? y + 1 : height - 1) * width);
+			unsigned char* out = activity + (y * width);
+			int x = 1;
+			for (; x <= width - 33; x += 32)
+			{
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(out + x),
+					Activity32AVX2(rowUp + x - 1, row + x - 1, rowDown + x - 1, row + x));
+			}
+			for (; x < last; ++x)
+			{
+				const int center = row[x];
+				int sum = AbsDiffByte(rowUp[x - 1], center) + AbsDiffByte(rowUp[x], center) + AbsDiffByte(rowUp[x + 1], center);
+				sum += AbsDiffByte(row[x - 1], center) + AbsDiffByte(row[x + 1], center);
+				sum += AbsDiffByte(rowDown[x - 1], center) + AbsDiffByte(rowDown[x], center) + AbsDiffByte(rowDown[x + 1], center);
+				out[x] = static_cast<unsigned char>((sum + 4) >> 3);
+			}
+
+			const int centerFirst = row[0];
+			const int sumFirst = AbsDiffByte(rowUp[0], centerFirst) + AbsDiffByte(rowUp[1], centerFirst)
+				+ AbsDiffByte(row[0], centerFirst) + AbsDiffByte(row[1], centerFirst)
+				+ AbsDiffByte(rowDown[0], centerFirst) + AbsDiffByte(rowDown[1], centerFirst);
+			out[0] = static_cast<unsigned char>((sumFirst + 4) >> 3);
+			const int centerLast = row[last];
+			const int sumLast = AbsDiffByte(rowUp[last - 1], centerLast) + AbsDiffByte(rowUp[last], centerLast)
+				+ AbsDiffByte(row[last - 1], centerLast) + AbsDiffByte(row[last], centerLast)
+				+ AbsDiffByte(rowDown[last - 1], centerLast) + AbsDiffByte(rowDown[last], centerLast);
+			out[last] = static_cast<unsigned char>((sumLast + 4) >> 3);
+		}
 	}
 }
