@@ -60,35 +60,6 @@ namespace
 		return _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src)), rgb24ToRGBX);
 	}
 
-	// Computes luma for eight RGB24/BGR24 pixels. AVX2 gathers one dword starting
-	// at each 3-byte pixel, masks out the three color bytes, and performs the
-	// weighted sum in 32-bit lanes.
-	inline __m256i CalculateRGB24Luma8(const unsigned char* src,
-		__m256i offsets, __m256i firstFactor, __m256i secondFactor, __m256i thirdFactor,
-		__m256i roundingOffset, __m128i shiftCount)
-	{
-		const __m256i pixels = _mm256_i32gather_epi32(reinterpret_cast<const int*>(src), offsets, 1);
-		const __m256i mask = _mm256_set1_epi32(0xFF);
-		const __m256i c0 = _mm256_and_si256(pixels, mask);
-		const __m256i c1 = _mm256_and_si256(_mm256_srli_epi32(pixels, 8), mask);
-		const __m256i c2 = _mm256_and_si256(_mm256_srli_epi32(pixels, 16), mask);
-		__m256i y = _mm256_add_epi32(_mm256_mullo_epi32(c0, firstFactor), _mm256_mullo_epi32(c1, secondFactor));
-		y = _mm256_add_epi32(y, _mm256_mullo_epi32(c2, thirdFactor));
-		return _mm256_sra_epi32(_mm256_add_epi32(y, roundingOffset), shiftCount);
-	}
-
-	// Stores eight 32-bit luma values as eight saturated bytes. The low and high
-	// 128-bit halves are packed together because byte packing is still 128-bit lane
-	// oriented before the final 8-byte store.
-	inline void StoreLuma8(unsigned char* target, __m256i y)
-	{
-		const __m128i lo = _mm256_castsi256_si128(y);
-		const __m128i hi = _mm256_extracti128_si256(y, 1);
-		const __m128i packed16 = _mm_packs_epi32(lo, hi);
-		const __m128i packed8 = _mm_packus_epi16(packed16, _mm_setzero_si128());
-		_mm_storel_epi64(reinterpret_cast<__m128i*>(target), packed8);
-	}
-
 	// Stores four 32-bit luma values as four saturated bytes. Used for RGB32 paths
 	// that reuse the 128-bit luma helper under AVX2 code generation.
 	inline void StoreLuma4(unsigned char* target, __m128i y)
@@ -164,98 +135,6 @@ namespace
 		const __m256i c1 = _mm256_mullo_epi32(_mm256_and_si256(_mm256_srli_epi32(pixels, 8), channelMask), weightVec);
 		const __m256i c2 = _mm256_mullo_epi32(_mm256_and_si256(_mm256_srli_epi32(pixels, 16), channelMask), weightVec);
 		BuildAccumTriplets8(c0, c1, c2, w0, w1, w2);
-	}
-
-	inline unsigned int LoadRGB24Pixel(const unsigned char* pixel)
-	{
-		return static_cast<unsigned int>(pixel[0]) |
-			(static_cast<unsigned int>(pixel[1]) << 8) |
-			(static_cast<unsigned int>(pixel[2]) << 16);
-	}
-
-	inline void StoreRGB24Pixel(unsigned char* pixel, unsigned int value)
-	{
-		pixel[0] = static_cast<unsigned char>(value);
-		pixel[1] = static_cast<unsigned char>(value >> 8);
-		pixel[2] = static_cast<unsigned char>(value >> 16);
-	}
-
-	inline unsigned int LoadPackedPixel(const unsigned char* pixel, int pixelStride)
-	{
-		if (pixelStride == 4)
-		{
-			return *reinterpret_cast<const unsigned int*>(pixel);
-		}
-
-		return LoadRGB24Pixel(pixel);
-	}
-
-	inline __m256i LoadEightBoxPixelsAVX2(const unsigned char* row, int startX, int sourceOffset,
-		int pixelStride)
-	{
-		return _mm256_setr_epi32(
-			static_cast<int>(LoadPackedPixel(row + (((startX + 0) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 1) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 2) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 3) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 4) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 5) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 6) * 2 + sourceOffset) * pixelStride), pixelStride)),
-			static_cast<int>(LoadPackedPixel(row + (((startX + 7) * 2 + sourceOffset) * pixelStride), pixelStride)));
-	}
-
-	inline __m256i AverageBox2x2PixelsAVX2(__m256i topLeft, __m256i topRight,
-		__m256i bottomLeft, __m256i bottomRight, bool includeFourthChannel)
-	{
-		const __m256i byteMask = _mm256_set1_epi32(0xFF);
-		__m256i c0 = _mm256_add_epi32(_mm256_and_si256(topLeft, byteMask), _mm256_and_si256(topRight, byteMask));
-		c0 = _mm256_add_epi32(c0, _mm256_and_si256(bottomLeft, byteMask));
-		c0 = _mm256_add_epi32(c0, _mm256_and_si256(bottomRight, byteMask));
-		c0 = _mm256_srli_epi32(c0, 2);
-
-		__m256i c1 = _mm256_add_epi32(_mm256_and_si256(_mm256_srli_epi32(topLeft, 8), byteMask),
-			_mm256_and_si256(_mm256_srli_epi32(topRight, 8), byteMask));
-		c1 = _mm256_add_epi32(c1, _mm256_and_si256(_mm256_srli_epi32(bottomLeft, 8), byteMask));
-		c1 = _mm256_add_epi32(c1, _mm256_and_si256(_mm256_srli_epi32(bottomRight, 8), byteMask));
-		c1 = _mm256_srli_epi32(c1, 2);
-
-		__m256i c2 = _mm256_add_epi32(_mm256_and_si256(_mm256_srli_epi32(topLeft, 16), byteMask),
-			_mm256_and_si256(_mm256_srli_epi32(topRight, 16), byteMask));
-		c2 = _mm256_add_epi32(c2, _mm256_and_si256(_mm256_srli_epi32(bottomLeft, 16), byteMask));
-		c2 = _mm256_add_epi32(c2, _mm256_and_si256(_mm256_srli_epi32(bottomRight, 16), byteMask));
-		c2 = _mm256_srli_epi32(c2, 2);
-
-		__m256i packed = _mm256_or_si256(c0, _mm256_slli_epi32(c1, 8));
-		packed = _mm256_or_si256(packed, _mm256_slli_epi32(c2, 16));
-		if (includeFourthChannel)
-		{
-			__m256i c3 = _mm256_add_epi32(_mm256_and_si256(_mm256_srli_epi32(topLeft, 24), byteMask),
-				_mm256_and_si256(_mm256_srli_epi32(topRight, 24), byteMask));
-			c3 = _mm256_add_epi32(c3, _mm256_and_si256(_mm256_srli_epi32(bottomLeft, 24), byteMask));
-			c3 = _mm256_add_epi32(c3, _mm256_and_si256(_mm256_srli_epi32(bottomRight, 24), byteMask));
-			packed = _mm256_or_si256(packed, _mm256_slli_epi32(_mm256_srli_epi32(c3, 2), 24));
-		}
-		return packed;
-	}
-
-	inline void StoreEightDownscaledPixelsAVX2(unsigned char* target, __m256i pixels, int pixelStride)
-	{
-		if (pixelStride == 4)
-		{
-			_mm256_storeu_si256(reinterpret_cast<__m256i*>(target), pixels);
-			return;
-		}
-
-		const __m128i lo = _mm256_castsi256_si128(pixels);
-		const __m128i hi = _mm256_extracti128_si256(pixels, 1);
-		StoreRGB24Pixel(target, static_cast<unsigned int>(_mm_cvtsi128_si32(lo)));
-		StoreRGB24Pixel(target + 3, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(lo, 4))));
-		StoreRGB24Pixel(target + 6, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(lo, 8))));
-		StoreRGB24Pixel(target + 9, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(lo, 12))));
-		StoreRGB24Pixel(target + 12, static_cast<unsigned int>(_mm_cvtsi128_si32(hi)));
-		StoreRGB24Pixel(target + 15, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(hi, 4))));
-		StoreRGB24Pixel(target + 18, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(hi, 8))));
-		StoreRGB24Pixel(target + 21, static_cast<unsigned int>(_mm_cvtsi128_si32(_mm_srli_si128(hi, 12))));
 	}
 
 	inline __m256i LoadTwoRGB24ScaleDownChunksAVX2(const unsigned char* row)

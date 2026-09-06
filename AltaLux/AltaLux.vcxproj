@@ -177,6 +177,12 @@
     <ClCompile Include="ChromaCorrection.cpp" />
     <ClCompile Include="Kernels\Kernels.cpp" />
     <ClCompile Include="Kernels\KernelsScalar.cpp" />
+    <!-- KernelsSSSE3.cpp builds with /arch:SSE2 on Win32 and no explicit setting on
+         x64. This is safe: MSVC emits the SSSE3 instructions its intrinsics name
+         regardless of /arch, and the hot loops in that file are all intrinsics; only
+         compiler-generated code stays at the SSE2 baseline. Keep one translation unit
+         per kernel tier so /arch stays per file: KernelsAVX2.cpp needs /arch:AVX2,
+         and nothing SIMD may leak into KernelsScalar.cpp or the other TUs. -->
     <ClCompile Include="Kernels\KernelsSSSE3.cpp">
       <EnableEnhancedInstructionSet Condition="'$(Platform)'=='Win32'">StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>

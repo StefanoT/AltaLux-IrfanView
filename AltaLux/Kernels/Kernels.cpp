@@ -293,18 +293,23 @@ namespace AltaLuxKernels
 			mapLeftBottom, mapRightBottom, matrixWidth, matrixHeight);
 	}
 
-	// Scalar-only operation: the 3x3 row-halo access pattern spends more time
-	// shuffling cross-lane data into position than the eight subtract/abs
-	// operations cost at either SIMD tier.
+	// Scalar for now. Vectorizing along x needs no cross-lane work: vertical
+	// neighbors are whole-row loads over the same x range, horizontal neighbors
+	// are the same row loaded at +/-1 byte, and |a - b| on unsigned bytes is
+	// max(a, b) - min(a, b). A 16-pixel-wide version is straightforward but not
+	// yet written; revisit alongside BlurRiskMap when the chroma stage needs to
+	// be faster.
 	void ComputeLocalActivity3x3(const unsigned char* luma, unsigned char* activity,
 		int width, int height)
 	{
 		ComputeLocalActivity3x3Scalar(luma, activity, width, height);
 	}
 
-	// Scalar-only operation: a separable [1 2 1] blur is three adds and a shift
-	// per pixel; the cross-lane transposes needed to vectorize the vertical pass
-	// exceed the arithmetic at both SIMD tiers.
+	// Scalar for now. The separable [1 2 1] blur vectorizes along x without any
+	// transposes: the vertical pass loads three whole rows over the same x range,
+	// the horizontal pass loads one row at three 1-byte-shifted offsets, and both
+	// reduce to 16-bit adds, a shift, and a pack per 16 pixels. Revisit alongside
+	// ComputeLocalActivity3x3 when the chroma stage needs to be faster.
 	void BlurRiskMap(unsigned char* risk, unsigned char* temp, int width, int height)
 	{
 		BlurRiskMapScalar(risk, temp, width, height);
