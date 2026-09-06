@@ -558,6 +558,46 @@ namespace AltaLuxKernels
 		}
 
 		const int sourceStep = pixelStride * 8;
+		if (pixelStride == 3)
+		{
+			// Eight BGR24 pixels are 24 contiguous bytes, so the generic
+			// per-byte gather below collapses to three zero-widening loads.
+			if (firstLayer)
+			{
+				for (; p <= pixelEnd - 8; p += 8, src += sourceStep, dst += 24)
+				{
+					const __m256i v0 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src)));
+					const __m256i v1 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + 8)));
+					const __m256i v2 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + 16)));
+					const __m256i w0 = _mm256_mullo_epi32(v0, weightVec);
+					const __m256i w1 = _mm256_mullo_epi32(v1, weightVec);
+					const __m256i w2 = _mm256_mullo_epi32(v2, weightVec);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst), w0);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 8), w1);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 16), w2);
+				}
+			}
+			else
+			{
+				for (; p <= pixelEnd - 8; p += 8, src += sourceStep, dst += 24)
+				{
+					const __m256i v0 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src)));
+					const __m256i v1 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + 8)));
+					const __m256i v2 = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + 16)));
+					const __m256i w0 = _mm256_mullo_epi32(v0, weightVec);
+					const __m256i w1 = _mm256_mullo_epi32(v1, weightVec);
+					const __m256i w2 = _mm256_mullo_epi32(v2, weightVec);
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst),
+						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst)), w0));
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 8),
+						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 8)), w1));
+					_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + 16),
+						_mm256_add_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + 16)), w2));
+				}
+			}
+			AccumulateLayerSSSE3(accum, layer, p, pixelEnd, pixelStride, weight, firstLayer);
+			return;
+		}
 		if (firstLayer)
 		{
 			for (; p <= pixelEnd - 8; p += 8, src += sourceStep, dst += 24)
