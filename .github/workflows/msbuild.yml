@@ -49,7 +49,10 @@ jobs:
       uses: microsoft/setup-msbuild@v1.0.2
 
     - name: Restore ONNX Runtime
-      run: msbuild /t:Restore ${{env.SOLUTION_FILE_PATH}}
+      # Solution-level restore (/t:Restore on the .sln) silently skips C++
+      # projects using PackageReference, so restore the ONNX Runtime consumer
+      # project directly; /restore on the solution would work but also builds.
+      run: msbuild /t:Restore ./AltaLuxSegmentation/AltaLuxSegmentation.vcxproj
 
     - name: Build ${{ matrix.platform }} solution
       working-directory: ${{env.GITHUB_WORKSPACE}}
