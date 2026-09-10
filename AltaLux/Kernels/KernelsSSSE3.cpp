@@ -405,18 +405,55 @@ namespace AltaLuxKernels
 			4, firstFactor, secondFactor, thirdFactor, scalingLog, reciprocalLut);
 	}
 
-	// Injects processed luma into RGB32/BGR32 pixels when the original luma has
-	// already been cached during extraction. This removes the second RGB->luma
-	// pass; SSSE3 still applies four per-pixel scale factors to RGB channels at a
-	// time, while reciprocal lookup stays scalar because SSSE3 has no gather.
+	// Injects processed luma into RGB32/BGR32 and RGB24/BGR24 pixels when the
+	// original luma has already been cached during extraction. SSSE3 expands
+	// 3-byte pixels into BGRX dwords with PSHUFB and applies four per-pixel
+	// scale factors to the channels at a time; the reciprocal and scale-cap
+	// lookups stay scalar because SSSE3 has no gather.
 	void InjectRGBLumaWithOriginalLumaSSSE3(unsigned char* image, const unsigned char* luma,
 		const unsigned char* originalLuma, int pixelCount, int pixelStride,
 		const int* reciprocalLut)
 	{
-		if (pixelStride != 4)
+		if (pixelStride != 3 && pixelStride != 4)
 		{
 			InjectRGBLumaWithOriginalLumaScalar(image, luma, originalLuma, pixelCount,
 				pixelStride, reciprocalLut);
+			return;
+		}
+
+		if (pixelStride == 3)
+		{
+			// BGR24: PSHUFB expands four 3-byte pixels into BGRX dwords, the
+			// per-pixel scale lookups stay scalar, and the scaled channels are
+			// interleaved back into twelve bytes per group. The loop stops six
+			// pixels short so the 16-byte loads never read past the buffer.
+			const __m128i channelMask = _mm_set1_epi32(0xFF);
+			const __m128i scaleRounding = _mm_set1_epi32(1 << 7);
+			int i = 0;
+			for (; i <= pixelCount - 6; i += 4)
+			{
+				unsigned char* pixel0 = image + (i * 3);
+				const int scale0 = ComputeRGBScale(luma[i], originalLuma[i],
+					pixel0[0], pixel0[1], pixel0[2], reciprocalLut);
+				const int scale1 = ComputeRGBScale(luma[i + 1], originalLuma[i + 1],
+					pixel0[3], pixel0[4], pixel0[5], reciprocalLut);
+				const int scale2 = ComputeRGBScale(luma[i + 2], originalLuma[i + 2],
+					pixel0[6], pixel0[7], pixel0[8], reciprocalLut);
+				const int scale3 = ComputeRGBScale(luma[i + 3], originalLuma[i + 3],
+					pixel0[9], pixel0[10], pixel0[11], reciprocalLut);
+
+				const __m128i pixels = LoadRGB24AsRGBX4(pixel0);
+				const __m128i scale = _mm_setr_epi32(scale0, scale1, scale2, scale3);
+				const __m128i cB = _mm_and_si128(pixels, channelMask);
+				const __m128i cG = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask);
+				const __m128i cR = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask);
+				const __m128i outB = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(cB, scale), scaleRounding), 8);
+				const __m128i outG = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(cG, scale), scaleRounding), 8);
+				const __m128i outR = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(cR, scale), scaleRounding), 8);
+				StoreRGB24Pixels4(pixel0, InterleaveChannels3x4(outB, outG, outR));
+			}
+			InjectRGBLumaWithOriginalLumaScalar(image + (i * 3), luma + i, originalLuma + i,
+				pixelCount - i, 3, reciprocalLut);
 			return;
 		}
 

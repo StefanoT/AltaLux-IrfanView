@@ -1039,6 +1039,43 @@ namespace AltaLuxUnitTest
 				implementation);
 			Assert::IsTrue(memcmp(scalarRisk.data(), simdRisk.data(), simdRisk.size()) == 0);
 
+			// Direct parity for the inject kernels at both DIB strides. The
+			// pixel count is deliberately not a multiple of the vector size:
+			// the AVX2 8-px body tails into the SSSE3 4-px body, which tails
+			// into the scalar loop, and all three must agree byte-for-byte.
+			int reciprocalLut[256];
+			reciprocalLut[0] = 0;
+			for (int value = 1; value < 256; ++value)
+			{
+				reciprocalLut[value] = (1 << 16) / value;
+			}
+			const int injectPixels = 37 * 9;
+			std::vector<unsigned char> injectNewLuma(injectPixels);
+			std::vector<unsigned char> injectOriginalLuma(injectPixels);
+			for (int i = 0; i < injectPixels; ++i)
+			{
+				injectNewLuma[i] = static_cast<unsigned char>((i * 29 + 7) & 0xFF);
+				injectOriginalLuma[i] = static_cast<unsigned char>((i * 53 + 101) & 0xFF);
+			}
+			for (int bitDepth = Constants::RGB24PixelSize; bitDepth <= Constants::RGB32PixelSize; ++bitDepth)
+			{
+				std::vector<unsigned char> injectBase(static_cast<size_t>(injectPixels) * bitDepth);
+				for (int i = 0; i < injectPixels; ++i)
+				{
+					injectBase[i * bitDepth] = static_cast<unsigned char>((i * 31 + 5) & 0xFF);
+					injectBase[i * bitDepth + 1] = static_cast<unsigned char>((i * 17 + 43) & 0xFF);
+					injectBase[i * bitDepth + 2] = static_cast<unsigned char>((i * 11 + 77) & 0xFF);
+				}
+				std::vector<unsigned char> injectScalar = injectBase;
+				std::vector<unsigned char> injectSimd = injectBase;
+				AltaLuxKernels::InjectRGBLumaWithOriginalLuma(injectScalar.data(), injectNewLuma.data(),
+					injectOriginalLuma.data(), injectPixels, bitDepth, reciprocalLut,
+					AltaLuxKernels::KernelImplementation::Scalar);
+				AltaLuxKernels::InjectRGBLumaWithOriginalLuma(injectSimd.data(), injectNewLuma.data(),
+					injectOriginalLuma.data(), injectPixels, bitDepth, reciprocalLut, implementation);
+				Assert::IsTrue(memcmp(injectScalar.data(), injectSimd.data(), injectScalar.size()) == 0);
+			}
+
 			// End-to-end parity through the full pipeline with the stage active.
 			const int pipelineWidth = 64;
 			const int pipelineHeight = 48;

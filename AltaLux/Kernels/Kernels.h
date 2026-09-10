@@ -45,8 +45,9 @@
 //   Vectorized above scalar:
 //     ExtractPackedYUVLuma / InjectPackedYUVLuma     packed 16-bit YUV words
 //     ExtractRGBLuma                                 RGB/BGR, 24 and 32 bpp
-//     InjectRGBLuma / InjectRGBLumaWithOriginalLuma  RGB/BGR 32 bpp only; SSSE3
-//                                                    has no gather, so the
+//     InjectRGBLuma                                  RGB/BGR 32 bpp only
+//     InjectRGBLumaWithOriginalLuma                  RGB/BGR, 24 and 32 bpp;
+//                                                    SSSE3 has no gather, so the
 //                                                    reciprocal lookup and the
 //                                                    scale cap stay scalar there
 //     ScaleDownBox                                   scaleFactor == 2 only

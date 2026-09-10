@@ -446,18 +446,71 @@ namespace AltaLuxKernels
 				4, firstFactor, secondFactor, thirdFactor, scalingLog, reciprocalLut);
 	}
 
-	// Injects processed luma into RGB32/BGR32 pixels when extraction has cached
-	// the original luma. Eight RGB32 pixels are loaded, original/new luma bytes
-	// are widened, reciprocal and scale-cap tables are gathered, and the scaled
-	// RGB channels are rebuilt while preserving alpha/padding bytes.
+	// Injects processed luma into RGB32/BGR32 and RGB24/BGR24 pixels when
+	// extraction has cached the original luma. RGB32 processes eight pixels
+	// per iteration with original/new luma bytes widened, reciprocal and
+	// scale-cap tables gathered, and the scaled RGB channels rebuilt while
+	// preserving alpha/padding bytes. BGR24 expands two 4-px groups to BGRX
+	// dwords with PSHUFB, shares one reciprocal and one scale-cap gather per
+	// eight pixels, and interleaves the scaled channels back to bytes.
 	void InjectRGBLumaWithOriginalLumaAVX2(unsigned char* image, const unsigned char* luma,
 		const unsigned char* originalLuma, int pixelCount, int pixelStride,
 		const int* reciprocalLut)
 	{
-		if (pixelStride != 4)
+		if (pixelStride != 3 && pixelStride != 4)
 		{
 			InjectRGBLumaWithOriginalLumaScalar(image, luma, originalLuma, pixelCount,
 				pixelStride, reciprocalLut);
+			return;
+		}
+
+		if (pixelStride == 3)
+		{
+			// The loop stops ten pixels short so the second group's 16-byte
+			// BGRX loads never read past the buffer; the remainder takes the
+			// SSSE3 path's 4-px loop and then the scalar tail.
+			const __m128i channelMask = _mm_set1_epi32(0xFF);
+			const __m128i scaleRounding = _mm_set1_epi32(1 << 7);
+			const __m256i scaleRounding256 = _mm256_set1_epi32(1 << 7);
+			int i = 0;
+			for (; i <= pixelCount - 10; i += 8)
+			{
+				const __m128i pixA = LoadRGB24AsRGBX4(image + (i * 3));
+				const __m128i pixB = LoadRGB24AsRGBX4(image + ((i + 4) * 3));
+				const __m256i oldY = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(originalLuma + i)));
+				const __m256i newY = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(luma + i)));
+				const __m256i reciprocal = _mm256_i32gather_epi32(reciprocalLut, oldY, 4);
+				__m256i scale = _mm256_srli_epi32(_mm256_add_epi32(
+					_mm256_mullo_epi32(newY, reciprocal), scaleRounding256), 8);
+
+				const __m128i cB0 = _mm_and_si128(pixA, channelMask);
+				const __m128i cG0 = _mm_and_si128(_mm_srli_epi32(pixA, 8), channelMask);
+				const __m128i cR0 = _mm_and_si128(_mm_srli_epi32(pixA, 16), channelMask);
+				const __m128i cB1 = _mm_and_si128(pixB, channelMask);
+				const __m128i cG1 = _mm_and_si128(_mm_srli_epi32(pixB, 8), channelMask);
+				const __m128i cR1 = _mm_and_si128(_mm_srli_epi32(pixB, 16), channelMask);
+				const __m128i maxA = _mm_max_epi32(_mm_max_epi32(cB0, cG0), cR0);
+				const __m128i maxB = _mm_max_epi32(_mm_max_epi32(cB1, cG1), cR1);
+				const __m256i maxChannel = _mm256_inserti128_si256(
+					_mm256_castsi128_si256(maxA), maxB, 1);
+				scale = _mm256_min_epi32(scale,
+					_mm256_i32gather_epi32(g_ScaleCapLut.table, maxChannel, 4));
+
+				const __m128i scaleA = _mm256_castsi256_si128(scale);
+				const __m128i scaleB = _mm256_extracti128_si256(scale, 1);
+				const __m128i outB0 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cB0, scaleA), scaleRounding), 8);
+				const __m128i outG0 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cG0, scaleA), scaleRounding), 8);
+				const __m128i outR0 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cR0, scaleA), scaleRounding), 8);
+				const __m128i outB1 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cB1, scaleB), scaleRounding), 8);
+				const __m128i outG1 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cG1, scaleB), scaleRounding), 8);
+				const __m128i outR1 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cR1, scaleB), scaleRounding), 8);
+				StoreRGB24Pixels4(image + (i * 3), InterleaveChannels3x4(outB0, outG0, outR0));
+				StoreRGB24Pixels4(image + ((i + 4) * 3), InterleaveChannels3x4(outB1, outG1, outR1));
+			}
+			InjectRGBLumaWithOriginalLumaSSSE3(image + (i * 3), luma + i, originalLuma + i,
+				pixelCount - i, 3, reciprocalLut);
 			return;
 		}
 
