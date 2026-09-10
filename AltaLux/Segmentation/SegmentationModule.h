@@ -20,9 +20,11 @@ public:
 	bool IsLoaded() const noexcept;
 	ISegmentationEngine* GetEngine() const noexcept;
 	const std::wstring& GetLastError() const noexcept;
+	bool IsPackageMissing() const noexcept;
 
 private:
 	HMODULE module_ = nullptr;
 	ISegmentationEngine* engine_ = nullptr;
 	std::wstring lastError_;
+	bool packageMissing_ = false;
 };

@@ -23,6 +23,7 @@ SegmentationModule::~SegmentationModule()
 bool SegmentationModule::Load(HINSTANCE hostModule) noexcept
 {
 	Unload();
+	packageMissing_ = false;
 #if !defined(_WIN64)
 	(void)hostModule;
 	lastError_ = L"Object selection is available only in the x64 AltaLux plug-in.";
@@ -52,6 +53,7 @@ bool SegmentationModule::Load(HINSTANCE hostModule) noexcept
 		LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 	if (module_ == nullptr)
 	{
+		packageMissing_ = true;
 		lastError_ = std::wstring(L"AltaLuxSegmentation.dll could not be loaded from the AltaLux plug-in directory.\n\n") +
 			FormatWindowsError(::GetLastError());
 		return false;
@@ -61,6 +63,7 @@ bool SegmentationModule::Load(HINSTANCE hostModule) noexcept
 		GetProcAddress(module_, ALTALUX_SEGMENTATION_FACTORY_NAME));
 	if (factory == nullptr)
 	{
+		packageMissing_ = true;
 		lastError_ = L"AltaLuxSegmentation.dll does not export the required versioned factory.";
 		Unload();
 		return false;
@@ -69,6 +72,7 @@ bool SegmentationModule::Load(HINSTANCE hostModule) noexcept
 	const SegmentationStatus status = factory(ALTALUX_SEGMENTATION_ABI_VERSION, &engine_);
 	if (status != SegmentationStatus::Ok || engine_ == nullptr)
 	{
+		packageMissing_ = true;
 		lastError_ = status == SegmentationStatus::UnsupportedAbi ?
 			L"AltaLuxSegmentation.dll is incompatible with this version of AltaLux." :
 			L"AltaLuxSegmentation.dll could not initialize. Verify that ONNX Runtime, both AltaLux MobileSAM models, and the model manifest are installed beside AltaLux.dll.";
@@ -107,4 +111,9 @@ ISegmentationEngine* SegmentationModule::GetEngine() const noexcept
 const std::wstring& SegmentationModule::GetLastError() const noexcept
 {
 	return lastError_;
+}
+
+bool SegmentationModule::IsPackageMissing() const noexcept
+{
+	return packageMissing_;
 }

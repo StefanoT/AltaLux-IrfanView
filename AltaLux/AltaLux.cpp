@@ -15,6 +15,7 @@ The full license text is in the LICENSE file at the root of the repository.
 #include <windowsx.h>
 #include <Uxtheme.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <vssym32.h>
 
 #include <algorithm>
@@ -42,6 +43,7 @@ The full license text is in the LICENSE file at the root of the repository.
 
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "Shell32.lib")
 
 using WeakImagePtr = std::weak_ptr<std::vector<unsigned char>>;
 using SharedImagePtr = std::shared_ptr<std::vector<unsigned char>>;
@@ -68,6 +70,8 @@ namespace
 	const UINT WM_ALTALUX_SEGMENTATION_PREPARED = WM_APP + 42;
 	const UINT WM_ALTALUX_SEGMENTATION_COMPLETED = WM_APP + 43;
 	const UINT WM_ALTALUX_PREVIEW_READY = WM_APP + 44;
+	const wchar_t* const SEGMENTATION_RELEASES_URL =
+		L"https://github.com/StefanoT/AltaLux-IrfanView/releases";
 	const UINT WM_ALTALUX_APPLY_DONE = WM_APP + 45;
 	const UINT_PTR APPLY_BUSY_TIMER_ID = 1;
 
@@ -164,6 +168,7 @@ namespace
 		SegmentationPoint point = {};
 		std::vector<unsigned char> operationMask;
 		std::wstring error;
+		bool packageMissing = false;
 	};
 
 	struct SelectionDialogSession
@@ -1235,6 +1240,7 @@ namespace
 				{
 					result->status = SegmentationStatus::RuntimeError;
 					result->error = gSelectionSession->module.GetLastError();
+					result->packageMissing = gSelectionSession->module.IsPackageMissing();
 					PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
 					return;
 				}
@@ -2283,9 +2289,27 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		{
 			gSelectionSession->ready = false;
 			gSelectionSession->selectiveMode = false;
-			const std::wstring message = result->error.empty() ?
-				L"The optional AltaLux AI selection package is unavailable." : result->error;
-			MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection", MB_OK | MB_ICONINFORMATION);
+			if (result->packageMissing)
+			{
+				const std::wstring message =
+					L"The optional AI object selection package is not installed.\n\n"
+					L"Object selection needs the files from the AltaLux-AI-x64 release package "
+					L"(AltaLuxSegmentation.dll, the ONNX Runtime libraries, and the MobileSAM models) "
+					L"extracted in the same folder as AltaLux.dll. The standard AltaLux filter keeps "
+					L"working without them.\n\n"
+					L"Do you want to open the download page now?";
+				if (MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection",
+					MB_YESNO | MB_ICONINFORMATION) == IDYES)
+				{
+					ShellExecuteW(hwnd, L"open", SEGMENTATION_RELEASES_URL, nullptr, nullptr, SW_SHOWNORMAL);
+				}
+			}
+			else
+			{
+				const std::wstring message = result->error.empty() ?
+					L"The optional AltaLux AI selection package is unavailable." : result->error;
+				MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection", MB_OK | MB_ICONINFORMATION);
+			}
 		}
 		UpdateSelectionControls(hwnd);
 		RefreshPreview(hwnd);
