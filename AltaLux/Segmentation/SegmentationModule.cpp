@@ -24,8 +24,10 @@ bool SegmentationModule::Load(HINSTANCE hostModule) noexcept
 {
 	Unload();
 	packageMissing_ = false;
+	x64Required_ = false;
 #if !defined(_WIN64)
 	(void)hostModule;
+	x64Required_ = true;
 	lastError_ = L"Object selection is available only in the x64 AltaLux plug-in.";
 	return false;
 #else
@@ -116,4 +118,9 @@ const std::wstring& SegmentationModule::GetLastError() const noexcept
 bool SegmentationModule::IsPackageMissing() const noexcept
 {
 	return packageMissing_;
+}
+
+bool SegmentationModule::IsX64Required() const noexcept
+{
+	return x64Required_;
 }

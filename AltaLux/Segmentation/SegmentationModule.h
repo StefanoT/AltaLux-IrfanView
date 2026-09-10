@@ -21,10 +21,12 @@ public:
 	ISegmentationEngine* GetEngine() const noexcept;
 	const std::wstring& GetLastError() const noexcept;
 	bool IsPackageMissing() const noexcept;
+	bool IsX64Required() const noexcept;
 
 private:
 	HMODULE module_ = nullptr;
 	ISegmentationEngine* engine_ = nullptr;
 	std::wstring lastError_;
 	bool packageMissing_ = false;
+	bool x64Required_ = false;
 };

@@ -169,6 +169,7 @@ namespace
 		std::vector<unsigned char> operationMask;
 		std::wstring error;
 		bool packageMissing = false;
+		bool x64Required = false;
 	};
 
 	struct SelectionDialogSession
@@ -1241,6 +1242,7 @@ namespace
 					result->status = SegmentationStatus::RuntimeError;
 					result->error = gSelectionSession->module.GetLastError();
 					result->packageMissing = gSelectionSession->module.IsPackageMissing();
+					result->x64Required = gSelectionSession->module.IsX64Required();
 					PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
 					return;
 				}
@@ -2289,14 +2291,22 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		{
 			gSelectionSession->ready = false;
 			gSelectionSession->selectiveMode = false;
-			if (result->packageMissing)
+			if (result->x64Required)
+			{
+				MessageBoxW(hwnd,
+					L"AI object selection is only available in the 64-bit version of the "
+					L"AltaLux plug-in.\n\n"
+					L"The standard AltaLux filter keeps working.",
+					L"AltaLux object selection", MB_OK | MB_ICONINFORMATION);
+			}
+			else if (result->packageMissing)
 			{
 				const std::wstring message =
 					L"The optional AI object selection package is not installed.\n\n"
-					L"Object selection needs the files from the AltaLux-AI-x64 release package "
-					L"(AltaLuxSegmentation.dll, the ONNX Runtime libraries, and the MobileSAM models) "
-					L"extracted in the same folder as AltaLux.dll. The standard AltaLux filter keeps "
-					L"working without them.\n\n"
+					L"Object selection is unavailable, but the standard AltaLux filter "
+					L"keeps working.\n\n"
+					L"Download the AltaLux-AI-x64 package from the releases page and "
+					L"extract its contents into the same folder as AltaLux.dll.\n\n"
 					L"Do you want to open the download page now?";
 				if (MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection",
 					MB_YESNO | MB_ICONINFORMATION) == IDYES)
