@@ -44,6 +44,7 @@ The full license text is in the LICENSE file at the root of the repository.
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Comctl32.lib")
 
 using WeakImagePtr = std::weak_ptr<std::vector<unsigned char>>;
 using SharedImagePtr = std::shared_ptr<std::vector<unsigned char>>;
@@ -2302,14 +2303,30 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			else if (result->packageMissing)
 			{
 				const std::wstring message =
-					L"The optional AI object selection package is not installed.\n\n"
-					L"Object selection is unavailable, but the standard AltaLux filter "
-					L"keeps working.\n\n"
-					L"Download the AltaLux-AI-x64 package from the releases page and "
-					L"extract its contents into the same folder as AltaLux.dll.\n\n"
-					L"Do you want to open the download page now?";
-				if (MessageBoxW(hwnd, message.c_str(), L"AltaLux object selection",
-					MB_YESNO | MB_ICONINFORMATION) == IDYES)
+					L"The optional AI package required for object selection is not installed. "
+					L"The standard AltaLux filter will continue to work.\n\n"
+					L"To enable object selection, download and run the AltaLux-AI-x64 setup, "
+					L"which installs the files into the IrfanView Plugins folder. The "
+					L"AltaLux-AI-x64 ZIP package is also available for manual extraction "
+					L"beside AltaLux.dll.";
+				const TASKDIALOG_BUTTON buttons[] = {
+					{ IDYES, L"Open download page" }
+				};
+				TASKDIALOGCONFIG config = {};
+				config.cbSize = sizeof(config);
+				config.hwndParent = hwnd;
+				config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+				config.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+				config.pszWindowTitle = L"AI object selection unavailable";
+				config.pszMainIcon = TD_INFORMATION_ICON;
+				config.pszContent = message.c_str();
+				config.cButtons = static_cast<UINT>(std::size(buttons));
+				config.pButtons = buttons;
+				config.nDefaultButton = IDYES;
+
+				int pressedButton = IDCANCEL;
+				if (SUCCEEDED(TaskDialogIndirect(&config, &pressedButton, nullptr, nullptr)) &&
+					pressedButton == IDYES)
 				{
 					ShellExecuteW(hwnd, L"open", SEGMENTATION_RELEASES_URL, nullptr, nullptr, SW_SHOWNORMAL);
 				}

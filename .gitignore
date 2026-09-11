@@ -31,6 +31,10 @@ AltaLuxSegmentation/obj/
 .codegraph/
 .codegraph/.gitignore
 
+# Release packaging artifacts
+ai-package/
+AltaLux-AI-x64-*-setup.exe
+
 # Intentionally local-only documents (not distributed with the repository)
 CLAUDE.md
 BLOG_ALTALUX_V2.md
@@ -42,3 +46,5 @@ docs/images/altalux-v2-optimization-loop-v2.png
 .zcode/
 .zcode/
 AltaLux/AltaLux/Debug/
+BLOG_ALTALUX_V3.md
+AltaLuxSegmentation/Output/

@@ -11,6 +11,14 @@ The optional x64 add-on consists of these files, all installed directly beside
 - `AltaLuxSegmentation.models.json`
 - `AltaLuxSegmentation-THIRD-PARTY-NOTICES.txt`
 
+Releases publish these files as `AltaLux-AI-x64-<version>-setup.exe`, an Inno
+Setup installer (script: `AIPackage.iss` in this folder) that defaults to the
+IrfanView `Plugins` directory detected from the registry, warns when the chosen
+folder does not contain `AltaLux.dll`, and registers an uninstall entry. The
+same files are also published as a `AltaLux-AI-x64-<version>.zip` for portable
+or scripted installs; extract it directly beside `AltaLux.dll`, without a
+subfolder.
+
 AltaLux loads the module by absolute path from its own directory. It does not
 search the process working directory or `PATH`. If any component is absent,
 the normal whole-image filter remains available.

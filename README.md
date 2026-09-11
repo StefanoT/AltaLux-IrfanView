@@ -53,17 +53,22 @@ versioned zips that each unzip to `AltaLux.dll`:
 
 - `AltaLux-x64-<version>.zip` for 64-bit IrfanView
 - `AltaLux-Win32-<version>.zip` for 32-bit IrfanView
-- `AltaLux-AI-x64-<version>.zip` for the optional AI add-on (x64 only)
+- `AltaLux-AI-x64-<version>-setup.exe` installer and `AltaLux-AI-x64-<version>.zip`
+  for the optional AI add-on (x64 only)
 
 ### Optional AI object selection
 
 The x64 plug-in can apply AltaLux through MobileSAM-generated object masks. The
 base `AltaLux.dll` remains fully functional without the AI files. To enable
-object selection, extract every file from the `AltaLux-AI-x64-<version>.zip`
-release package directly into the same IrfanView `Plugins` folder as
-`AltaLux.dll`; do not create a subfolder. The package contains
-`AltaLuxSegmentation.dll`, the ONNX Runtime DLLs, the encoder/decoder `.onnx`
-models, and a manifest with checksums.
+object selection, download and run the `AltaLux-AI-x64-<version>-setup.exe`
+installer: it defaults to the IrfanView `Plugins` folder detected from the
+registry (64-bit IrfanView), warns if the chosen folder does not contain
+`AltaLux.dll`, and registers an uninstall entry in Apps & Features. For
+portable installs or scripted deployment, extract every file from the
+`AltaLux-AI-x64-<version>.zip` release package directly into the same IrfanView
+`Plugins` folder as `AltaLux.dll`; do not create a subfolder. The package
+contains `AltaLuxSegmentation.dll`, the ONNX Runtime DLLs, the encoder/decoder
+`.onnx` models, and a manifest with checksums.
 
 AltaLux loads the segmentation module by absolute path from its own directory;
 it does not search the process working directory or `PATH`. If any component is
@@ -513,7 +518,9 @@ The unit test suite contains 40 tests. Coverage includes:
   `ChromaProtection` in the INI file; `0` keeps prior output byte-identical.
 - Added the optional AI object selection add-on: MobileSAM-generated object
   masks applied through a feathered blend, shipped as the separate, versioned
-  `AltaLux-AI-x64-<version>.zip` release package (x64 only).
+  `AltaLux-AI-x64-<version>-setup.exe` installer (defaults to the detected
+  IrfanView Plugins folder) plus a `AltaLux-AI-x64-<version>.zip` package for
+  portable or scripted installs (x64 only).
 - Replaced the fit/1:1 preview toggle with continuous zoom: the mouse wheel
   zooms toward the cursor and dragging pans the zoomed image, with `Fit` and
   `1:1` as view resets. Preview processing moved to a background worker with

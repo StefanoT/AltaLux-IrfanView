@@ -30,6 +30,8 @@ jobs:
           "X64_RELEASE_ASSET_PATH=AltaLux-x64-$version.zip" | Add-Content $env:GITHUB_ENV
           "WIN32_RELEASE_ASSET_PATH=AltaLux-Win32-$version.zip" | Add-Content $env:GITHUB_ENV
           "AI_RELEASE_ASSET_PATH=AltaLux-AI-x64-$version.zip" | Add-Content $env:GITHUB_ENV
+          "AI_SETUP_ASSET_PATH=AltaLux-AI-x64-$version-setup.exe" | Add-Content $env:GITHUB_ENV
+          "AI_PACKAGE_VERSION=$version" | Add-Content $env:GITHUB_ENV
 
       - name: Set up Windows 10 SDK
         uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
@@ -84,6 +86,22 @@ jobs:
           Copy-Item AltaLuxSegmentation/AltaLuxSegmentation-THIRD-PARTY-NOTICES.txt ai-package/
           Compress-Archive ai-package/* ${{ env.AI_RELEASE_ASSET_PATH }}
 
+      - name: Compile optional AI package installer
+        shell: pwsh
+        # Inno Setup 6 ships on the runner image; AIPackage.iss packages the
+        # same verified ai-package staging directory as the zip and resolves
+        # the default Plugins destination from the registry at install time.
+        run: |
+          $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found; looked in: $candidates" }
+          & $iscc "/DAIPackageVersion=$env:AI_PACKAGE_VERSION" "AltaLuxSegmentation/AIPackage.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $env:AI_SETUP_ASSET_PATH)) { throw "Installer not produced: $env:AI_SETUP_ASSET_PATH" }
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,6 +110,7 @@ jobs:
           "${{ env.X64_RELEASE_ASSET_PATH }}"
           "${{ env.WIN32_RELEASE_ASSET_PATH }}"
           "${{ env.AI_RELEASE_ASSET_PATH }}"
+          "${{ env.AI_SETUP_ASSET_PATH }}"
           --verify-tag
           --generate-notes
           --title "${{ github.ref_name }}"
