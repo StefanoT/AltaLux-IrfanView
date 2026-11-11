@@ -695,6 +695,51 @@ namespace AltaLuxUnitTest
 			}
 		}
 
+		static void AssertOddSizeMultiscaleMatchesAcrossTiers(int width, int height)
+		{
+			const UiState state = MakeProcessingState(45, 25, 25);
+			for (int bitDepth = Constants::RGB24PixelSize; bitDepth <= Constants::RGB32PixelSize; ++bitDepth)
+			{
+				const std::vector<unsigned char> input = MakePatternImage(width, height, bitDepth);
+				std::vector<unsigned char> scalarOutput(input.size(), 0);
+				Assert::IsTrue(ProcessMultiscaleImageWithKernels(input.data(), scalarOutput.data(),
+					width, height, bitDepth, state, AltaLuxKernels::KernelImplementation::Scalar));
+				Assert::IsTrue(SumAbsoluteRGBDifference(input, scalarOutput, bitDepth) > 0);
+
+				const AltaLuxKernels::KernelImplementation tiers[] =
+					{ AltaLuxKernels::KernelImplementation::SSSE3, AltaLuxKernels::KernelImplementation::AVX2 };
+				for (AltaLuxKernels::KernelImplementation tier : tiers)
+				{
+					if (!AltaLuxKernels::IsImplementationSupported(tier))
+					{
+						continue;
+					}
+					std::vector<unsigned char> tierOutput(input.size(), 0);
+					Assert::IsTrue(ProcessMultiscaleImageWithKernels(input.data(), tierOutput.data(),
+						width, height, bitDepth, state, tier));
+					AssertVectorsEqual(scalarOutput, tierOutput);
+				}
+			}
+		}
+
+		TEST_METHOD(MultiscaleHandlesOddSizesAcrossTiers)
+		{
+			// The engine has no dimension constraint: every pixel of an odd
+			// image is processed, the tile grid folds the remainder into the
+			// last border tiles, and the SIMD tiers agree with the scalar
+			// baseline byte-for-byte.
+			AssertOddSizeMultiscaleMatchesAcrossTiers(1001, 667);  // sequential layer path
+			AssertOddSizeMultiscaleMatchesAcrossTiers(1033, 1021); // parallel layer path
+		}
+
+		TEST_METHOD(MultiscaleHandlesTinyOddSizesAcrossTiers)
+		{
+			// Smallest sensible coverage: tiles 1 px wide produce zero-width
+			// half-region border strips; both sizes must process and match.
+			AssertOddSizeMultiscaleMatchesAcrossTiers(17, 9);
+			AssertOddSizeMultiscaleMatchesAcrossTiers(3, 3);
+		}
+
 		TEST_METHOD(SelectionAddRemoveAndUndo)
 		{
 			std::vector<unsigned char> selection(8, 0);

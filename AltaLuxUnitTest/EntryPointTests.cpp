@@ -129,6 +129,96 @@ namespace AltaLuxUnitTest
 			GlobalUnlock(hDib);
 		}
 
+		struct DibGeometry
+		{
+			int width = 0;
+			int height = 0;
+			int bytesPerPixel = 0;
+			bool topDown = false;
+		};
+
+		DibGeometry GetDibGeometry(HGLOBAL hDib)
+		{
+			auto* header = static_cast<BITMAPINFOHEADER*>(GlobalLock(hDib));
+			DibGeometry geometry;
+			geometry.width = header->biWidth;
+			geometry.height = header->biHeight < 0 ? -header->biHeight : header->biHeight;
+			geometry.bytesPerPixel = header->biBitCount / 8;
+			geometry.topDown = header->biHeight < 0;
+			GlobalUnlock(hDib);
+			return geometry;
+		}
+
+		// Compares a snapshot against the DIB: every pixel outside the visual
+		// selection rect (padding bytes included) must be byte-identical.
+		void AssertOutsideRectUnchanged(HGLOBAL hDib, const std::vector<unsigned char>& before,
+			const RECT& selection)
+		{
+			const DibGeometry geometry = GetDibGeometry(hDib);
+			const std::vector<unsigned char> after = SnapshotDib(hDib);
+			const size_t stride = DibStrideBytes(geometry.width, geometry.bytesPerPixel * 8);
+			const unsigned char* oldBits = before.data() + sizeof(BITMAPINFOHEADER);
+			const unsigned char* newBits = after.data() + sizeof(BITMAPINFOHEADER);
+			for (int memoryRow = 0; memoryRow < geometry.height; ++memoryRow)
+			{
+				const int visualRow = geometry.topDown ? memoryRow : geometry.height - 1 - memoryRow;
+				for (int x = 0; x < geometry.width; ++x)
+				{
+					if (x >= selection.left && x < selection.right &&
+						visualRow >= selection.top && visualRow < selection.bottom)
+					{
+						continue;
+					}
+					const size_t offset = memoryRow * stride + x * geometry.bytesPerPixel;
+					Assert::IsTrue(memcmp(oldBits + offset, newBits + offset, geometry.bytesPerPixel) == 0,
+						(L"a pixel outside the selection changed: x=" + std::to_wstring(x) +
+							L" visualRow=" + std::to_wstring(visualRow)).c_str());
+				}
+			}
+		}
+
+		// Allocates a quadrant image with clearly different dark textures per
+		// visual quadrant, so a wrong selection region is unmistakable.
+		HGLOBAL BuildQuadrantDib(int width, int height, int bitCount, bool topDown)
+		{
+			HGLOBAL hDib = BuildTestDib(width, height, bitCount, topDown);
+			if (hDib == nullptr)
+			{
+				return nullptr;
+			}
+			auto* header = static_cast<BITMAPINFOHEADER*>(GlobalLock(hDib));
+			const size_t stride = DibStrideBytes(width, bitCount);
+			auto* bits = reinterpret_cast<unsigned char*>(header + 1);
+			const int bytesPerPixel = bitCount / 8;
+			for (int memoryRow = 0; memoryRow < height; ++memoryRow)
+			{
+				const int visualRow = topDown ? memoryRow : height - 1 - memoryRow;
+				unsigned char* row = bits + memoryRow * stride;
+				for (int x = 0; x < width; ++x)
+				{
+					const int quadrant = (x >= width / 2 ? 1 : 0) + (visualRow >= height / 2 ? 2 : 0);
+					const unsigned char base = static_cast<unsigned char>(40 + quadrant * 45);
+					for (int channel = 0; channel < bytesPerPixel; ++channel)
+					{
+						row[x * bytesPerPixel + channel] =
+							static_cast<unsigned char>(base + ((x * 7 + visualRow * 13 + channel * 29) % 40));
+					}
+				}
+			}
+			GlobalUnlock(hDib);
+			return hDib;
+		}
+
+		bool PixelChanged(HGLOBAL hDib, const std::vector<unsigned char>& before, int x, int visualRow)
+		{
+			const DibGeometry geometry = GetDibGeometry(hDib);
+			const std::vector<unsigned char> after = SnapshotDib(hDib);
+			const size_t stride = DibStrideBytes(geometry.width, geometry.bytesPerPixel * 8);
+			const int memoryRow = geometry.topDown ? visualRow : geometry.height - 1 - visualRow;
+			const size_t offset = sizeof(BITMAPINFOHEADER) + memoryRow * stride + x * geometry.bytesPerPixel;
+			return memcmp(before.data() + offset, after.data() + offset, geometry.bytesPerPixel) != 0;
+		}
+
 		bool RunDirect(HGLOBAL hDib, RECT rect)
 		{
 			return StartEffects2(hDib, nullptr, 0, rect, 50, 50, nullptr, nullptr, 0);
@@ -188,6 +278,75 @@ namespace AltaLuxUnitTest
 				const auto after = SnapshotDib(hDib);
 				Assert::IsTrue(memcmp(pristine.data(), after.data(), pristine.size()) == 0,
 					(std::to_wstring(n) + L": the DIB must stay untouched on failure").c_str());
+			}
+			GlobalFree(hDib);
+		}
+
+		TEST_METHOD(DirectModeProcessesExactlyTheSelectedRect)
+		{
+			// An odd selection at odd offsets must be applied pixel-exactly:
+			// everything outside stays untouched (IrfanView's rect is in
+			// visual coordinates) and the border pixels of the selection are
+			// processed, not snapped away to a multiple of 8.
+			const RECT selection = MakeSelectionRect(13, 7, 21, 17);
+			// The checker wants exclusive edges; IrfanView rects carry
+			// width/height in right/bottom.
+			const RECT edges = { selection.left, selection.top,
+				selection.left + selection.right, selection.top + selection.bottom };
+			for (int bitCount = 24; bitCount <= 32; bitCount += 8)
+			{
+				HGLOBAL hDib = BuildTestDib(65, 49, bitCount, false);
+				Assert::IsNotNull(hDib);
+				const auto before = SnapshotDib(hDib);
+				Assert::IsTrue(RunDirect(hDib, selection));
+				AssertOutsideRectUnchanged(hDib, before, edges);
+				Assert::IsTrue(PixelChanged(hDib, before, selection.left + selection.right - 1,
+					selection.top + selection.bottom - 1),
+					L"the last column/row of the selection must be processed");
+				Assert::IsTrue(PixelChanged(hDib, before, selection.left, selection.top),
+					L"the first pixel of the selection must be processed");
+				GlobalFree(hDib);
+			}
+		}
+
+		TEST_METHOD(DirectModeSelectsTheVisualTopLeftQuadrantOnBottomUpDibs)
+		{
+			// Bottom-up DIBs store memory row 0 at the visual bottom, so the
+			// selection rect must map onto the mirrored memory rows. A
+			// quadrant image with a top-left selection proves the mapping.
+			const int width = 64;
+			const int height = 48;
+			HGLOBAL hDib = BuildQuadrantDib(width, height, 24, false);
+			Assert::IsNotNull(hDib);
+			const RECT selection = MakeSelectionRect(0, 0, width / 2, height / 2);
+			const RECT edges = { 0, 0, width / 2, height / 2 };
+			const auto before = SnapshotDib(hDib);
+			Assert::IsTrue(RunDirect(hDib, selection));
+			AssertOutsideRectUnchanged(hDib, before, edges);
+			Assert::IsTrue(PixelChanged(hDib, before, 3, 3),
+				L"the visual top-left quadrant must be processed");
+			GlobalFree(hDib);
+		}
+
+		TEST_METHOD(DirectModeLeavesTinyAndEmptySelectionsUntouched)
+		{
+			// Selections that are empty after clamping, or too small for a
+			// sensible tile, succeed as no-ops instead of failing silently.
+			HGLOBAL hDib = BuildTestDib(64, 48, 24, false);
+			Assert::IsNotNull(hDib);
+			const auto pristine = SnapshotDib(hDib);
+			const RECT cases[] =
+			{
+				MakeSelectionRect(10, 10, 0, 10),    // empty
+				MakeSelectionRect(10, 10, 3, 3),     // below the minimum tile size
+				MakeSelectionRect(70, 10, 20, 10),   // fully outside; clamps to empty
+			};
+			for (const RECT& selection : cases)
+			{
+				Assert::IsTrue(RunDirect(hDib, selection));
+				const auto after = SnapshotDib(hDib);
+				Assert::IsTrue(memcmp(pristine.data(), after.data(), pristine.size()) == 0,
+					L"a no-op selection must leave the DIB untouched");
 			}
 			GlobalFree(hDib);
 		}
