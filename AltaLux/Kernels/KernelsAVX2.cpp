@@ -547,6 +547,133 @@ namespace AltaLuxKernels
 			pixelCount - i, 4, reciprocalLut);
 	}
 
+	// Fused multiscale blend. RGB32 processes eight pixels per iteration: the
+	// weighted layer sum keeps two fractional bits below the 8-bit luma, the
+	// reciprocal and scale-cap tables are gathered like in
+	// InjectRGBLumaWithOriginalLumaAVX2, and the Q8 scale multiply stays inside
+	// unsigned 32-bit range (65280 * 65536 < 2^32) so the 32-bit lanes hold it
+	// exactly; the >> 16 is logical because the product is unsigned. BGR24
+	// expands two 4-px groups to BGRX dwords with PSHUFB and shares one blend,
+	// one reciprocal gather and one cap gather per eight pixels, stopping ten
+	// pixels short so the second group's 16-byte loads never read past the
+	// buffer.
+	void BlendLumaAndInjectRGBAVX2(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut)
+	{
+		if (pixelStride != 3 && pixelStride != 4)
+		{
+			BlendLumaAndInjectRGBScalar(image, originalLuma, fineLuma, balancedLuma, smoothLuma,
+				fineWeight, balancedWeight, smoothWeight, pixelStart, pixelEnd, pixelStride,
+				reciprocalLut);
+			return;
+		}
+
+		const __m256i fineWeightVec = _mm256_set1_epi32(fineWeight);
+		const __m256i balancedWeightVec = _mm256_set1_epi32(balancedWeight);
+		const __m256i smoothWeightVec = _mm256_set1_epi32(smoothWeight);
+		const __m256i reciprocalRounding = _mm256_set1_epi32(1 << 15);
+		const __m256i scaleRounding = _mm256_set1_epi32(1 << 7);
+		int i = pixelStart;
+		if (pixelStride == 4)
+		{
+			const __m256i channelMask = _mm256_set1_epi32(0xFF);
+			const __m256i alphaMask = _mm256_set1_epi32(static_cast<int>(0xFF000000u));
+			for (; i <= pixelEnd - 8; i += 8)
+			{
+				const __m256i pixels = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(image + (i * 4)));
+				const __m256i fine = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(fineLuma + i)));
+				const __m256i balanced = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(balancedLuma + i)));
+				const __m256i smooth = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(smoothLuma + i)));
+				// Q10 weighted layer sum, then >> 2: up to 65280, i.e. Q8 with
+				// two fractional bits kept for the near-black pixels.
+				const __m256i blendQ8 = _mm256_srli_epi32(_mm256_add_epi32(_mm256_add_epi32(
+					_mm256_mullo_epi32(fine, fineWeightVec), _mm256_mullo_epi32(balanced, balancedWeightVec)),
+					_mm256_mullo_epi32(smooth, smoothWeightVec)), 2);
+				const __m256i y = _mm256_cvtepu8_epi32(
+					_mm_loadl_epi64(reinterpret_cast<const __m128i*>(originalLuma + i)));
+				const __m256i reciprocal = _mm256_i32gather_epi32(reciprocalLut, y, 4);
+				__m256i scale = _mm256_srli_epi32(_mm256_add_epi32(
+					_mm256_mullo_epi32(blendQ8, reciprocal), reciprocalRounding), 16);
+
+				const __m256i c0 = _mm256_and_si256(pixels, channelMask);
+				const __m256i c1 = _mm256_and_si256(_mm256_srli_epi32(pixels, 8), channelMask);
+				const __m256i c2 = _mm256_and_si256(_mm256_srli_epi32(pixels, 16), channelMask);
+				__m256i maxChannel = _mm256_max_epi32(c0, c1);
+				maxChannel = _mm256_max_epi32(maxChannel, c2);
+				scale = _mm256_min_epi32(scale,
+					_mm256_i32gather_epi32(g_ScaleCapLut.table, maxChannel, 4));
+
+				const __m256i out0 = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(c0, scale), scaleRounding), 8);
+				const __m256i out1 = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(c1, scale), scaleRounding), 8);
+				const __m256i out2 = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(c2, scale), scaleRounding), 8);
+				__m256i output = _mm256_or_si256(_mm256_and_si256(pixels, alphaMask), out0);
+				output = _mm256_or_si256(output, _mm256_slli_epi32(out1, 8));
+				output = _mm256_or_si256(output, _mm256_slli_epi32(out2, 16));
+				_mm256_storeu_si256(reinterpret_cast<__m256i*>(image + (i * 4)), output);
+			}
+			// The SSSE3 kernel indexes with absolute pixelStart, so the base
+			// pointers are passed unoffset.
+			BlendLumaAndInjectRGBSSSE3(image, originalLuma, fineLuma, balancedLuma,
+				smoothLuma, fineWeight, balancedWeight, smoothWeight, i, pixelEnd, 4,
+				reciprocalLut);
+			return;
+		}
+
+		const __m128i channelMask128 = _mm_set1_epi32(0xFF);
+		const __m128i scaleRounding128 = _mm_set1_epi32(1 << 7);
+		for (; i <= pixelEnd - 10; i += 8)
+		{
+			const __m128i pixA = LoadRGB24AsRGBX4(image + (i * 3));
+			const __m128i pixB = LoadRGB24AsRGBX4(image + ((i + 4) * 3));
+			const __m256i fine = _mm256_cvtepu8_epi32(
+				_mm_loadl_epi64(reinterpret_cast<const __m128i*>(fineLuma + i)));
+			const __m256i balanced = _mm256_cvtepu8_epi32(
+				_mm_loadl_epi64(reinterpret_cast<const __m128i*>(balancedLuma + i)));
+			const __m256i smooth = _mm256_cvtepu8_epi32(
+				_mm_loadl_epi64(reinterpret_cast<const __m128i*>(smoothLuma + i)));
+			const __m256i blendQ8 = _mm256_srli_epi32(_mm256_add_epi32(_mm256_add_epi32(
+				_mm256_mullo_epi32(fine, fineWeightVec), _mm256_mullo_epi32(balanced, balancedWeightVec)),
+				_mm256_mullo_epi32(smooth, smoothWeightVec)), 2);
+			const __m256i y = _mm256_cvtepu8_epi32(
+				_mm_loadl_epi64(reinterpret_cast<const __m128i*>(originalLuma + i)));
+			const __m256i reciprocal = _mm256_i32gather_epi32(reciprocalLut, y, 4);
+			__m256i scale = _mm256_srli_epi32(_mm256_add_epi32(
+				_mm256_mullo_epi32(blendQ8, reciprocal), reciprocalRounding), 16);
+
+			const __m128i cB0 = _mm_and_si128(pixA, channelMask128);
+			const __m128i cG0 = _mm_and_si128(_mm_srli_epi32(pixA, 8), channelMask128);
+			const __m128i cR0 = _mm_and_si128(_mm_srli_epi32(pixA, 16), channelMask128);
+			const __m128i cB1 = _mm_and_si128(pixB, channelMask128);
+			const __m128i cG1 = _mm_and_si128(_mm_srli_epi32(pixB, 8), channelMask128);
+			const __m128i cR1 = _mm_and_si128(_mm_srli_epi32(pixB, 16), channelMask128);
+			const __m128i maxA = _mm_max_epi32(_mm_max_epi32(cB0, cG0), cR0);
+			const __m128i maxB = _mm_max_epi32(_mm_max_epi32(cB1, cG1), cR1);
+			const __m256i maxChannel = _mm256_inserti128_si256(
+				_mm256_castsi128_si256(maxA), maxB, 1);
+			scale = _mm256_min_epi32(scale,
+				_mm256_i32gather_epi32(g_ScaleCapLut.table, maxChannel, 4));
+
+			const __m128i scaleA = _mm256_castsi256_si128(scale);
+			const __m128i scaleB = _mm256_extracti128_si256(scale, 1);
+			const __m128i outB0 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cB0, scaleA), scaleRounding128), 8);
+			const __m128i outG0 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cG0, scaleA), scaleRounding128), 8);
+			const __m128i outR0 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cR0, scaleA), scaleRounding128), 8);
+			const __m128i outB1 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cB1, scaleB), scaleRounding128), 8);
+			const __m128i outG1 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cG1, scaleB), scaleRounding128), 8);
+			const __m128i outR1 = _mm_srli_epi32(_mm_add_epi32(_mm_mullo_epi32(cR1, scaleB), scaleRounding128), 8);
+			StoreRGB24Pixels4(image + (i * 3), InterleaveChannels3x4(outB0, outG0, outR0));
+			StoreRGB24Pixels4(image + ((i + 4) * 3), InterleaveChannels3x4(outB1, outG1, outR1));
+		}
+		BlendLumaAndInjectRGBSSSE3(image, originalLuma, fineLuma, balancedLuma,
+			smoothLuma, fineWeight, balancedWeight, smoothWeight, i, pixelEnd, 3,
+			reciprocalLut);
+	}
+
 	// Downscales an RGB24/RGB32 image with a box filter. AVX2 handles the common
 	// 2x preview reduction by loading contiguous source bytes, using VPSHUFB to
 	// split even and odd horizontal samples in each 128-bit lane, then averaging

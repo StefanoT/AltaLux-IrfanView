@@ -432,6 +432,54 @@ void BenchmarkCriticalKernels()
 		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), SAMPLE_PIXELS, 0, SAMPLE_PIXELS, 4,
 			WEIGHT_SCALE_LOG2, WEIGHT_HALF, implementation);
 	});
+	// The fused blend kernel that replaced the accumulate/write-back pair: one
+	// pass reading the original luma plus three CLAHE planes, injecting the
+	// blended luma into the BGR pixels. Weights mirror the default 45/25/25
+	// slider state (243 + 435 + 346 = 1024).
+	BenchmarkAllImplementations("RGB32 Multiscale Blend Luma + Inject", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		memcpy(target.data(), rgb32.data(), target.size());
+		AltaLuxKernels::BlendLumaAndInjectRGB(target.data(), luma.data(), luma.data(), luma.data(),
+			luma.data(), 243, 435, 346, 0, SAMPLE_PIXELS, 4, reciprocalLut, implementation);
+	});
+	BenchmarkAllImplementations("RGB24 Multiscale Blend Luma + Inject", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		memcpy(target.data(), rgb24.data(), rgb24.size());
+		AltaLuxKernels::BlendLumaAndInjectRGB(target.data(), luma.data(), luma.data(), luma.data(),
+			luma.data(), 243, 435, 346, 0, SAMPLE_PIXELS, 3, reciprocalLut, implementation);
+	});
+	// The blend phase of the pre-luma pipeline, measured as one operation for a
+	// direct comparison with the fused kernel rows above: three full BGR layer
+	// copies, three per-layer capped injects, three accumulator passes and the
+	// write-back.
+	BenchmarkAllImplementations("Legacy RGB32 Blend Phase (3x copy+inject+accum, write)", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		const int weights[3] = { 243, 435, 346 };
+		for (int layer = 0; layer < 3; ++layer)
+		{
+			memcpy(target.data(), rgb32.data(), target.size());
+			AltaLuxKernels::InjectRGBLumaWithOriginalLuma(target.data(), luma.data(), luma.data(),
+				SAMPLE_PIXELS, 4, reciprocalLut, implementation);
+			AltaLuxKernels::AccumulateLayer(accum.data(), SAMPLE_PIXELS, target.data(), 0, SAMPLE_PIXELS, 4,
+				weights[layer], layer == 0, implementation);
+		}
+		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), SAMPLE_PIXELS, 0, SAMPLE_PIXELS, 4,
+			WEIGHT_SCALE_LOG2, WEIGHT_HALF, implementation);
+	});
+	BenchmarkAllImplementations("Legacy RGB24 Blend Phase (3x copy+inject+accum, write)", [&](AltaLuxKernels::KernelImplementation implementation)
+	{
+		const int weights[3] = { 243, 435, 346 };
+		for (int layer = 0; layer < 3; ++layer)
+		{
+			memcpy(target.data(), rgb24.data(), rgb24.size());
+			AltaLuxKernels::InjectRGBLumaWithOriginalLuma(target.data(), luma.data(), luma.data(),
+				SAMPLE_PIXELS, 3, reciprocalLut, implementation);
+			AltaLuxKernels::AccumulateLayer(accum.data(), SAMPLE_PIXELS, target.data(), 0, SAMPLE_PIXELS, 3,
+				weights[layer], layer == 0, implementation);
+		}
+		AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), SAMPLE_PIXELS, 0, SAMPLE_PIXELS, 3,
+			WEIGHT_SCALE_LOG2, WEIGHT_HALF, implementation);
+	});
 	BenchmarkScalarOnlyKernel("Chroma Compute Risk", [&]()
 	{
 		// Two luma planes from the same random source stand in for original and

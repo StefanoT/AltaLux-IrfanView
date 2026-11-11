@@ -490,6 +490,91 @@ namespace AltaLuxKernels
 			pixelCount - i, 4, reciprocalLut);
 	}
 
+	// Fused multiscale blend, four pixels per iteration. SSSE3 has no integer
+	// gather, so the blend computation, the reciprocal lookup and the scale cap
+	// stay scalar per lane (ComputeBlendedScaleAt), exactly like the per-pixel
+	// scales of InjectRGBLumaWithOriginalLumaSSSE3; the channel multiply,
+	// narrow and interleave run vectorized. RGB24 stops six pixels short so
+	// the 16-byte RGBX loads never read past the buffer.
+	void BlendLumaAndInjectRGBSSSE3(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut)
+	{
+		if (pixelStride != 3 && pixelStride != 4)
+		{
+			BlendLumaAndInjectRGBScalar(image, originalLuma, fineLuma, balancedLuma, smoothLuma,
+				fineWeight, balancedWeight, smoothWeight, pixelStart, pixelEnd, pixelStride,
+				reciprocalLut);
+			return;
+		}
+
+		const __m128i channelMask = _mm_set1_epi32(0xFF);
+		const __m128i scaleRounding = _mm_set1_epi32(1 << 7);
+		int i = pixelStart;
+		if (pixelStride == 4)
+		{
+			const __m128i alphaMask = _mm_set1_epi32(static_cast<int>(0xFF000000u));
+			for (; i <= pixelEnd - 4; i += 4)
+			{
+				unsigned char* pixel0 = image + (i * 4);
+				const int scale0 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+					smoothLuma, i, fineWeight, balancedWeight, smoothWeight, pixel0, reciprocalLut);
+				const int scale1 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+					smoothLuma, i + 1, fineWeight, balancedWeight, smoothWeight, pixel0 + 4, reciprocalLut);
+				const int scale2 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+					smoothLuma, i + 2, fineWeight, balancedWeight, smoothWeight, pixel0 + 8, reciprocalLut);
+				const int scale3 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+					smoothLuma, i + 3, fineWeight, balancedWeight, smoothWeight, pixel0 + 12, reciprocalLut);
+
+				const __m128i pixels = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pixel0));
+				const __m128i scale = _mm_setr_epi32(scale0, scale1, scale2, scale3);
+				const __m128i c0 = _mm_and_si128(pixels, channelMask);
+				const __m128i c1 = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask);
+				const __m128i c2 = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask);
+				const __m128i out0 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c0, scale), scaleRounding), 8);
+				const __m128i out1 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c1, scale), scaleRounding), 8);
+				const __m128i out2 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c2, scale), scaleRounding), 8);
+				__m128i output = _mm_or_si128(_mm_and_si128(pixels, alphaMask), out0);
+				output = _mm_or_si128(output, _mm_slli_epi32(out1, 8));
+				output = _mm_or_si128(output, _mm_slli_epi32(out2, 16));
+				_mm_storeu_si128(reinterpret_cast<__m128i*>(pixel0), output);
+			}
+			// The scalar kernel indexes with absolute pixelStart, so the base
+			// pointers are passed unoffset.
+			BlendLumaAndInjectRGBScalar(image, originalLuma, fineLuma, balancedLuma,
+				smoothLuma, fineWeight, balancedWeight, smoothWeight, i, pixelEnd, 4,
+				reciprocalLut);
+			return;
+		}
+
+		for (; i <= pixelEnd - 6; i += 4)
+		{
+			unsigned char* pixel0 = image + (i * 3);
+			const int scale0 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+				smoothLuma, i, fineWeight, balancedWeight, smoothWeight, pixel0, reciprocalLut);
+			const int scale1 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+				smoothLuma, i + 1, fineWeight, balancedWeight, smoothWeight, pixel0 + 3, reciprocalLut);
+			const int scale2 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+				smoothLuma, i + 2, fineWeight, balancedWeight, smoothWeight, pixel0 + 6, reciprocalLut);
+			const int scale3 = ComputeBlendedScaleAt(originalLuma, fineLuma, balancedLuma,
+				smoothLuma, i + 3, fineWeight, balancedWeight, smoothWeight, pixel0 + 9, reciprocalLut);
+
+			const __m128i pixels = LoadRGB24AsRGBX4(pixel0);
+			const __m128i scale = _mm_setr_epi32(scale0, scale1, scale2, scale3);
+			const __m128i c0 = _mm_and_si128(pixels, channelMask);
+			const __m128i c1 = _mm_and_si128(_mm_srli_epi32(pixels, 8), channelMask);
+			const __m128i c2 = _mm_and_si128(_mm_srli_epi32(pixels, 16), channelMask);
+			const __m128i out0 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c0, scale), scaleRounding), 8);
+			const __m128i out1 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c1, scale), scaleRounding), 8);
+			const __m128i out2 = _mm_srli_epi32(_mm_add_epi32(MulloEpi32Compat(c2, scale), scaleRounding), 8);
+			StoreRGB24Pixels4(pixel0, InterleaveChannels3x4(out0, out1, out2));
+		}
+		BlendLumaAndInjectRGBScalar(image, originalLuma, fineLuma, balancedLuma,
+			smoothLuma, fineWeight, balancedWeight, smoothWeight, i, pixelEnd, 3,
+			reciprocalLut);
+	}
+
 	// Downscales an RGB24/RGB32 image with a box filter. SSSE3 handles the common
 	// 2x preview reduction by loading contiguous source pixels and using PSHUFB to
 	// select the even/odd horizontal samples that feed each destination pixel.

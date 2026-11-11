@@ -284,6 +284,32 @@ namespace AltaLuxKernels
 		}
 	}
 
+	void BlendLumaAndInjectRGB(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut,
+		KernelImplementation implementation)
+	{
+		switch (NormalizeImplementation(implementation))
+		{
+		case KernelImplementation::AVX2:
+			BlendLumaAndInjectRGBAVX2(image, originalLuma, fineLuma, balancedLuma, smoothLuma,
+				fineWeight, balancedWeight, smoothWeight, pixelStart, pixelEnd, pixelStride,
+				reciprocalLut);
+			break;
+		case KernelImplementation::SSSE3:
+			BlendLumaAndInjectRGBSSSE3(image, originalLuma, fineLuma, balancedLuma, smoothLuma,
+				fineWeight, balancedWeight, smoothWeight, pixelStart, pixelEnd, pixelStride,
+				reciprocalLut);
+			break;
+		default:
+			BlendLumaAndInjectRGBScalar(image, originalLuma, fineLuma, balancedLuma, smoothLuma,
+				fineWeight, balancedWeight, smoothWeight, pixelStart, pixelEnd, pixelStride,
+				reciprocalLut);
+			break;
+		}
+	}
+
 	// Scalar-only operation: row-map construction was benchmarked against both
 	// SIMD tiers and lost, because the grey-value-indexed pixel lookup stays
 	// scalar and neither tier has an integer gather fast enough to compensate.

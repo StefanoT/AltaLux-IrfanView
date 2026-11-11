@@ -17,11 +17,9 @@
 namespace
 {
 	constexpr int kMultiscaleParallelThreshold = 200000;  // ~450x450; skip parallel_for below
-	constexpr int kParallelLayerThreshold = 1000000;       // ~1 MP; below this, extra buffers/tasks rarely pay off
+	constexpr int kParallelLayerThreshold = 1000000;       // ~1 MP; below this, three concurrent CLAHE tasks rarely pay off
 	constexpr int kMultiscaleNumBlocks = 16;              // outer partition count for PPL
 	constexpr int kWeightScale = 1024;                    // weights sum to 1024 (2^10)
-	constexpr int kWeightScaleLog2 = 10;
-	constexpr int kWeightHalf = kWeightScale / 2;         // rounding offset for >>10
 
 	size_t GetImageByteCount(int width, int height, int bitDepth)
 	{
@@ -43,7 +41,28 @@ namespace
 		return std::unique_ptr<CBaseAltaLuxFilter>(CAltaLuxFilterFactory::CreateAltaLuxFilter(width, height, regions, regions));
 	}
 
-	bool ProcessSingleLayer(unsigned char* image, int width, int height, int bitDepth, int regions, int strength,
+	// Q16 reciprocal-of-luma table for the fused multiscale blend, matching the
+	// filter layer's table: index 0 is a zero sentinel so Y=0 pixels stay black.
+	// Dynamic initialization of a namespace-scope const runs exactly once at DLL
+	// load, before any processing call can execute.
+	struct ReciprocalLutTable
+	{
+		int table[256];
+	};
+
+	const ReciprocalLutTable g_RecipLut = []() {
+		ReciprocalLutTable lut = {};
+		for (int value = 1; value < 256; ++value)
+		{
+			lut.table[value] = (1 << 16) / value;
+		}
+		return lut;
+	}();
+
+	// Runs one multiscale layer's CLAHE in place on a packed 1 B/px luma plane.
+	// ProcessGray points the filter's ImageBuffer straight at the caller's
+	// memory, so the layer allocates nothing beyond the filter instance.
+	bool ProcessSingleLayer(unsigned char* lumaPlane, int width, int height, int regions, int strength,
 		AltaLuxKernels::KernelImplementation implementation)
 	{
 		auto filter = CreateFilter(width, height, GetSafeLayerRegions(width, height, regions, MIN_HOR_REGIONS, MAX_HOR_REGIONS));
@@ -54,19 +73,7 @@ namespace
 
 		filter->SetStrength(strength);
 		filter->SetKernelImplementation(implementation);
-		// Windows DIBs are BGR-ordered, so route to the BGR variants to keep
-		// the BT.709 luma coefficients aligned with the actual channel bytes.
-		if (bitDepth == Constants::RGB32PixelSize)
-		{
-			return filter->ProcessBGR32(image) == AL_OK;
-		}
-
-		if (bitDepth == Constants::RGB24PixelSize)
-		{
-			return filter->ProcessBGR24(image) == AL_OK;
-		}
-
-		return false;
+		return filter->ProcessGray(lumaPlane) == AL_OK;
 	}
 
 	template<typename BlockFn>
@@ -322,86 +329,41 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	const int smoothWeight = (std::max)(0, kWeightScale - fineWeight - balancedWeight);
 	const int layerStrength = ComputeLayerStrength(state.strength);
 
-	// Raw arrays avoid std::vector value-initialization. The fine layer assigns
-	// every accumulator element, and the layer scratch buffer is overwritten
-	// before each use. The accumulator is 3 * pixelCount dwords: three R/G/B
-	// planes for 32-bit pixels, interleaved triplets for 24-bit (layout rule
-	// in Kernels.h).
-	std::unique_ptr<unsigned int[]> accum(new unsigned int[static_cast<size_t>(pixelCount) * 3U]);
-	// Lazily allocated by the sequential path; the parallel path does not need
-	// it unless it has to fall back after its three buffers do not fit.
-	std::unique_ptr<unsigned char[]> layerBuffer;
+	// The layers blend in luma, so the whole layer phase works on packed
+	// 1 B/px planes: the untouched original plus one CLAHE plane per layer,
+	// each with the one-row padding the filter's own buffers use
+	// (IMAGE_BUFFER_SIZE in CBaseAltaLuxFilter.h). At 4 B/px total for the
+	// planes, execution no longer changes the memory profile: the threshold
+	// below only decides whether the three filter runs are worth concurrent
+	// tasks, not how much is allocated.
+	const size_t planeBytes = static_cast<size_t>(width) * static_cast<size_t>(height + 1);
+	std::unique_ptr<unsigned char[]> originalLuma(new unsigned char[planeBytes]);
+	std::unique_ptr<unsigned char[]> fineLayer(new unsigned char[planeBytes]);
+	std::unique_ptr<unsigned char[]> balancedLayer(new unsigned char[planeBytes]);
+	std::unique_ptr<unsigned char[]> smoothLayer(new unsigned char[planeBytes]);
 
-	auto processLayerToBuffer = [&](unsigned char* buffer, int regions) -> bool
-	{
-		memcpy(buffer, sourceImage, byteCount);
-		return ProcessSingleLayer(buffer, width, height, bitDepth, regions, layerStrength, implementation);
-	};
+	ExtractBgrLuma(sourceImage, originalLuma.get(), pixelCount, bitDepth, implementation);
+	memcpy(fineLayer.get(), originalLuma.get(), pixelCount);
+	memcpy(balancedLayer.get(), originalLuma.get(), pixelCount);
+	memcpy(smoothLayer.get(), originalLuma.get(), pixelCount);
 
-	auto accumulateProcessedLayer = [&](const unsigned char* buffer, int weight, bool firstLayer)
-	{
-		RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
-		{
-			AltaLuxKernels::AccumulateLayer(accum.get(), pixelCount, buffer, pStart, pEnd, bitDepth,
-				weight, firstLayer, implementation);
-		});
-	};
-
-	auto runLayersSequentially = [&]() -> bool
-	{
-		if (layerBuffer == nullptr)
-		{
-			layerBuffer.reset(new unsigned char[byteCount]);
-		}
-		auto accumulateLayer = [&](int regions, int weight, bool firstLayer) -> bool
-		{
-			if (!processLayerToBuffer(layerBuffer.get(), regions))
-			{
-				return false;
-			}
-			accumulateProcessedLayer(layerBuffer.get(), weight, firstLayer);
-			return true;
-		};
-		return accumulateLayer(Constants::FineRegions, fineWeight, true) &&
-			accumulateLayer(Constants::BalancedRegions, balancedWeight, false) &&
-			accumulateLayer(Constants::SmoothRegions, smoothWeight, false);
-	};
-
-	bool layersProcessed = false;
+	bool layersProcessed;
 	if (pixelCount >= kParallelLayerThreshold)
 	{
-		try
-		{
-			std::unique_ptr<unsigned char[]> fineLayer(new unsigned char[byteCount]);
-			std::unique_ptr<unsigned char[]> balancedLayer(new unsigned char[byteCount]);
-			std::unique_ptr<unsigned char[]> smoothLayer(new unsigned char[byteCount]);
-
-			bool fineOk = false;
-			bool balancedOk = false;
-			bool smoothOk = false;
-			concurrency::parallel_invoke(
-				[&] { fineOk = processLayerToBuffer(fineLayer.get(), Constants::FineRegions); },
-				[&] { balancedOk = processLayerToBuffer(balancedLayer.get(), Constants::BalancedRegions); },
-				[&] { smoothOk = processLayerToBuffer(smoothLayer.get(), Constants::SmoothRegions); });
-
-			layersProcessed = fineOk && balancedOk && smoothOk;
-			if (layersProcessed)
-			{
-				accumulateProcessedLayer(fineLayer.get(), fineWeight, true);
-				accumulateProcessedLayer(balancedLayer.get(), balancedWeight, false);
-				accumulateProcessedLayer(smoothLayer.get(), smoothWeight, false);
-			}
-		}
-		catch (const std::bad_alloc&)
-		{
-			// Three full-size layer buffers do not fit (typically a fragmented
-			// 32-bit host); retry sequentially with a single scratch buffer.
-			layersProcessed = false;
-		}
+		bool fineOk = false;
+		bool balancedOk = false;
+		bool smoothOk = false;
+		concurrency::parallel_invoke(
+			[&] { fineOk = ProcessSingleLayer(fineLayer.get(), width, height, Constants::FineRegions, layerStrength, implementation); },
+			[&] { balancedOk = ProcessSingleLayer(balancedLayer.get(), width, height, Constants::BalancedRegions, layerStrength, implementation); },
+			[&] { smoothOk = ProcessSingleLayer(smoothLayer.get(), width, height, Constants::SmoothRegions, layerStrength, implementation); });
+		layersProcessed = fineOk && balancedOk && smoothOk;
 	}
-	if (!layersProcessed)
+	else
 	{
-		layersProcessed = runLayersSequentially();
+		layersProcessed = ProcessSingleLayer(fineLayer.get(), width, height, Constants::FineRegions, layerStrength, implementation) &&
+			ProcessSingleLayer(balancedLayer.get(), width, height, Constants::BalancedRegions, layerStrength, implementation) &&
+			ProcessSingleLayer(smoothLayer.get(), width, height, Constants::SmoothRegions, layerStrength, implementation);
 	}
 
 	if (!layersProcessed)
@@ -413,27 +375,28 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 		return false;
 	}
 
-	// The chroma correction stage needs the original luma, so cache it before
-	// the accumulated write-back: StartEffects2 applies in place (src == dst)
-	// and WriteAccumulatedImage overwrites the only remaining original pixels.
-	std::unique_ptr<unsigned char[]> originalLuma;
-	const bool chromaCorrectionEnabled = state.chromaProtection > 0;
-	if (chromaCorrectionEnabled)
-	{
-		originalLuma.reset(new unsigned char[static_cast<size_t>(pixelCount)]);
-		ExtractBgrLuma(sourceImage, originalLuma.get(), pixelCount, bitDepth, implementation);
-	}
-
+	// One fused pass per pixel: blend the three CLAHE planes in luma, then
+	// scale each BGR channel by the capped blended-luma ratio. This replaces
+	// the three per-layer BGR round trips, the 12 B/px accumulator and the
+	// write-back of the old pipeline; being in-place, it reads the pixel
+	// before writing it, so overlapping blocks stay safe.
 	RunPixelBlocks(pixelCount, [&](int pStart, int pEnd)
 	{
-		AltaLuxKernels::WriteAccumulatedImage(targetImage, accum.get(), pixelCount, pStart, pEnd, bitDepth,
-			kWeightScaleLog2, kWeightHalf, implementation);
+		AltaLuxKernels::BlendLumaAndInjectRGB(targetImage, originalLuma.get(), fineLayer.get(),
+			balancedLayer.get(), smoothLayer.get(), fineWeight, balancedWeight, smoothWeight,
+			pStart, pEnd, bitDepth, g_RecipLut.table, implementation);
 	});
 
-	if (chromaCorrectionEnabled)
+	if (state.chromaProtection > 0)
 	{
-		if (!ApplyChromaCorrection(targetImage, originalLuma.get(), width, height, bitDepth,
-			state.chromaProtection, implementation))
+		// The chroma stage needs the original luma (already cached above) and
+		// three scratch planes; the layer planes are dead after the fused
+		// pass, so the stage reuses them and adds nothing to peak memory.
+		// Y' is extracted from the finished pixels: the attenuation is
+		// luma-neutral only against the pixel's actual luma, not the blend.
+		if (!ApplyChromaCorrectionWithScratch(targetImage, originalLuma.get(), width, height, bitDepth,
+			state.chromaProtection, fineLayer.get(), balancedLayer.get(), smoothLayer.get(),
+			implementation))
 		{
 			return false;
 		}

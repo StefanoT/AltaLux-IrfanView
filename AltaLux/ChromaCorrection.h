@@ -23,6 +23,16 @@ bool ApplyChromaCorrection(unsigned char* targetImage, const unsigned char* orig
 	int width, int height, int bitDepth, int chromaProtection,
 	AltaLuxKernels::KernelImplementation implementation);
 
+// Scratch-providing variant of ApplyChromaCorrection for pipelines that
+// already own dead planes: the three buffers must each hold at least
+// width*height bytes and are clobbered with the enhanced-luma, activity and
+// risk planes, so the stage adds nothing to peak memory. All other behavior,
+// including the return values, matches ApplyChromaCorrection.
+bool ApplyChromaCorrectionWithScratch(unsigned char* targetImage, const unsigned char* originalLuma,
+	int width, int height, int bitDepth, int chromaProtection,
+	unsigned char* scratchEnhancedLuma, unsigned char* scratchActivity, unsigned char* scratchRisk,
+	AltaLuxKernels::KernelImplementation implementation);
+
 // Extracts BT.709 luma from a BGR24/BGR32 image into a packed width*height
 // plane. Exposed so the multiscale pipeline can cache the original luma before
 // the in-place write-back of the enhanced image destroys it.

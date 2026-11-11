@@ -357,6 +357,30 @@ namespace AltaLuxKernels
 		}
 	}
 
+	// One fused pass per pixel: average the three CLAHE layer planes with the
+	// Q10 weights, then inject the blended luma into the BGR pixel with the
+	// capped multiplicative scale. This replaces the three per-layer inject
+	// passes, the 12 B/px accumulator and the write-back of the old pipeline.
+	void BlendLumaAndInjectRGBScalar(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut)
+	{
+		int imageBase = pixelStart * pixelStride;
+		for (int i = pixelStart; i < pixelEnd; ++i)
+		{
+			unsigned char* pixel = image + imageBase;
+			// The Q10 weighted sum >> 2 keeps two fractional bits below the
+			// 8-bit blended luma; ComputeBlendedRGBScale handles the rest.
+			const int blendQ8 = (fineWeight * fineLuma[i] + balancedWeight * balancedLuma[i]
+				+ smoothWeight * smoothLuma[i]) >> 2;
+			const int scale = ComputeBlendedRGBScale(blendQ8, originalLuma[i],
+				pixel[0], pixel[1], pixel[2], reciprocalLut);
+			ApplyRGBScale(pixel, scale);
+			imageBase += pixelStride;
+		}
+	}
+
 	void InterpolateScalar(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,

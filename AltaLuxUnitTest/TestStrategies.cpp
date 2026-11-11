@@ -9,6 +9,7 @@
 #include "..\AltaLux\Segmentation\SelectionCore.h"
 #include "AllocationHook.h"
 
+#include <algorithm>
 #include <climits>
 #include <memory>
 #include <new>
@@ -738,6 +739,294 @@ namespace AltaLuxUnitTest
 			// half-region border strips; both sizes must process and match.
 			AssertOddSizeMultiscaleMatchesAcrossTiers(17, 9);
 			AssertOddSizeMultiscaleMatchesAcrossTiers(3, 3);
+		}
+
+		static std::vector<unsigned char> MakeSmoothedNoiseRGB24(int width, int height)
+		{
+			// Stands in for photo content: low-frequency random luma with the
+			// local structure CLAHE amplifies, without the pathological
+			// per-pixel noise of MakePatternImage.
+			std::vector<unsigned char> base(static_cast<size_t>(width * height * Constants::RGB24PixelSize), 0);
+			srand(42);
+			for (size_t i = 0; i < base.size(); ++i)
+			{
+				base[i] = static_cast<unsigned char>(rand() % 256);
+			}
+
+			const int radius = 4;
+			std::vector<unsigned char> image(static_cast<size_t>(width * height * Constants::RGB24PixelSize), 0);
+			for (int y = 0; y < height; ++y)
+			{
+				for (int x = 0; x < width; ++x)
+				{
+					int sum[3] = { 0, 0, 0 };
+					int samples = 0;
+					for (int dy = -radius; dy <= radius; ++dy)
+					{
+						for (int dx = -radius; dx <= radius; ++dx)
+						{
+							const int xx = x + dx < 0 ? 0 : (x + dx >= width ? width - 1 : x + dx);
+							const int yy = y + dy < 0 ? 0 : (y + dy >= height ? height - 1 : y + dy);
+							const int baseIndex = ((yy * width) + xx) * Constants::RGB24PixelSize;
+							sum[0] += base[baseIndex];
+							sum[1] += base[baseIndex + 1];
+							sum[2] += base[baseIndex + 2];
+							++samples;
+						}
+					}
+					const int outIndex = ((y * width) + x) * Constants::RGB24PixelSize;
+					for (int c = 0; c < 3; ++c)
+					{
+						image[outIndex + c] = static_cast<unsigned char>(sum[c] / samples);
+					}
+				}
+			}
+			return image;
+		}
+
+		// Replicates the pre-luma-blend pipeline byte-for-byte from the
+		// retained public kernels: per-layer capped inject into a BGR copy,
+		// weighted accumulation, single write-back. The layers run through the
+		// same ProcessGray CLAHE path the production pipeline uses, and the
+		// reciprocal table mirrors the filter layer's (index 0 is a sentinel).
+		static std::vector<unsigned char> RunLegacyBgrAccumulatePipeline(
+			const std::vector<unsigned char>& source, int width, int height, int bitDepth,
+			const UiState& state, AltaLuxKernels::KernelImplementation implementation)
+		{
+			const int pixelCount = width * height;
+			const BlendWeights weights = ComputeBlendWeights(state);
+			const int fineWeight = static_cast<int>(weights.fine * 1024.0f + 0.5f);
+			const int balancedWeight = static_cast<int>(weights.balanced * 1024.0f + 0.5f);
+			const int smoothWeight = (std::max)(0, 1024 - fineWeight - balancedWeight);
+			const int layerStrength = ComputeLayerStrength(state.strength);
+
+			int reciprocalLut[256] = {};
+			for (int value = 1; value < 256; ++value)
+			{
+				reciprocalLut[value] = (1 << 16) / value;
+			}
+
+			const size_t planeBytes = static_cast<size_t>(width) * static_cast<size_t>(height + 1);
+			std::vector<unsigned char> originalLuma(planeBytes);
+			std::vector<unsigned char> fineLuma(planeBytes);
+			std::vector<unsigned char> balancedLuma(planeBytes);
+			std::vector<unsigned char> smoothLuma(planeBytes);
+			ExtractBgrLuma(source.data(), originalLuma.data(), pixelCount, bitDepth, implementation);
+			memcpy(fineLuma.data(), originalLuma.data(), pixelCount);
+			memcpy(balancedLuma.data(), originalLuma.data(), pixelCount);
+			memcpy(smoothLuma.data(), originalLuma.data(), pixelCount);
+
+			auto runLayer = [&](unsigned char* plane, int regions)
+			{
+				std::unique_ptr<CBaseAltaLuxFilter> filter(
+					CAltaLuxFilterFactory::CreateAltaLuxFilter(width, height, regions, regions));
+				filter->SetStrength(layerStrength);
+				filter->SetKernelImplementation(implementation);
+				Assert::AreEqual(AL_OK, filter->ProcessGray(plane));
+			};
+			runLayer(fineLuma.data(), Constants::FineRegions);
+			runLayer(balancedLuma.data(), Constants::BalancedRegions);
+			runLayer(smoothLuma.data(), Constants::SmoothRegions);
+
+			std::vector<unsigned int> accum(static_cast<size_t>(pixelCount) * 3U);
+			auto accumulateLayer = [&](const unsigned char* lumaPlane, int weight, bool firstLayer)
+			{
+				std::vector<unsigned char> layerBGR(source);
+				AltaLuxKernels::InjectRGBLumaWithOriginalLuma(layerBGR.data(), lumaPlane,
+					originalLuma.data(), pixelCount, bitDepth, reciprocalLut, implementation);
+				AltaLuxKernels::AccumulateLayer(accum.data(), pixelCount, layerBGR.data(),
+					0, pixelCount, bitDepth, weight, firstLayer, implementation);
+			};
+			accumulateLayer(fineLuma.data(), fineWeight, true);
+			accumulateLayer(balancedLuma.data(), balancedWeight, false);
+			accumulateLayer(smoothLuma.data(), smoothWeight, false);
+
+			std::vector<unsigned char> target(source.size(), 0);
+			AltaLuxKernels::WriteAccumulatedImage(target.data(), accum.data(), pixelCount,
+				0, pixelCount, bitDepth, 10, 512, implementation);
+			return target;
+		}
+
+		static void AssertBlendLumaKernelMatchesScalar(AltaLuxKernels::KernelImplementation implementation)
+		{
+			if (!AltaLuxKernels::IsImplementationSupported(implementation))
+			{
+				Logger::WriteMessage(L"Requested SIMD kernels are not supported on this CPU; skipping blend equality checks.");
+				return;
+			}
+
+			// The pixel count is deliberately not a multiple of any SIMD group:
+			// the AVX2 8-px body tails into the SSSE3 4-px body, which tails
+			// into the scalar loop, and all three must agree byte-for-byte.
+			const int pixelCount = 37 * 9;
+			std::vector<unsigned char> originalLuma(pixelCount);
+			std::vector<unsigned char> fineLuma(pixelCount);
+			std::vector<unsigned char> balancedLuma(pixelCount);
+			std::vector<unsigned char> smoothLuma(pixelCount);
+			for (int i = 0; i < pixelCount; ++i)
+			{
+				originalLuma[i] = static_cast<unsigned char>((i * 53 + 101) & 0xFF);
+				fineLuma[i] = static_cast<unsigned char>((i * 29 + 7) & 0xFF);
+				balancedLuma[i] = static_cast<unsigned char>((i * 11 + 173) & 0xFF);
+				smoothLuma[i] = static_cast<unsigned char>((i * 37 + 211) & 0xFF);
+			}
+			// Extreme blend cases: Y=0 exercises the reciprocal sentinel, and
+			// Y > all layers exercises the scale floor.
+			originalLuma[0] = 0;
+			fineLuma[0] = 200;
+			balancedLuma[0] = 100;
+			smoothLuma[0] = 50;
+			fineLuma[1] = 0;
+			balancedLuma[1] = 0;
+			smoothLuma[1] = 0;
+
+			int reciprocalLut[256] = {};
+			for (int value = 1; value < 256; ++value)
+			{
+				reciprocalLut[value] = (1 << 16) / value;
+			}
+
+			const int weightSets[][3] =
+			{
+				{ 243, 435, 346 },  // default 45/25/25
+				{ 154, 205, 665 }   // smooth-heavy 45/0/100
+			};
+
+			for (int bitDepth = Constants::RGB24PixelSize; bitDepth <= Constants::RGB32PixelSize; ++bitDepth)
+			{
+				const std::vector<unsigned char> baseImage = MakePatternImage(pixelCount, 1, bitDepth);
+				for (const auto& weights : weightSets)
+				{
+					std::vector<unsigned char> scalarImage = baseImage;
+					std::vector<unsigned char> simdImage = baseImage;
+					AltaLuxKernels::BlendLumaAndInjectRGB(scalarImage.data(), originalLuma.data(),
+						fineLuma.data(), balancedLuma.data(), smoothLuma.data(),
+						weights[0], weights[1], weights[2], 0, pixelCount, bitDepth,
+						reciprocalLut, AltaLuxKernels::KernelImplementation::Scalar);
+					AltaLuxKernels::BlendLumaAndInjectRGB(simdImage.data(), originalLuma.data(),
+						fineLuma.data(), balancedLuma.data(), smoothLuma.data(),
+						weights[0], weights[1], weights[2], 0, pixelCount, bitDepth,
+						reciprocalLut, implementation);
+					AssertVectorsEqual(scalarImage, simdImage);
+				}
+			}
+
+			// Sub-range to mirror the parallel block split; pixels outside the
+			// range stay untouched. The start is odd so it is unaligned for
+			// every group size, which pins the base-pointer handling of the
+			// tier-to-tier delegations.
+			const int weightSet[3] = { 243, 435, 346 };
+			for (int bitDepth = Constants::RGB24PixelSize; bitDepth <= Constants::RGB32PixelSize; ++bitDepth)
+			{
+				const std::vector<unsigned char> baseImage = MakePatternImage(pixelCount, 1, bitDepth);
+				std::vector<unsigned char> partialScalar = baseImage;
+				std::vector<unsigned char> partialSimd = baseImage;
+				AltaLuxKernels::BlendLumaAndInjectRGB(partialScalar.data(), originalLuma.data(),
+					fineLuma.data(), balancedLuma.data(), smoothLuma.data(),
+					weightSet[0], weightSet[1], weightSet[2], 11, 81, bitDepth,
+					reciprocalLut, AltaLuxKernels::KernelImplementation::Scalar);
+				AltaLuxKernels::BlendLumaAndInjectRGB(partialSimd.data(), originalLuma.data(),
+					fineLuma.data(), balancedLuma.data(), smoothLuma.data(),
+					weightSet[0], weightSet[1], weightSet[2], 11, 81, bitDepth,
+					reciprocalLut, implementation);
+				AssertVectorsEqual(partialScalar, partialSimd);
+				Assert::IsTrue(memcmp(baseImage.data(), partialScalar.data(), 11 * bitDepth) == 0);
+				Assert::IsTrue(memcmp(baseImage.data() + (81 * bitDepth),
+					partialScalar.data() + (81 * bitDepth), baseImage.size() - (81 * bitDepth)) == 0);
+			}
+		}
+
+		TEST_METHOD(SSSE3BlendLumaKernelMatchesScalar)
+		{
+			AssertBlendLumaKernelMatchesScalar(AltaLuxKernels::KernelImplementation::SSSE3);
+		}
+
+		TEST_METHOD(AVX2BlendLumaKernelMatchesScalar)
+		{
+			AssertBlendLumaKernelMatchesScalar(AltaLuxKernels::KernelImplementation::AVX2);
+		}
+
+		TEST_METHOD(MultiscaleBlendMatchesLegacyPathWithinTolerance)
+		{
+			// The luma blend rounds once where the legacy path rounded per
+			// layer, and caps the averaged scale where the legacy path capped
+			// each layer's scale. Differences stay within +/-1 except where a
+			// layer's cap clipped; this pins the measured envelope: no channel
+			// may go below the legacy result by more than 1 (min() is concave,
+			// so the new result is never darker beyond rounding), smooth
+			// content stays within +/-1, and photo-like content keeps the
+			// share of channels beyond +/-1 in the low single digits.
+			const int width = 129;
+			const int height = 97;
+			const UiState state = MakeProcessingState(45, 25, 25);
+			const std::vector<unsigned char> gradient = MakeHorizontalGradientRGB24(width, height);
+			const std::vector<unsigned char> checkerboard = MakeCheckerboardRGB24(width, height, 32, 192);
+			const std::vector<unsigned char> photoLike = MakeSmoothedNoiseRGB24(width, height);
+
+			struct Measurement
+			{
+				int maxDiff;
+				int minSigned;
+				long long sumDiff;
+				int channels;
+				int overOne;
+			};
+
+			auto measureAgainstLegacy = [&](const wchar_t* name, const std::vector<unsigned char>& source)
+			{
+				const std::vector<unsigned char> legacy = RunLegacyBgrAccumulatePipeline(source,
+					width, height, Constants::RGB24PixelSize, state,
+					AltaLuxKernels::KernelImplementation::Scalar);
+				std::vector<unsigned char> modern(source.size(), 0);
+				Assert::IsTrue(ProcessMultiscaleImageWithKernels(source.data(), modern.data(),
+					width, height, Constants::RGB24PixelSize, state,
+					AltaLuxKernels::KernelImplementation::Scalar));
+
+				Measurement m = { 0, 0, 0, width * height * Constants::RGB24PixelSize, 0 };
+				m.minSigned = 0;
+				for (int pixelIndex = 0; pixelIndex < width * height; ++pixelIndex)
+				{
+					for (int c = 0; c < 3; ++c)
+					{
+						const int base = pixelIndex * Constants::RGB24PixelSize + c;
+						const int legacyValue = legacy[base];
+						const int modernValue = modern[base];
+						const int diff = abs(legacyValue - modernValue);
+						m.sumDiff += diff;
+						m.maxDiff = (std::max)(m.maxDiff, diff);
+						if (diff > 1)
+						{
+							++m.overOne;
+						}
+						m.minSigned = (std::min)(m.minSigned, modernValue - legacyValue);
+					}
+				}
+				Logger::WriteMessage((std::wstring(name) + L": meanDiff=" +
+					std::to_wstring(static_cast<double>(m.sumDiff) / m.channels) +
+					L" maxDiff=" + std::to_wstring(m.maxDiff) + L" overOne=" +
+					std::to_wstring(m.overOne) + L"/" + std::to_wstring(m.channels)).c_str());
+				return m;
+			};
+
+			const Measurement gradientM = measureAgainstLegacy(L"gradient", gradient);
+			const Measurement checkerM = measureAgainstLegacy(L"checkerboard", checkerboard);
+			const Measurement photoM = measureAgainstLegacy(L"photo-like", photoLike);
+
+			// Concavity: the new result is never more than a rounding step below.
+			Assert::IsTrue(gradientM.minSigned >= -1);
+			Assert::IsTrue(checkerM.minSigned >= -1);
+			Assert::IsTrue(photoM.minSigned >= -1);
+
+			// Smooth and flat content stays within the rounding envelope.
+			Assert::IsTrue(gradientM.maxDiff <= 1);
+			Assert::IsTrue(gradientM.overOne == 0);
+			Assert::IsTrue(checkerM.maxDiff <= 1);
+
+			// Photo-like content keeps the divergence share and magnitude in
+			// the measured envelope (about 5% of channels beyond 1, max 16).
+			Assert::IsTrue(photoM.maxDiff <= 32);
+			Assert::IsTrue(photoM.overOne * 10 < photoM.channels);
+			Assert::IsTrue(photoM.sumDiff < static_cast<long long>(photoM.channels));
 		}
 
 		TEST_METHOD(SelectionAddRemoveAndUndo)

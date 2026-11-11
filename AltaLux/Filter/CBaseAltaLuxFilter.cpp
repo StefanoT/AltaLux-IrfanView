@@ -245,6 +245,16 @@ int CBaseAltaLuxFilter::ProcessGray(void* Image)
 	if (Image == nullptr)
 		return AL_NULL_IMAGE;
 
+	// Gray processing runs CLAHE directly on the caller's plane, so the
+	// internal ImageBuffer is dead weight here: release it before the guard
+	// aliases the slot with caller memory. Any later color Process call
+	// re-allocates the buffer through its retry path.
+	if (ImageBuffer != nullptr)
+	{
+		_aligned_free(ImageBuffer);
+		ImageBuffer = nullptr;
+	}
+
 	// The input buffer is already 8bpp grayscale; point ImageBuffer at the caller's
 	// buffer for the duration of Run(). The RAII guard restores ImageBuffer on every
 	// exit path, so the destructor never accidentally _aligned_free()s caller memory.

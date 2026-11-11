@@ -30,6 +30,35 @@ namespace AltaLuxKernels
 		return scale > scaleCap ? scaleCap : scale;
 	}
 
+	// Blend-domain variant of ComputeRGBScale for the fused multiscale kernel.
+	// blendQ8 is the weighted layer sum >> 2: a Q8 fixed-point blended luma with
+	// two fractional bits (up to 65280), so the Q16 reciprocal multiply must run
+	// in unsigned arithmetic -- 65280 * 65536 exceeds INT_MAX but fits in 32
+	// bits. reciprocalLut[0] is a zero sentinel, so Y=0 pixels scale to black.
+	inline int ComputeBlendedRGBScale(int blendQ8, int originalY, int c0, int c1, int c2,
+		const int* reciprocalLut)
+	{
+		const unsigned int scale = (static_cast<unsigned int>(blendQ8)
+			* static_cast<unsigned int>(reciprocalLut[originalY]) + (1u << 15)) >> 16;
+		int maxChannel = c0 > c1 ? c0 : c1;
+		maxChannel = maxChannel > c2 ? maxChannel : c2;
+		const int scaleCap = g_ScaleCapLut.table[maxChannel];
+		return static_cast<int>(scale) > scaleCap ? scaleCap : static_cast<int>(scale);
+	}
+
+	// Per-lane scale for the SIMD tiers without gather support: the blend, the
+	// reciprocal lookup and the cap all run scalar on one pixel.
+	inline int ComputeBlendedScaleAt(const unsigned char* originalLuma, const unsigned char* fineLuma,
+		const unsigned char* balancedLuma, const unsigned char* smoothLuma, int index,
+		int fineWeight, int balancedWeight, int smoothWeight, const unsigned char* pixel,
+		const int* reciprocalLut)
+	{
+		const int blendQ8 = (fineWeight * fineLuma[index] + balancedWeight * balancedLuma[index]
+			+ smoothWeight * smoothLuma[index]) >> 2;
+		return ComputeBlendedRGBScale(blendQ8, originalLuma[index], pixel[0], pixel[1], pixel[2],
+			reciprocalLut);
+	}
+
 	inline void ApplyRGBScale(unsigned char* pixel, int scale)
 	{
 		pixel[0] = ClampToByte((pixel[0] * scale + (1 << 7)) >> 8);
@@ -59,6 +88,10 @@ namespace AltaLuxKernels
 		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageScalar(unsigned char* target, const unsigned int* accum, int planeStride,
 		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void BlendLumaAndInjectRGBScalar(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut);
 	void InterpolateScalar(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
 		const unsigned int* mapLeftBottom, const unsigned int* mapRightBottom,
@@ -89,6 +122,10 @@ namespace AltaLuxKernels
 		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageSSSE3(unsigned char* target, const unsigned int* accum, int planeStride,
 		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void BlendLumaAndInjectRGBSSSE3(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut);
 	void ApplyChromaAttenuationSSSE3(unsigned char* target, const unsigned char* enhancedLuma,
 		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 	void ComputeLocalActivity3x3SSSE3(const unsigned char* luma, unsigned char* activity,
@@ -113,6 +150,10 @@ namespace AltaLuxKernels
 		int pixelStart, int pixelEnd, int pixelStride, int weight, bool firstLayer);
 	void WriteAccumulatedImageAVX2(unsigned char* target, const unsigned int* accum, int planeStride,
 		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf);
+	void BlendLumaAndInjectRGBAVX2(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut);
 	void ApplyChromaAttenuationAVX2(unsigned char* target, const unsigned char* enhancedLuma,
 		const unsigned char* risk, int pixelStart, int pixelEnd, int pixelStride, int maxStrengthQ8);
 	void ComputeLocalActivity3x3AVX2(const unsigned char* luma, unsigned char* activity,

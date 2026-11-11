@@ -145,6 +145,26 @@ bool ApplyChromaCorrection(unsigned char* targetImage, const unsigned char* orig
 		return false;
 	}
 
+	const int pixelCount = width * height;
+	// Fresh planes for callers that do not provide scratch space.
+	std::unique_ptr<unsigned char[]> enhancedLuma(new unsigned char[static_cast<size_t>(pixelCount)]);
+	std::unique_ptr<unsigned char[]> activity(new unsigned char[static_cast<size_t>(pixelCount)]);
+	std::unique_ptr<unsigned char[]> risk(new unsigned char[static_cast<size_t>(pixelCount)]);
+	return ApplyChromaCorrectionWithScratch(targetImage, originalLuma, width, height, bitDepth,
+		chromaProtection, enhancedLuma.get(), activity.get(), risk.get(), implementation);
+}
+
+bool ApplyChromaCorrectionWithScratch(unsigned char* targetImage, const unsigned char* originalLuma,
+	int width, int height, int bitDepth, int chromaProtection,
+	unsigned char* scratchEnhancedLuma, unsigned char* scratchActivity, unsigned char* scratchRisk,
+	AltaLuxKernels::KernelImplementation implementation)
+{
+	if (targetImage == nullptr || originalLuma == nullptr ||
+		scratchEnhancedLuma == nullptr || scratchActivity == nullptr || scratchRisk == nullptr)
+	{
+		return false;
+	}
+
 	if (width <= 0 || height <= 0)
 	{
 		return false;
@@ -164,20 +184,16 @@ bool ApplyChromaCorrection(unsigned char* targetImage, const unsigned char* orig
 
 	const int pixelCount = width * height;
 	// The activity plane doubles as the blur scratch once the risk map exists.
-	std::unique_ptr<unsigned char[]> enhancedLuma(new unsigned char[static_cast<size_t>(pixelCount)]);
-	std::unique_ptr<unsigned char[]> activity(new unsigned char[static_cast<size_t>(pixelCount)]);
-	std::unique_ptr<unsigned char[]> risk(new unsigned char[static_cast<size_t>(pixelCount)]);
-
-	ExtractBgrLuma(targetImage, enhancedLuma.get(), pixelCount, bitDepth, implementation);
-	AltaLuxKernels::ComputeLocalActivity3x3(originalLuma, activity.get(), width, height,
+	ExtractBgrLuma(targetImage, scratchEnhancedLuma, pixelCount, bitDepth, implementation);
+	AltaLuxKernels::ComputeLocalActivity3x3(originalLuma, scratchActivity, width, height,
 		implementation);
-	AltaLuxKernels::ComputeChromaRisk(originalLuma, enhancedLuma.get(), activity.get(), risk.get(),
+	AltaLuxKernels::ComputeChromaRisk(originalLuma, scratchEnhancedLuma, scratchActivity, scratchRisk,
 		pixelCount, g_GainRiskLut.table, g_ActivityRiskLut.table, kTextureFloorQ8);
-	AltaLuxKernels::BlurRiskMap(risk.get(), activity.get(), width, height, implementation);
+	AltaLuxKernels::BlurRiskMap(scratchRisk, scratchActivity, width, height, implementation);
 
 	RunBlocks(pixelCount, [&](int pStart, int pEnd)
 	{
-		AltaLuxKernels::ApplyChromaAttenuation(targetImage, enhancedLuma.get(), risk.get(),
+		AltaLuxKernels::ApplyChromaAttenuation(targetImage, scratchEnhancedLuma, scratchRisk,
 			pStart, pEnd, bitDepth, maxStrengthQ8, implementation);
 	});
 

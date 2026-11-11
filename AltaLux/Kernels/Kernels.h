@@ -50,12 +50,23 @@
 //                                                    SSSE3 has no gather, so the
 //                                                    reciprocal lookup and the
 //                                                    scale cap stay scalar there
+//     BlendLumaAndInjectRGB                          fused multiscale blend;
+//                                                    RGB/BGR, 24 and 32 bpp;
+//                                                    gathers the reciprocal and
+//                                                    scale-cap tables like
+//                                                    InjectRGBLumaWithOriginalL
+//                                                    uma, and the SSSE3 tier
+//                                                    keeps both lookups scalar
+//                                                    for the same reason
 //     ScaleDownBox                                   scaleFactor == 2 only
-//     AccumulateLayer / WriteAccumulatedImage        multiscale accumulation;
-//                                                    planar accumulator for
-//                                                    32bpp, interleaved for
-//                                                    24bpp (see the comment on
-//                                                    AccumulateLayer)
+//     AccumulateLayer / WriteAccumulatedImage        retired from the
+//                                                    production pipeline (the
+//                                                    multiscale blend now runs
+//                                                    in BlendLumaAndInjectRGB);
+//                                                    kept for one release so the
+//                                                    legacy-path reference tests
+//                                                    and AltaLuxBench keep
+//                                                    working
 //     ApplyChromaAttenuation                         RGB/BGR, 24 and 32 bpp
 //     ComputeLocalActivity3x3 / BlurRiskMap          row-vectorized 2D stencils
 //                                                    over the risk planes
@@ -126,6 +137,25 @@ namespace AltaLuxKernels
 		KernelImplementation implementation);
 	void WriteAccumulatedImage(unsigned char* target, const unsigned int* accum, int planeStride,
 		int pixelStart, int pixelEnd, int pixelStride, int weightScaleLog2, int weightHalf,
+		KernelImplementation implementation);
+
+	// Fused multiscale blend: for every pixel, the three CLAHE layer planes are
+	// averaged with Q10 weights that sum to kWeightScale, and the blended luma
+	// is injected into the BGR image with the same hue-preserving multiplicative
+	// scale as InjectRGBLumaWithOriginalLuma. The blend keeps two fractional
+	// bits below the 8-bit luma (the Q10 weighted sum >> 2, so up to 65280),
+	// which keeps near-black pixels -- where half a luma level changes the
+	// scale by double-digit percentages -- faithful, and the Q8 scale multiply
+	// stays inside unsigned 32-bit range (65280 * 65536 < 2^32). Weights are
+	// non-negative and their sum must not exceed 1024; recipLut follows the
+	// filter layer's table (index 0 is a zero sentinel, so Y=0 pixels stay
+	// black). image must hold the source pixels on entry; the pass overwrites
+	// them in place and preserves the fourth byte of 32-bit pixels. Pixels
+	// outside [pixelStart, pixelEnd) are left untouched.
+	void BlendLumaAndInjectRGB(unsigned char* image, const unsigned char* originalLuma,
+		const unsigned char* fineLuma, const unsigned char* balancedLuma,
+		const unsigned char* smoothLuma, int fineWeight, int balancedWeight, int smoothWeight,
+		int pixelStart, int pixelEnd, int pixelStride, const int* reciprocalLut,
 		KernelImplementation implementation);
 	void Interpolate(unsigned char* image, int imageStride,
 		const unsigned int* mapLeftUp, const unsigned int* mapRightUp,
