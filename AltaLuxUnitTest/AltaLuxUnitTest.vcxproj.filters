@@ -54,6 +54,21 @@
     <ClInclude Include="..\AltaLux\Kernels\KernelsInternal.h">
       <Filter>Header Files\Kernels</Filter>
     </ClInclude>
+    <ClInclude Include="..\AltaLux\AltaLux.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\AltaLux\AltaLuxVersion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\AltaLux\Segmentation\SelectionCore.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\AltaLux\Segmentation\SegmentationModule.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\AltaLux\TestHooks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -88,6 +103,21 @@
     </ClCompile>
     <ClCompile Include="..\AltaLux\Kernels\KernelsAVX2.cpp">
       <Filter>Source Files\Kernels</Filter>
+    </ClCompile>
+    <ClCompile Include="EntryPointTests.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\AltaLux.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\Segmentation\SelectionCore.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\Segmentation\SegmentationModule.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\AltaLux\UIDraw\UIDraw.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

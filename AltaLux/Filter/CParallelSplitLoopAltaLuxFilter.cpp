@@ -12,12 +12,15 @@ The full license text is in the LICENSE file at the root of the repository.
 #include <memory>
 #include <ppl.h>
 
+#include "..\TestHooks.h"
+
 int CParallelSplitLoopAltaLuxFilter::Run()
 {
 	if (ClipLimit == 1.0)
 		return AL_OK;
 
 	auto pImage = static_cast<PixelType*>(ImageBuffer);
+	AltaLuxTest::ProbeAllocationFailure();
 	auto pulMapArray = std::make_unique<unsigned int[]>(NumHorRegions * NumVertRegions * NUM_GRAY_LEVELS);
 
 	const unsigned int NumPixels = static_cast<unsigned int>(RegionWidth) * static_cast<unsigned int>(RegionHeight);

@@ -37,6 +37,7 @@ The full license text is in the LICENSE file at the root of the repository.
 #include "ScopedBitmapHeader.h"
 #include "AltaLuxCore.h"
 #include "AltaLuxVersion.h"
+#include "TestHooks.h"
 #include "UIDraw/UIDraw.h"
 #include "Segmentation/SegmentationModule.h"
 #include "Segmentation/SelectionCore.h"
@@ -251,12 +252,12 @@ namespace
 	HHOOK gKeyboardHook = nullptr;
 	HWND gHookDlg = nullptr;
 
-	int GetImageByteCount(int width, int height)
+	size_t GetImageByteCount(int width, int height)
 	{
-		return width * height * ImageBitDepth;
+		return static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(ImageBitDepth);
 	}
 
-	int GetRGBImageSize(int width, int height)
+	size_t GetRGBImageSize(int width, int height)
 	{
 		return GetImageByteCount(width, height) + SECURITY_PADDING;
 	}
@@ -464,13 +465,17 @@ namespace
 		std::vector<unsigned char> selectionMask;
 	};
 
-	struct PreviewResult
-	{
-		std::uint32_t generation = 0;
-		std::vector<unsigned char> processed;
-		std::vector<unsigned char> originalDisplay;
-		std::vector<unsigned char> processedDisplay;
-	};
+struct PreviewResult
+{
+	std::uint32_t generation = 0;
+	// Set when the worker could not produce a preview; the dialog shows a
+	// status line instead of silently keeping the previous image.
+	bool failed = false;
+	bool outOfMemory = false;
+	std::vector<unsigned char> processed;
+	std::vector<unsigned char> originalDisplay;
+	std::vector<unsigned char> processedDisplay;
+};
 
 	struct PreviewWorkerState
 	{
@@ -498,10 +503,14 @@ namespace
 			return;
 		}
 
-		const std::size_t byteCount = static_cast<std::size_t>(GetImageByteCount(ScaledImageWidth, ScaledImageHeight));
+		const std::size_t byteCount = GetImageByteCount(ScaledImageWidth, ScaledImageHeight);
 		result.processed.assign(scaledSrc->begin(), scaledSrc->begin() + byteCount);
-		ProcessMultiscaleImage(scaledSrc->data(), result.processed.data(), ScaledImageWidth,
-			ScaledImageHeight, ImageBitDepth, job.ui);
+		if (!ProcessMultiscaleImage(scaledSrc->data(), result.processed.data(), ScaledImageWidth,
+			ScaledImageHeight, ImageBitDepth, job.ui))
+		{
+			result.failed = true;
+			return;
+		}
 
 		if (!job.selective || job.selectionMask.empty())
 		{
@@ -568,7 +577,28 @@ namespace
 
 			auto* result = new PreviewResult();
 			result->generation = job.generation;
-			ProcessPreviewJob(job, scaledSrc, *result);
+			// An exception escaping a std::thread calls std::terminate and
+			// takes IrfanView down with it, so every allocation here is
+			// funnelled into a failed result the dialog can show.
+			try
+			{
+				ProcessPreviewJob(job, scaledSrc, *result);
+			}
+			catch (const std::bad_alloc&)
+			{
+				result->failed = true;
+				result->outOfMemory = true;
+				result->processed = std::vector<unsigned char>();
+				result->originalDisplay = std::vector<unsigned char>();
+				result->processedDisplay = std::vector<unsigned char>();
+			}
+			catch (...)
+			{
+				result->failed = true;
+				result->processed = std::vector<unsigned char>();
+				result->originalDisplay = std::vector<unsigned char>();
+				result->processedDisplay = std::vector<unsigned char>();
+			}
 			if (PostMessage(worker.hwnd, WM_ALTALUX_PREVIEW_READY, 0,
 				reinterpret_cast<LPARAM>(result)) == FALSE)
 			{
@@ -665,26 +695,27 @@ namespace
 	class ApplyProgressPopup
 	{
 	public:
-		ApplyProgressPopup(HWND parent)
+	ApplyProgressPopup(HWND parent)
+		: parent_(parent)
+	{
+		RegisterWindowClass();
+		BufferedPaintInit();
+		RECT parentRect = {};
+		GetWindowRect(parent, &parentRect);
+		const int width = ScaleForDpi(340);
+		const int height = ScaleForDpi(110);
+		const int x = parentRect.left + ((std::max)(0, static_cast<int>(parentRect.right - parentRect.left)) - width) / 2;
+		const int y = parentRect.top + ((std::max)(0, static_cast<int>(parentRect.bottom - parentRect.top)) - height) / 2;
+		hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, ClassName, L"AltaLux",
+			WS_POPUP | WS_BORDER, (std::max)(0, x), (std::max)(0, y), width, height,
+			parent, nullptr, hDll, this);
+		if (hwnd_ != nullptr)
 		{
-			RegisterWindowClass();
-			BufferedPaintInit();
-			RECT parentRect = {};
-			GetWindowRect(parent, &parentRect);
-			const int width = ScaleForDpi(340);
-			const int height = ScaleForDpi(110);
-			const int x = parentRect.left + ((std::max)(0, static_cast<int>(parentRect.right - parentRect.left)) - width) / 2;
-			const int y = parentRect.top + ((std::max)(0, static_cast<int>(parentRect.bottom - parentRect.top)) - height) / 2;
-			hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, ClassName, L"AltaLux",
-				WS_POPUP | WS_BORDER, (std::max)(0, x), (std::max)(0, y), width, height,
-				parent, nullptr, hDll, this);
-			if (hwnd_ != nullptr)
-			{
-				ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-				UpdateWindow(hwnd_);
-				SetTimer(hwnd_, APPLY_BUSY_TIMER_ID, PREVIEW_BUSY_ANIMATION_MS, nullptr);
-			}
+			ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+			UpdateWindow(hwnd_);
+			SetTimer(hwnd_, APPLY_BUSY_TIMER_ID, PREVIEW_BUSY_ANIMATION_MS, nullptr);
 		}
+	}
 
 		~ApplyProgressPopup()
 		{
@@ -703,18 +734,46 @@ namespace
 			PostMessage(hwnd_, WM_ALTALUX_APPLY_DONE, success ? 1 : 0, 0);
 		}
 
-		void PumpUntilDone()
+	void PumpUntilDone()
+	{
+		// Disable the owner for the duration, like DialogBox does, so the user
+		// cannot close the image or IrfanView while the worker still writes
+		// into the DIB.
+		if (parent_ != nullptr)
 		{
-			MSG message = {};
-			while (!done_ && GetMessage(&message, nullptr, 0, 0) > 0)
+			EnableWindow(parent_, FALSE);
+		}
+		MSG message = {};
+		for (;;)
+		{
+			const int result = GetMessage(&message, nullptr, 0, 0);
+			if (result == 0)
 			{
-				TranslateMessage(&message);
-				DispatchMessage(&message);
+				// WM_QUIT must survive this pump so the host can still act on
+				// it once StartEffects2 returns.
+				PostQuitMessage(static_cast<int>(message.wParam));
+				break;
+			}
+			if (result < 0)
+			{
+				break;
+			}
+			TranslateMessage(&message);
+			DispatchMessage(&message);
+			if (done_)
+			{
+				break;
 			}
 		}
+		if (parent_ != nullptr)
+		{
+			EnableWindow(parent_, TRUE);
+		}
+	}
 
-	private:
-		static constexpr const wchar_t* ClassName = L"AltaLuxApplyProgress";
+private:
+	static constexpr const wchar_t* ClassName = L"AltaLuxApplyProgress";
+	HWND parent_ = nullptr;
 
 		static void RegisterWindowClass()
 		{
@@ -1231,45 +1290,61 @@ namespace
 		UpdateSelectionControls(hwnd);
 		InvalidatePreview(hwnd);
 
-		gSelectionSession->worker = std::thread([hwnd, generation, source]()
-		{
-			auto* result = new SegmentationWorkerResult();
-			result->generation = generation;
-			ISegmentationEngine* engine = nullptr;
+			gSelectionSession->worker = std::thread([hwnd, generation, source]()
 			{
-				std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
-				if (!gSelectionSession->module.Load(hDll))
+				auto* result = new SegmentationWorkerResult();
+				result->generation = generation;
+				// An exception escaping a std::thread calls std::terminate and
+				// takes IrfanView down with it; report a failed result instead.
+				try
+				{
+					ISegmentationEngine* engine = nullptr;
+					{
+						std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
+						if (!gSelectionSession->module.Load(hDll))
+						{
+							result->status = SegmentationStatus::RuntimeError;
+							result->error = gSelectionSession->module.GetLastError();
+							result->packageMissing = gSelectionSession->module.IsPackageMissing();
+							result->x64Required = gSelectionSession->module.IsX64Required();
+							PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
+							return;
+						}
+						engine = gSelectionSession->module.GetEngine();
+					}
+
+					const int rowStride = ImageWidth * ImageBitDepth;
+					SegmentationImageView image = {};
+					image.pixels = source->data();
+					image.width = static_cast<std::uint32_t>(ImageWidth);
+					image.height = static_cast<std::uint32_t>(ImageHeight);
+					image.stride = rowStride;
+					image.format = ImageBitDepth == Constants::RGB32PixelSize ?
+						SegmentationPixelFormat::Bgra32 : SegmentationPixelFormat::Bgr24;
+					if (!SourceTopDown)
+					{
+						image.pixels += static_cast<std::size_t>(ImageHeight - 1) * rowStride;
+						image.stride = -rowStride;
+					}
+					result->status = engine->PrepareImage(image);
+					if (result->status != SegmentationStatus::Ok && engine->GetLastError() != nullptr)
+					{
+						result->error = engine->GetLastError();
+					}
+				}
+				catch (...)
 				{
 					result->status = SegmentationStatus::RuntimeError;
-					result->error = gSelectionSession->module.GetLastError();
-					result->packageMissing = gSelectionSession->module.IsPackageMissing();
-					result->x64Required = gSelectionSession->module.IsX64Required();
-					PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
-					return;
+					try
+					{
+						result->error = L"Not enough memory to analyze the image.";
+					}
+					catch (...)
+					{
+					}
 				}
-				engine = gSelectionSession->module.GetEngine();
-			}
-
-			const int rowStride = ImageWidth * ImageBitDepth;
-			SegmentationImageView image = {};
-			image.pixels = source->data();
-			image.width = static_cast<std::uint32_t>(ImageWidth);
-			image.height = static_cast<std::uint32_t>(ImageHeight);
-			image.stride = rowStride;
-			image.format = ImageBitDepth == Constants::RGB32PixelSize ?
-				SegmentationPixelFormat::Bgra32 : SegmentationPixelFormat::Bgr24;
-			if (!SourceTopDown)
-			{
-				image.pixels += static_cast<std::size_t>(ImageHeight - 1) * rowStride;
-				image.stride = -rowStride;
-			}
-			result->status = engine->PrepareImage(image);
-			if (result->status != SegmentationStatus::Ok && engine->GetLastError() != nullptr)
-			{
-				result->error = engine->GetLastError();
-			}
-			PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
-		});
+				PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_PREPARED, result);
+			});
 	}
 
 	bool MapClientPointToSource(HWND hwnd, int x, int y, float& sourceX, float& sourceY)
@@ -1299,44 +1374,60 @@ namespace
 		SetSelectionStatus(hwnd, L"Selecting...");
 		UpdateSelectionControls(hwnd);
 
-		gSelectionSession->worker = std::thread([hwnd, generation, sourceX, sourceY, mode]()
-		{
-			auto* result = new SegmentationWorkerResult();
-			result->generation = generation;
-			result->mode = mode;
-			result->point = { sourceX, sourceY };
-			result->operationMask.assign(static_cast<std::size_t>(ImageWidth) * ImageHeight, 0);
-			ISegmentationEngine* engine = nullptr;
+			gSelectionSession->worker = std::thread([hwnd, generation, sourceX, sourceY, mode]()
 			{
-				std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
-				engine = gSelectionSession->module.GetEngine();
-			}
-			if (engine == nullptr)
-			{
-				result->status = SegmentationStatus::NotReady;
-				result->error = L"The segmentation engine is not ready.";
-				PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_COMPLETED, result);
-				return;
-			}
+				auto* result = new SegmentationWorkerResult();
+				result->generation = generation;
+				// An exception escaping a std::thread calls std::terminate and
+				// takes IrfanView down with it; report a failed result instead.
+				try
+				{
+					result->mode = mode;
+					result->point = { sourceX, sourceY };
+					result->operationMask.assign(static_cast<std::size_t>(ImageWidth) * ImageHeight, 0);
+					ISegmentationEngine* engine = nullptr;
+					{
+						std::lock_guard<std::mutex> lock(gSelectionSession->moduleMutex);
+						engine = gSelectionSession->module.GetEngine();
+					}
+					if (engine == nullptr)
+					{
+						result->status = SegmentationStatus::NotReady;
+						result->error = L"The segmentation engine is not ready.";
+						PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_COMPLETED, result);
+						return;
+					}
 
-			const int maskStride = ImageWidth;
-			SegmentationMaskView mask = {};
-			mask.pixels = result->operationMask.data();
-			mask.width = static_cast<std::uint32_t>(ImageWidth);
-			mask.height = static_cast<std::uint32_t>(ImageHeight);
-			mask.stride = maskStride;
-			if (!SourceTopDown)
-			{
-				mask.pixels += static_cast<std::size_t>(ImageHeight - 1) * maskStride;
-				mask.stride = -maskStride;
-			}
-			result->status = engine->SegmentPoint(result->point, mask);
-			if (result->status != SegmentationStatus::Ok && engine->GetLastError() != nullptr)
-			{
-				result->error = engine->GetLastError();
-			}
-			PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_COMPLETED, result);
-		});
+					const int maskStride = ImageWidth;
+					SegmentationMaskView mask = {};
+					mask.pixels = result->operationMask.data();
+					mask.width = static_cast<std::uint32_t>(ImageWidth);
+					mask.height = static_cast<std::uint32_t>(ImageHeight);
+					mask.stride = maskStride;
+					if (!SourceTopDown)
+					{
+						mask.pixels += static_cast<std::size_t>(ImageHeight - 1) * maskStride;
+						mask.stride = -maskStride;
+					}
+					result->status = engine->SegmentPoint(result->point, mask);
+					if (result->status != SegmentationStatus::Ok && engine->GetLastError() != nullptr)
+					{
+						result->error = engine->GetLastError();
+					}
+				}
+				catch (...)
+				{
+					result->status = SegmentationStatus::RuntimeError;
+					try
+					{
+						result->error = L"Not enough memory to select the object.";
+					}
+					catch (...)
+					{
+					}
+				}
+				PostSegmentationResult(hwnd, WM_ALTALUX_SEGMENTATION_COMPLETED, result);
+			});
 	}
 
 	void RefreshPreview(HWND hwnd)
@@ -2073,6 +2164,19 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			return TRUE;
 		}
 
+		if (result->failed)
+		{
+			SetSelectionStatus(hwnd, result->outOfMemory ?
+				L"Preview failed: not enough memory." : L"Preview failed.");
+			bool failureWorkQueued = false;
+			{
+				std::lock_guard<std::mutex> lock(gPreviewWorker->mutex);
+				failureWorkQueued = gPreviewWorker->pending.has_value();
+			}
+			SetPreviewBusy(hwnd, failureWorkQueued);
+			return TRUE;
+		}
+
 		auto scaledProc = ScaledProcImagePtr.lock();
 		if (scaledProc != nullptr && !result->processed.empty())
 		{
@@ -2463,171 +2567,276 @@ INT_PTR CALLBACK DlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	return FALSE;
 }
 
-bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, int param2, char* iniFile, char*, int)
+namespace
 {
-#define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
-
-	SharedImagePtr srcImage;
-	RECT clipRect = rect;
-
+	// Reason the full-resolution apply pass failed; shown to the user in
+	// interactive mode, silent in direct/batch mode.
+	enum class ApplyError
 	{
-		ScopedBitmapHeader bitmapHeader(hDib);
-		if (!bitmapHeader.IsValid())
-		{
-			return false;
-		}
-		memcpy(&BmHdrCopy, &(*bitmapHeader), sizeof(BITMAPINFOHEADER));
-		SourceTopDown = bitmapHeader->biHeight < 0;
-
-		if (bitmapHeader->biPlanes != 1 || !IsSupportedBitDepth(bitmapHeader))
-		{
-			return false;
-		}
-
-		FullImageWidth = abs(bitmapHeader->biWidth);
-		FullImageHeight = abs(bitmapHeader->biHeight);
-		ImageWidth = clipRect.right;
-		ImageHeight = clipRect.bottom;
-
-		CroppedImage = IsCroppedImage();
-		if (CroppedImage)
-		{
-			NormalizeClipRect(clipRect);
-			BmHdrCopy.biWidth = ImageWidth;
-			BmHdrCopy.biHeight = ImageHeight;
-		}
-
-		BYTE* imageBits = bitmapHeader.GetImageBits();
-		DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
-		srcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));
-		CopyFromSourceImage(srcImage->data(), clipRect, imageBits, imageBitsStride);
-	}
-
-	if ((param1 == -1) || (param2 == -1))
-	{
-		strcpy_s(SetupIniFile, sizeof(SetupIniFile), iniFile);
-		LoadUiStateFromSettings();
-		TryEnablePerMonitorDpiAwareness();
-
-		ComputeScalingFactor();
-		auto scaledSrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
-		auto scaledProcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
-		ScaledSrcImagePtr = scaledSrcImage;
-		ScaledProcImagePtr = scaledProcImage;
-		FullSrcImagePtr = srcImage;
-		gSelectionSession = std::make_unique<SelectionDialogSession>();
-
-		ScaleDownImage(srcImage->data(), ImageWidth, ImageHeight, scaledSrcImage->data(), ScalingFactor, ImageBitDepth);
-		CopyScaledSrcImage(scaledProcImage->data());
-
-		const INT_PTR dialogResult = DialogBox(hDll, MAKEINTRESOURCE(IDD_ALTALUX_DIALOG), hwnd, DlgProc);
-		if (dialogResult == -1)
-		{
-			gSelectionSession.reset();
-			FullSrcImagePtr.reset();
-			return false;
-		}
-
-		if (SkipProcessing)
-		{
-			gSelectionSession.reset();
-			FullSrcImagePtr.reset();
-			return true;
-		}
-	}
-	else
-	{
-		gUiState.strength = ClampInt(param1, 0, 100);
-		gUiState.detail = Constants::DefaultDetail;
-		gUiState.naturalLook = Constants::DefaultNatural;
-		gUiState.chromaProtection = Constants::DefaultChromaProtection;
-		gUiState.zoomToSelection = false;
-		gUiState.compareHoldOriginal = false;
-		gUiState.draggingSplit = false;
-		gUiState.splitX = 0;
-		gUiState.zoomFactor = 1.0;
-		gUiState.panX = 0;
-		gUiState.panY = 0;
-		gUiState.draggingPan = false;
-		gUiState.pendingPick = false;
-	}
-
-	auto processFullImage = [&]() -> bool
-	{
-		const bool applySelection = gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
-			gSelectionSession->ready && HasSelectedPixels(gSelectionSession->selectionMask);
-		if (applySelection)
-		{
-			std::vector<unsigned char> processedImage(srcImage->begin(),
-				srcImage->begin() + GetImageByteCount(ImageWidth, ImageHeight));
-			if (!ProcessMultiscaleImage(srcImage->data(), processedImage.data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
-			{
-				return false;
-			}
-			std::vector<unsigned char> alphaMask;
-			if (!BuildFeatheredMask(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
-				gSelectionSession->softness, alphaMask) ||
-				!CompositeWithMask(srcImage->data(), processedImage.data(), srcImage->data(), alphaMask.data(),
-					ImageWidth, ImageHeight, ImageBitDepth))
-			{
-				return false;
-			}
-		}
-		else if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
-		{
-			return false;
-		}
-		return true;
+		None,
+		OutOfMemory,
+		Internal
 	};
 
-	const bool interactiveDialog = (param1 == -1) || (param2 == -1);
-	bool processOk = false;
-	if (interactiveDialog)
+	// The multiscale kernels and the CLAHE filters index pixels with a signed
+	// int; larger images are rejected before any allocation happens.
+	const unsigned long long kMaxKernelPixels = 0x7fffffffULL;
+
+	// Rough peak usage of the multiscale pipeline in bytes per pixel of the
+	// processed rect (source copy + accumulator + layer buffers + filter
+	// scratch), only used for the out-of-memory hint.
+	unsigned long long EstimatePeakBytesPerPixel()
 	{
-		// The user just confirmed the dialog; give them feedback while the
-		// full-resolution pass runs instead of freezing IrfanView silently.
-		ApplyProgressPopup progress(hwnd);
-		if (progress.hwnd() != nullptr)
+		return ImageBitDepth == Constants::RGB24PixelSize ? 33ULL : 38ULL;
+	}
+
+	void ReportApplyFailure(HWND hwnd, bool interactive, ApplyError error, int width, int height)
+	{
+		if (error == ApplyError::None || !interactive)
 		{
-			std::thread applyWorker([&]()
+			return;
+		}
+		if (error == ApplyError::OutOfMemory)
+		{
+			const unsigned long long neededMb =
+				(static_cast<unsigned long long>(width) * height * EstimatePeakBytesPerPixel() +
+					(1024ULL * 1024ULL) - 1ULL) / (1024ULL * 1024ULL);
+			wchar_t message[192];
+			swprintf_s(message,
+				L"Not enough memory to process this image (about %llu MB needed).\nUse 64-bit IrfanView or a smaller selection.",
+				neededMb);
+			MessageBoxW(hwnd, message, L"AltaLux", MB_OK | MB_ICONWARNING);
+			return;
+		}
+		MessageBoxW(hwnd, L"AltaLux could not process this image.", L"AltaLux", MB_OK | MB_ICONWARNING);
+	}
+
+	// Resets the cross-call session state on every exit of StartEffectsImpl,
+	// including exceptions; this cleanup used to be duplicated (and once
+	// missed) across the individual return paths.
+	struct SessionStateGuard
+	{
+		~SessionStateGuard()
+		{
+			gSelectionSession.reset();
+			FullSrcImagePtr.reset();
+		}
+	};
+
+	bool StartEffectsImpl(HANDLE hDib, HWND hwnd, int, RECT rect, int param1, int param2, char* iniFile, char*, int)
+	{
+#define WIDTHBYTES(bits) (((bits) + 31) / 32 * 4)
+
+		const bool interactiveDialog = (param1 == -1) || (param2 == -1);
+		SessionStateGuard sessionGuard;
+		SharedImagePtr srcImage;
+		RECT clipRect = rect;
+
+		{
+			ScopedBitmapHeader bitmapHeader(hDib);
+			if (!bitmapHeader.IsValid())
 			{
-				processOk = processFullImage();
-				progress.NotifyDone(processOk);
-			});
-			progress.PumpUntilDone();
-			applyWorker.join();
+				return false;
+			}
+			memcpy(&BmHdrCopy, &(*bitmapHeader), sizeof(BITMAPINFOHEADER));
+			SourceTopDown = bitmapHeader->biHeight < 0;
+
+			if (bitmapHeader->biPlanes != 1 || !IsSupportedBitDepth(bitmapHeader))
+			{
+				return false;
+			}
+
+			FullImageWidth = abs(bitmapHeader->biWidth);
+			FullImageHeight = abs(bitmapHeader->biHeight);
+			if (static_cast<unsigned long long>(FullImageWidth) * FullImageHeight > kMaxKernelPixels)
+			{
+				ReportApplyFailure(hwnd, interactiveDialog, ApplyError::OutOfMemory,
+					FullImageWidth, FullImageHeight);
+				return false;
+			}
+			ImageWidth = clipRect.right;
+			ImageHeight = clipRect.bottom;
+
+			CroppedImage = IsCroppedImage();
+			if (CroppedImage)
+			{
+				NormalizeClipRect(clipRect);
+				BmHdrCopy.biWidth = ImageWidth;
+				BmHdrCopy.biHeight = ImageHeight;
+			}
+
+			BYTE* imageBits = bitmapHeader.GetImageBits();
+			DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
+			AltaLuxTest::ProbeAllocationFailure();
+			srcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));
+			CopyFromSourceImage(srcImage->data(), clipRect, imageBits, imageBitsStride);
+		}
+
+		if (interactiveDialog)
+		{
+			strcpy_s(SetupIniFile, sizeof(SetupIniFile), iniFile);
+			LoadUiStateFromSettings();
+			TryEnablePerMonitorDpiAwareness();
+
+			ComputeScalingFactor();
+			auto scaledSrcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
+			auto scaledProcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ScaledImageWidth, ScaledImageHeight));
+			ScaledSrcImagePtr = scaledSrcImage;
+			ScaledProcImagePtr = scaledProcImage;
+			FullSrcImagePtr = srcImage;
+			gSelectionSession = std::make_unique<SelectionDialogSession>();
+
+			ScaleDownImage(srcImage->data(), ImageWidth, ImageHeight, scaledSrcImage->data(), ScalingFactor, ImageBitDepth);
+			CopyScaledSrcImage(scaledProcImage->data());
+
+			const INT_PTR dialogResult = DialogBox(hDll, MAKEINTRESOURCE(IDD_ALTALUX_DIALOG), hwnd, DlgProc);
+			if (dialogResult == -1)
+			{
+				return false;
+			}
+
+			if (SkipProcessing)
+			{
+				return true;
+			}
 		}
 		else
 		{
-			processOk = processFullImage();
+			gUiState.strength = ClampInt(param1, 0, 100);
+			gUiState.detail = Constants::DefaultDetail;
+			gUiState.naturalLook = Constants::DefaultNatural;
+			gUiState.chromaProtection = Constants::DefaultChromaProtection;
+			gUiState.zoomToSelection = false;
+			gUiState.compareHoldOriginal = false;
+			gUiState.draggingSplit = false;
+			gUiState.splitX = 0;
+			gUiState.zoomFactor = 1.0;
+			gUiState.panX = 0;
+			gUiState.panY = 0;
+			gUiState.draggingPan = false;
+			gUiState.pendingPick = false;
 		}
-	}
-	else
-	{
-		processOk = processFullImage();
-	}
 
-	if (!processOk)
-	{
-		gSelectionSession.reset();
-		FullSrcImagePtr.reset();
-		return false;
-	}
+		auto processFullImage = [&]() -> bool
+		{
+			const bool applySelection = gSelectionSession != nullptr && gSelectionSession->selectiveMode &&
+				gSelectionSession->ready && HasSelectedPixels(gSelectionSession->selectionMask);
+			if (applySelection)
+			{
+				AltaLuxTest::ProbeAllocationFailure();
+				std::vector<unsigned char> processedImage(srcImage->begin(),
+					srcImage->begin() + GetImageByteCount(ImageWidth, ImageHeight));
+				if (!ProcessMultiscaleImage(srcImage->data(), processedImage.data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+				{
+					return false;
+				}
+				std::vector<unsigned char> alphaMask;
+				AltaLuxTest::ProbeAllocationFailure();
+				if (!BuildFeatheredMask(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
+					gSelectionSession->softness, alphaMask) ||
+					!CompositeWithMask(srcImage->data(), processedImage.data(), srcImage->data(), alphaMask.data(),
+						ImageWidth, ImageHeight, ImageBitDepth))
+				{
+					return false;
+				}
+			}
+			else if (!ProcessMultiscaleImage(srcImage->data(), srcImage->data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
+			{
+				return false;
+			}
+			return true;
+		};
 
-	{
-		ScopedBitmapHeader bitmapHeader(hDib);
-		if (!bitmapHeader.IsValid())
+		ApplyError applyError = ApplyError::None;
+		auto runApply = [&]() -> bool
+		{
+			try
+			{
+				return processFullImage();
+			}
+			catch (const std::bad_alloc&)
+			{
+				applyError = ApplyError::OutOfMemory;
+			}
+			catch (...)
+			{
+				applyError = ApplyError::Internal;
+			}
+			return false;
+		};
+
+		bool processOk = false;
+		if (interactiveDialog)
+		{
+			// The user just confirmed the dialog; give them feedback while the
+			// full-resolution pass runs instead of freezing IrfanView silently.
+			ApplyProgressPopup progress(hwnd);
+			if (progress.hwnd() != nullptr)
+			{
+				std::thread applyWorker([&]()
+				{
+					// runApply never throws, so NotifyDone always runs and the
+					// pump can never hang waiting for a dead worker.
+					processOk = runApply();
+					progress.NotifyDone(processOk);
+				});
+				progress.PumpUntilDone();
+				applyWorker.join();
+			}
+			else
+			{
+				processOk = runApply();
+			}
+		}
+		else
+		{
+			processOk = runApply();
+		}
+		ReportApplyFailure(hwnd, interactiveDialog, processOk ? ApplyError::None : applyError,
+			ImageWidth, ImageHeight);
+
+		if (!processOk)
 		{
 			return false;
 		}
-		BYTE* imageBits = bitmapHeader.GetImageBits();
-		DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
-		CopyToSourceImage(imageBits, imageBitsStride, srcImage->data(), clipRect);
-	}
-	gSelectionSession.reset();
-	FullSrcImagePtr.reset();
 
-	return true;
+		{
+			ScopedBitmapHeader bitmapHeader(hDib);
+			if (!bitmapHeader.IsValid())
+			{
+				return false;
+			}
+			BYTE* imageBits = bitmapHeader.GetImageBits();
+			DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
+			CopyToSourceImage(imageBits, imageBitsStride, srcImage->data(), clipRect);
+		}
+
+		return true;
+	}
+}
+
+bool __cdecl StartEffects2(HANDLE hDib, HWND hwnd, int filter, RECT rect, int param1, int param2, char* iniFile,
+                           char* szAppName, int regID)
+{
+	// No exception may cross the extern "C" boundary into the host: an
+	// uncaught std::bad_alloc here is undefined behaviour in IrfanView, and
+	// one escaping the apply worker thread is std::terminate. Session state
+	// is reset while unwinding, inside StartEffectsImpl.
+	try
+	{
+		return StartEffectsImpl(hDib, hwnd, filter, rect, param1, param2, iniFile, szAppName, regID);
+	}
+	catch (const std::bad_alloc&)
+	{
+		ReportApplyFailure(hwnd, (param1 == -1) || (param2 == -1), ApplyError::OutOfMemory,
+			FullImageWidth, FullImageHeight);
+	}
+	catch (...)
+	{
+		ReportApplyFailure(hwnd, (param1 == -1) || (param2 == -1), ApplyError::Internal,
+			FullImageWidth, FullImageHeight);
+	}
+	return false;
 }
 
 int __cdecl GetPlugInInfo(char* versionString, char* fileFormats)

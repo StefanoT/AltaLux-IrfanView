@@ -16,6 +16,7 @@ The full license text is in the LICENSE file at the root of the repository.
 #include <memory>
 
 #include "..\Kernels\Kernels.h"
+#include "..\TestHooks.h"
 
 namespace
 {
@@ -283,13 +284,15 @@ int CBaseAltaLuxFilter::ProcessGeneric(void* Image, int FirstFactor, int SecondF
 	if (ImageBuffer == nullptr)
 	{
 		// Retry allocation here because SetStrength may have failed earlier.
-		ImageBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
+		ImageBuffer = AltaLuxTest::ShouldFailAllocation() ? nullptr :
+			(unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (ImageBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}
 	if (OriginalLumaBuffer == nullptr)
 	{
-		OriginalLumaBuffer = (unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
+		OriginalLumaBuffer = AltaLuxTest::ShouldFailAllocation() ? nullptr :
+			(unsigned char*)_aligned_malloc(IMAGE_BUFFER_SIZE, 16);
 		if (OriginalLumaBuffer == nullptr)
 			return AL_OUT_OF_MEMORY;
 	}

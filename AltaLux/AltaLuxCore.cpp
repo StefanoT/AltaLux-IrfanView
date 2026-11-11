@@ -1,6 +1,7 @@
 #include "AltaLuxCore.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include "ChromaCorrection.h"
 #include "Filter/CAltaLuxFilterFactory.h"
 #include "Filter/CBaseAltaLuxFilter.h"
+#include "TestHooks.h"
 
 namespace
 {
@@ -22,9 +24,9 @@ namespace
 	constexpr int kWeightScaleLog2 = 10;
 	constexpr int kWeightHalf = kWeightScale / 2;         // rounding offset for >>10
 
-	int GetImageByteCount(int width, int height, int bitDepth)
+	size_t GetImageByteCount(int width, int height, int bitDepth)
 	{
-		return width * height * bitDepth;
+		return static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(bitDepth);
 	}
 
 	int RectWidthOf(const RECT& rect)
@@ -291,7 +293,17 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 		return false;
 	}
 
-	const int byteCount = GetImageByteCount(width, height, bitDepth);
+	// The kernels and the CLAHE filters index pixels with int; wider images
+	// (stitched panoramas in a 64-bit host) must fail cleanly here instead of
+	// overflowing the index arithmetic and corrupting memory.
+	const unsigned long long pixelCount64 =
+		static_cast<unsigned long long>(width) * static_cast<unsigned long long>(height);
+	if (pixelCount64 > static_cast<unsigned long long>(INT_MAX))
+	{
+		return false;
+	}
+
+	const size_t byteCount = GetImageByteCount(width, height, bitDepth);
 	// memcpy requires non-overlapping regions; StartEffects2 calls us in-place
 	// (src == dst) for the final write-back, so skip the self-copy.
 	if (targetImage != sourceImage)
@@ -312,11 +324,15 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	const int layerStrength = ComputeLayerStrength(state.strength);
 
 	// Raw arrays avoid std::vector value-initialization. The fine layer assigns
-	// every accumulator element, and layerBuffer is overwritten before each use.
-	// The accumulator is 3 * pixelCount dwords: three R/G/B planes for 32-bit
-	// pixels, interleaved triplets for 24-bit (layout rule in Kernels.h).
+	// every accumulator element, and the layer scratch buffer is overwritten
+	// before each use. The accumulator is 3 * pixelCount dwords: three R/G/B
+	// planes for 32-bit pixels, interleaved triplets for 24-bit (layout rule
+	// in Kernels.h).
+	AltaLuxTest::ProbeAllocationFailure();
 	std::unique_ptr<unsigned int[]> accum(new unsigned int[static_cast<size_t>(pixelCount) * 3U]);
-	std::unique_ptr<unsigned char[]> layerBuffer(new unsigned char[static_cast<size_t>(byteCount)]);
+	// Lazily allocated by the sequential path; the parallel path does not need
+	// it unless it has to fall back after its three buffers do not fit.
+	std::unique_ptr<unsigned char[]> layerBuffer;
 
 	auto processLayerToBuffer = [&](unsigned char* buffer, int regions) -> bool
 	{
@@ -333,45 +349,65 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 		});
 	};
 
-	auto accumulateLayer = [&](int regions, int weight, bool firstLayer) -> bool
+	auto runLayersSequentially = [&]() -> bool
 	{
-		if (!processLayerToBuffer(layerBuffer.get(), regions))
+		if (layerBuffer == nullptr)
 		{
-			return false;
+			AltaLuxTest::ProbeAllocationFailure();
+			layerBuffer.reset(new unsigned char[byteCount]);
 		}
-		accumulateProcessedLayer(layerBuffer.get(), weight, firstLayer);
-		return true;
+		auto accumulateLayer = [&](int regions, int weight, bool firstLayer) -> bool
+		{
+			if (!processLayerToBuffer(layerBuffer.get(), regions))
+			{
+				return false;
+			}
+			accumulateProcessedLayer(layerBuffer.get(), weight, firstLayer);
+			return true;
+		};
+		return accumulateLayer(Constants::FineRegions, fineWeight, true) &&
+			accumulateLayer(Constants::BalancedRegions, balancedWeight, false) &&
+			accumulateLayer(Constants::SmoothRegions, smoothWeight, false);
 	};
 
 	bool layersProcessed = false;
 	if (pixelCount >= kParallelLayerThreshold)
 	{
-		std::unique_ptr<unsigned char[]> fineLayer(new unsigned char[static_cast<size_t>(byteCount)]);
-		std::unique_ptr<unsigned char[]> balancedLayer(new unsigned char[static_cast<size_t>(byteCount)]);
-		std::unique_ptr<unsigned char[]> smoothLayer(new unsigned char[static_cast<size_t>(byteCount)]);
-
-		bool fineOk = false;
-		bool balancedOk = false;
-		bool smoothOk = false;
-		concurrency::parallel_invoke(
-			[&] { fineOk = processLayerToBuffer(fineLayer.get(), Constants::FineRegions); },
-			[&] { balancedOk = processLayerToBuffer(balancedLayer.get(), Constants::BalancedRegions); },
-			[&] { smoothOk = processLayerToBuffer(smoothLayer.get(), Constants::SmoothRegions); });
-
-		layersProcessed = fineOk && balancedOk && smoothOk;
-		if (layersProcessed)
+		try
 		{
-			accumulateProcessedLayer(fineLayer.get(), fineWeight, true);
-			accumulateProcessedLayer(balancedLayer.get(), balancedWeight, false);
-			accumulateProcessedLayer(smoothLayer.get(), smoothWeight, false);
+			AltaLuxTest::ProbeAllocationFailure();
+			std::unique_ptr<unsigned char[]> fineLayer(new unsigned char[byteCount]);
+			AltaLuxTest::ProbeAllocationFailure();
+			std::unique_ptr<unsigned char[]> balancedLayer(new unsigned char[byteCount]);
+			AltaLuxTest::ProbeAllocationFailure();
+			std::unique_ptr<unsigned char[]> smoothLayer(new unsigned char[byteCount]);
+
+			bool fineOk = false;
+			bool balancedOk = false;
+			bool smoothOk = false;
+			concurrency::parallel_invoke(
+				[&] { fineOk = processLayerToBuffer(fineLayer.get(), Constants::FineRegions); },
+				[&] { balancedOk = processLayerToBuffer(balancedLayer.get(), Constants::BalancedRegions); },
+				[&] { smoothOk = processLayerToBuffer(smoothLayer.get(), Constants::SmoothRegions); });
+
+			layersProcessed = fineOk && balancedOk && smoothOk;
+			if (layersProcessed)
+			{
+				accumulateProcessedLayer(fineLayer.get(), fineWeight, true);
+				accumulateProcessedLayer(balancedLayer.get(), balancedWeight, false);
+				accumulateProcessedLayer(smoothLayer.get(), smoothWeight, false);
+			}
+		}
+		catch (const std::bad_alloc&)
+		{
+			// Three full-size layer buffers do not fit (typically a fragmented
+			// 32-bit host); retry sequentially with a single scratch buffer.
+			layersProcessed = false;
 		}
 	}
-	else
+	if (!layersProcessed)
 	{
-		layersProcessed =
-			accumulateLayer(Constants::FineRegions, fineWeight, true) &&
-			accumulateLayer(Constants::BalancedRegions, balancedWeight, false) &&
-			accumulateLayer(Constants::SmoothRegions, smoothWeight, false);
+		layersProcessed = runLayersSequentially();
 	}
 
 	if (!layersProcessed)
@@ -390,6 +426,7 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	const bool chromaCorrectionEnabled = state.chromaProtection > 0;
 	if (chromaCorrectionEnabled)
 	{
+		AltaLuxTest::ProbeAllocationFailure();
 		originalLuma.reset(new unsigned char[static_cast<size_t>(pixelCount)]);
 		ExtractBgrLuma(sourceImage, originalLuma.get(), pixelCount, bitDepth, implementation);
 	}
