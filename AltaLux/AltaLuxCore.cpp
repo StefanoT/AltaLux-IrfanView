@@ -13,7 +13,6 @@
 #include "ChromaCorrection.h"
 #include "Filter/CAltaLuxFilterFactory.h"
 #include "Filter/CBaseAltaLuxFilter.h"
-#include "TestHooks.h"
 
 namespace
 {
@@ -328,7 +327,6 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	// before each use. The accumulator is 3 * pixelCount dwords: three R/G/B
 	// planes for 32-bit pixels, interleaved triplets for 24-bit (layout rule
 	// in Kernels.h).
-	AltaLuxTest::ProbeAllocationFailure();
 	std::unique_ptr<unsigned int[]> accum(new unsigned int[static_cast<size_t>(pixelCount) * 3U]);
 	// Lazily allocated by the sequential path; the parallel path does not need
 	// it unless it has to fall back after its three buffers do not fit.
@@ -353,7 +351,6 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	{
 		if (layerBuffer == nullptr)
 		{
-			AltaLuxTest::ProbeAllocationFailure();
 			layerBuffer.reset(new unsigned char[byteCount]);
 		}
 		auto accumulateLayer = [&](int regions, int weight, bool firstLayer) -> bool
@@ -375,11 +372,8 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	{
 		try
 		{
-			AltaLuxTest::ProbeAllocationFailure();
 			std::unique_ptr<unsigned char[]> fineLayer(new unsigned char[byteCount]);
-			AltaLuxTest::ProbeAllocationFailure();
 			std::unique_ptr<unsigned char[]> balancedLayer(new unsigned char[byteCount]);
-			AltaLuxTest::ProbeAllocationFailure();
 			std::unique_ptr<unsigned char[]> smoothLayer(new unsigned char[byteCount]);
 
 			bool fineOk = false;
@@ -426,7 +420,6 @@ bool ProcessMultiscaleImageWithKernels(const unsigned char* sourceImage, unsigne
 	const bool chromaCorrectionEnabled = state.chromaProtection > 0;
 	if (chromaCorrectionEnabled)
 	{
-		AltaLuxTest::ProbeAllocationFailure();
 		originalLuma.reset(new unsigned char[static_cast<size_t>(pixelCount)]);
 		ExtractBgrLuma(sourceImage, originalLuma.get(), pixelCount, bitDepth, implementation);
 	}

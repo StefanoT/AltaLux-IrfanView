@@ -57,10 +57,10 @@ const int AL_OK = 0;
 /// Input image pointer is null
 const int AL_NULL_IMAGE = -1;
 
-/// Image width is not a multiple of 8 (required for alignment)
+/// Legacy placeholder, never returned: the engine handles arbitrary widths
 const int AL_WIDTH_NO_MULTIPLE = -3;
 
-/// Image height is not a multiple of 8 (required for alignment)
+/// Legacy placeholder, never returned: the engine handles arbitrary heights
 const int AL_HEIGHT_NO_MULTIPLE = -4;
 
 /// Insufficient memory to allocate internal buffers
@@ -217,12 +217,13 @@ public:
 	//-------------------------------------------------------------------------
 	
 	/// @brief Constructs a CLAHE filter with specified parameters
-	/// @param Width Image width in pixels (must be multiple of 8)
-	/// @param Height Image height in pixels (must be multiple of 8)
+	/// @param Width Image width in pixels (any positive size)
+	/// @param Height Image height in pixels (any positive size)
 	/// @param HorSlices Number of horizontal tiles (2-16, default 8)
 	/// @param VerSlices Number of vertical tiles (2-16, default 8)
-	/// @note Image dimensions are adjusted to be evenly divisible by tile count
-	/// @note Actual processing dimensions may be smaller than original if not evenly divisible
+	/// @note The tile grid is truncated to a multiple of the tile count; the
+	///       remainder pixels are processed by the last border tile during
+	///       interpolation, so every input pixel is processed.
 	CBaseAltaLuxFilter(int Width, int Height, int HorSlices = DEFAULT_HOR_REGIONS, int VerSlices = DEFAULT_VERT_REGIONS);
 	
 	/// @brief Destructor - releases internal buffers

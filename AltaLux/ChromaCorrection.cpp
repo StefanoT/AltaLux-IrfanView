@@ -7,7 +7,6 @@
 #include <ppl.h>
 
 #include "AltaLuxCore.h"
-#include "TestHooks.h"
 
 namespace
 {
@@ -165,11 +164,8 @@ bool ApplyChromaCorrection(unsigned char* targetImage, const unsigned char* orig
 
 	const int pixelCount = width * height;
 	// The activity plane doubles as the blur scratch once the risk map exists.
-	AltaLuxTest::ProbeAllocationFailure();
 	std::unique_ptr<unsigned char[]> enhancedLuma(new unsigned char[static_cast<size_t>(pixelCount)]);
-	AltaLuxTest::ProbeAllocationFailure();
 	std::unique_ptr<unsigned char[]> activity(new unsigned char[static_cast<size_t>(pixelCount)]);
-	AltaLuxTest::ProbeAllocationFailure();
 	std::unique_ptr<unsigned char[]> risk(new unsigned char[static_cast<size_t>(pixelCount)]);
 
 	ExtractBgrLuma(targetImage, enhancedLuma.get(), pixelCount, bitDepth, implementation);

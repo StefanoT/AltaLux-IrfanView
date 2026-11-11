@@ -107,7 +107,7 @@ extern "C" {
 ///
 /// @par Image Format Requirements:
 /// - **Bit Depth**: 24 or 32 bits per pixel, single plane
-/// - **Alignment**: Width and height are normalized to multiples of 8
+/// - **Alignment**: none; arbitrary widths, heights and selections are processed exactly
 /// - **Color Space**: BGR/BGRA byte order (standard Windows DIB layout)
 ///
 /// @par Parameter Interpretation:

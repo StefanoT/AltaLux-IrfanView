@@ -7,8 +7,12 @@
 #include "..\AltaLux\Filter\CBaseAltaLuxFilter.h"
 #include "..\AltaLux\Filter\CAltaLuxFilterFactory.h"
 #include "..\AltaLux\Segmentation\SelectionCore.h"
+#include "AllocationHook.h"
 
+#include <climits>
 #include <memory>
+#include <new>
+#include <string>
 #include <vector>
 
 using namespace Microsoft::VisualStudio::CppUnitTestFramework;
@@ -643,6 +647,52 @@ namespace AltaLuxUnitTest
 
 			Assert::IsTrue(processed);
 			Assert::IsTrue(SumAbsoluteRGBDifference(input, output, bitDepth) > 0);
+		}
+
+		TEST_METHOD(MultiscaleAllocationFailureSweepReturnsFalse)
+		{
+			const int width = 64;
+			const int height = 48;
+			const int bitDepth = Constants::RGB24PixelSize;
+			const std::vector<unsigned char> input = MakePatternImage(width, height, bitDepth);
+			const UiState state = MakeProcessingState(45, 25, 25);
+
+			// Reference pass: count how many allocations a clean run performs,
+			// then force a std::bad_alloc at each one and require the core to
+			// fail cleanly and leave the target buffer with the source content.
+			std::vector<unsigned char> output(input.size(), 0);
+			AltaLuxTest::ArmAllocationFailureAt(LONG_MAX);
+			Assert::IsTrue(ProcessMultiscaleImageWithKernels(input.data(), output.data(),
+				width, height, bitDepth, state, AltaLuxKernels::KernelImplementation::Scalar));
+			const long allocationCount = AltaLuxTest::AllocationCount();
+			AltaLuxTest::DisarmAllocationFailure();
+			Assert::IsTrue(allocationCount > 0, L"the multiscale core performed no allocations?");
+
+			const std::vector<unsigned char> sourceCopy = input;
+			for (long n = 1; n <= allocationCount; ++n)
+			{
+				// The core propagates std::bad_alloc by design; the plugin
+				// boundary (StartEffects2, thread bodies) converts it into a
+				// clean failure. Either the call returns false with the target
+				// restored, or it throws with the target untouched or already
+				// re-filled with the source - the content is the source's in
+				// every case, never a half-written image.
+				AltaLuxTest::ArmAllocationFailureAt(n);
+				bool processed = true;
+				try
+				{
+					processed = ProcessMultiscaleImageWithKernels(input.data(), output.data(),
+						width, height, bitDepth, state, AltaLuxKernels::KernelImplementation::Scalar);
+				}
+				catch (const std::bad_alloc&)
+				{
+					processed = false;
+				}
+				AltaLuxTest::DisarmAllocationFailure();
+				Assert::IsFalse(processed, (std::to_wstring(n) + L": expected a clean failure").c_str());
+				Assert::IsTrue(memcmp(sourceCopy.data(), output.data(), sourceCopy.size()) == 0,
+					(std::to_wstring(n) + L": the target must keep the source content on failure").c_str());
+			}
 		}
 
 		TEST_METHOD(SelectionAddRemoveAndUndo)

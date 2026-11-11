@@ -8,7 +8,7 @@
 #include <windows.h>
 
 #include "..\AltaLux\AltaLux.h"
-#include "..\AltaLux\TestHooks.h"
+#include "AllocationHook.h"
 
 #include <climits>
 #include <cstring>
@@ -171,10 +171,10 @@ namespace AltaLuxUnitTest
 			Assert::IsNotNull(hDib);
 			const auto pristine = SnapshotDib(hDib);
 
-			// Reference pass: count the probed allocations of a clean run.
+			// Reference pass: count the allocations of a clean run.
 			AltaLuxTest::ArmAllocationFailureAt(LONG_MAX);
 			Assert::IsTrue(RunDirect(hDib, MakeSelectionRect(0, 0, 64, 48)));
-			const long probedCount = AltaLuxTest::AllocationProbeCount();
+			const long probedCount = AltaLuxTest::AllocationCount();
 			AltaLuxTest::DisarmAllocationFailure();
 			Assert::IsTrue(probedCount > 0, L"the apply path performed no probed allocations?");
 
@@ -200,7 +200,7 @@ namespace AltaLuxUnitTest
 
 			AltaLuxTest::ArmAllocationFailureAt(LONG_MAX);
 			Assert::IsFalse(RunDirect(hDib, MakeSelectionRect(0, 0, 60000, 60000)));
-			Assert::AreEqual(0L, AltaLuxTest::AllocationProbeCount(),
+			Assert::AreEqual(0L, AltaLuxTest::AllocationCount(),
 				L"oversized images must be rejected before allocating");
 			AltaLuxTest::DisarmAllocationFailure();
 

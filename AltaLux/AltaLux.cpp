@@ -36,8 +36,8 @@ The full license text is in the LICENSE file at the root of the repository.
 #include "Kernels/Kernels.h"
 #include "ScopedBitmapHeader.h"
 #include "AltaLuxCore.h"
+#include "Filter/CBaseAltaLuxFilter.h"
 #include "AltaLuxVersion.h"
-#include "TestHooks.h"
 #include "UIDraw/UIDraw.h"
 #include "Segmentation/SegmentationModule.h"
 #include "Segmentation/SelectionCore.h"
@@ -1691,56 +1691,48 @@ private:
 
 	void ComputeScalingFactor()
 	{
-		int horizontalScale = ImageWidth / 1000;
-		int verticalScale = ImageHeight / 800;
-		ScalingFactor = (std::min)(horizontalScale, verticalScale);
-		if (ScalingFactor < 1)
-		{
-			ScalingFactor = 1;
-		}
-
-		while (ScalingFactor > 1)
-		{
-			ScaledImageWidth = ImageWidth / ScalingFactor;
-			ScaledImageHeight = ImageHeight / ScalingFactor;
-			if ((ScaledImageWidth & 0x07) != 0)
-			{
-				--ScalingFactor;
-			}
-			else
-			{
-				break;
-			}
-		}
-
-		if (ScalingFactor <= 1)
-		{
-			ScalingFactor = 1;
-			ScaledImageWidth = ImageWidth;
-			ScaledImageHeight = ImageHeight;
-		}
+		// Aim the preview at roughly 1000x800 pixels; any integer factor is
+		// fine because the engine handles arbitrary dimensions.
+		const int horizontalScale = ImageWidth / 1000;
+		const int verticalScale = ImageHeight / 800;
+		ScalingFactor = (std::max)(1, (std::min)(horizontalScale, verticalScale));
+		ScaledImageWidth = ImageWidth / ScalingFactor;
+		ScaledImageHeight = ImageHeight / ScalingFactor;
 	}
 
-	void NormalizeClipRect(RECT& clipRect)
+	// IrfanView passes the selection as (left, top, width, height); convert to
+	// exact pixel edges clamped to the image. Returns false when the selection
+	// is empty, in which case the image must be left untouched. The core
+	// engine handles arbitrary sizes, so edges are not rounded.
+	bool ClipSelectionRect(RECT& clipRect)
 	{
-		clipRect.bottom += clipRect.top;
-		clipRect.right += clipRect.left;
-		clipRect.right &= ~7;
-		clipRect.left &= ~7;
-		clipRect.bottom &= ~7;
-		clipRect.top &= ~7;
-		ImageWidth = clipRect.right - clipRect.left;
-		ImageHeight = clipRect.bottom - clipRect.top;
+		const int left = (std::max)(0, static_cast<int>(clipRect.left));
+		const int top = (std::max)(0, static_cast<int>(clipRect.top));
+		const int right = (std::min)(FullImageWidth, left + (std::max)(0, static_cast<int>(clipRect.right)));
+		const int bottom = (std::min)(FullImageHeight, top + (std::max)(0, static_cast<int>(clipRect.bottom)));
+		if (left >= right || top >= bottom)
+		{
+			return false;
+		}
+		clipRect.left = left;
+		clipRect.top = top;
+		clipRect.right = right;
+		clipRect.bottom = bottom;
+		ImageWidth = right - left;
+		ImageHeight = bottom - top;
+		return true;
 	}
 
 	bool IsCroppedImage()
 	{
-		if ((FullImageWidth > ImageWidth) || (FullImageHeight > ImageHeight))
-		{
-			return true;
-		}
+		return (FullImageWidth > ImageWidth) || (FullImageHeight > ImageHeight);
+	}
 
-		return ((FullImageWidth & 7) != 0) || ((FullImageHeight & 7) != 0);
+	// The DIB the host hands us stores rows bottom-up when biHeight > 0, so a
+	// selection in visual coordinates anchors at the mirrored memory row.
+	int ClipTopMemoryRow(const RECT& clipRect)
+	{
+		return SourceTopDown ? clipRect.top : FullImageHeight - clipRect.bottom;
 	}
 
 	void CopyFromSourceImage(unsigned char* targetImage, RECT clipRect, BYTE* imageBits, DWORD imageBitsStride)
@@ -1750,16 +1742,17 @@ private:
 			return;
 		}
 
+		const int copyBytes = ImageWidth * ImageBitDepth;
 		unsigned char* dst = targetImage;
 		unsigned char* src = imageBits;
 		if (CroppedImage)
 		{
 			src += clipRect.left * ImageBitDepth;
-			src += imageBitsStride * clipRect.top;
-			for (int y = clipRect.top; y < clipRect.bottom; ++y)
+			src += imageBitsStride * ClipTopMemoryRow(clipRect);
+			for (int y = 0; y < ImageHeight; ++y)
 			{
-				memcpy(dst, src, ImageWidth * ImageBitDepth);
-				dst += ImageWidth * ImageBitDepth;
+				memcpy(dst, src, copyBytes);
+				dst += copyBytes;
 				src += imageBitsStride;
 			}
 			return;
@@ -1767,8 +1760,8 @@ private:
 
 		for (int y = 0; y < FullImageHeight; ++y)
 		{
-			memcpy(dst, src, ImageWidth * ImageBitDepth);
-			dst += ImageWidth * ImageBitDepth;
+			memcpy(dst, src, copyBytes);
+			dst += copyBytes;
 			src += imageBitsStride;
 		}
 	}
@@ -1780,16 +1773,17 @@ private:
 			return;
 		}
 
+		const int copyBytes = ImageWidth * ImageBitDepth;
 		unsigned char* src = sourceImage;
 		unsigned char* dst = imageBits;
 		if (CroppedImage)
 		{
 			dst += clipRect.left * ImageBitDepth;
-			dst += imageBitsStride * clipRect.top;
-			for (int y = clipRect.top; y < clipRect.bottom; ++y)
+			dst += imageBitsStride * ClipTopMemoryRow(clipRect);
+			for (int y = 0; y < ImageHeight; ++y)
 			{
-				memcpy(dst, src, ImageWidth * ImageBitDepth);
-				src += ImageWidth * ImageBitDepth;
+				memcpy(dst, src, copyBytes);
+				src += copyBytes;
 				dst += imageBitsStride;
 			}
 			return;
@@ -1797,8 +1791,8 @@ private:
 
 		for (int y = 0; y < FullImageHeight; ++y)
 		{
-			memcpy(dst, src, ImageWidth * ImageBitDepth);
-			src += ImageWidth * ImageBitDepth;
+			memcpy(dst, src, copyBytes);
+			src += copyBytes;
 			dst += imageBitsStride;
 		}
 	}
@@ -2660,14 +2654,22 @@ namespace
 			CroppedImage = IsCroppedImage();
 			if (CroppedImage)
 			{
-				NormalizeClipRect(clipRect);
+				// An empty selection is a no-op, not an error; tiny ones fall
+				// below the smallest sensible tile and stay untouched too.
+				if (!ClipSelectionRect(clipRect))
+				{
+					return true;
+				}
+				if (ImageWidth < 2 * MIN_HOR_REGIONS || ImageHeight < 2 * MIN_HOR_REGIONS)
+				{
+					return true;
+				}
 				BmHdrCopy.biWidth = ImageWidth;
 				BmHdrCopy.biHeight = ImageHeight;
 			}
 
 			BYTE* imageBits = bitmapHeader.GetImageBits();
 			DWORD imageBitsStride = WIDTHBYTES(static_cast<DWORD>(FullImageWidth * bitmapHeader->biBitCount));
-			AltaLuxTest::ProbeAllocationFailure();
 			srcImage = std::make_shared<std::vector<unsigned char>>(GetRGBImageSize(ImageWidth, ImageHeight));
 			CopyFromSourceImage(srcImage->data(), clipRect, imageBits, imageBitsStride);
 		}
@@ -2723,7 +2725,6 @@ namespace
 				gSelectionSession->ready && HasSelectedPixels(gSelectionSession->selectionMask);
 			if (applySelection)
 			{
-				AltaLuxTest::ProbeAllocationFailure();
 				std::vector<unsigned char> processedImage(srcImage->begin(),
 					srcImage->begin() + GetImageByteCount(ImageWidth, ImageHeight));
 				if (!ProcessMultiscaleImage(srcImage->data(), processedImage.data(), ImageWidth, ImageHeight, ImageBitDepth, gUiState))
@@ -2731,7 +2732,6 @@ namespace
 					return false;
 				}
 				std::vector<unsigned char> alphaMask;
-				AltaLuxTest::ProbeAllocationFailure();
 				if (!BuildFeatheredMask(gSelectionSession->selectionMask.data(), ImageWidth, ImageHeight,
 					gSelectionSession->softness, alphaMask) ||
 					!CompositeWithMask(srcImage->data(), processedImage.data(), srcImage->data(), alphaMask.data(),

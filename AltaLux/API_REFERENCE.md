@@ -314,8 +314,8 @@ public:
 ```cpp
 const int AL_OK = 0;                    // Success
 const int AL_NULL_IMAGE = -1;           // Null image pointer
-const int AL_WIDTH_NO_MULTIPLE = -3;    // Width not multiple of 8
-const int AL_HEIGHT_NO_MULTIPLE = -4;   // Height not multiple of 8
+const int AL_WIDTH_NO_MULTIPLE = -3;    // Legacy, never returned: no dimension constraint exists
+const int AL_HEIGHT_NO_MULTIPLE = -4;   // Legacy, never returned: no dimension constraint exists
 const int AL_OUT_OF_MEMORY = -11;       // Memory allocation failed
 ```
 
